@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, or_
 
+from app.auth.application.password_ports import AuditTrail
 from app.auth.application.accounts import (
     create_user_account,
     employee_display_name,
@@ -127,13 +129,17 @@ class SearchUserByEmployeeCodeUseCase(BaseUseCase[SearchUserByEmployeeCodeOutput
 
 
 class LoginUseCase(BaseUseCase[LoginOutputDTO]):
-    def __init__(self, uow: GenUnitOfWork, security_service):
+    def __init__(self, uow: GenUnitOfWork, security_service, audit: AuditTrail):
         self.uow = uow
         self.security_service = security_service
+        self.audit = audit
 
     async def _execute(self, input_dto: LoginInputDTO) -> LoginOutputDTO:
         identifier = input_dto.identifier.strip().lower()
         rejection: str | None = None
+        failure_reason: str | None = None
+        account_id: UUID | str = "anonymous"
+        lockout_event: dict[str, Any] | None = None
         output: LoginOutputDTO | None = None
 
         # Failed-attempt counters must be committed, so rejections are raised after the UoW exits.
@@ -146,12 +152,15 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
 
             if not user or user.id is None:
                 rejection = INVALID_CREDENTIALS_MESSAGE
+                failure_reason = "invalid_credentials"
             else:
+                account_id = user.id
                 if user.locked_until is not None and user.locked_until <= now_utc:
                     user = replace(user, locked_until=None, failed_login_count=0)
 
                 if user.locked_until is not None:
                     rejection = is_login_allowed(user, now_utc)
+                    failure_reason = "account_locked"
                 elif not self.security_service.verify_password(input_dto.password, user.password_hash):
                     failed_count = (user.failed_login_count or 0) + 1
                     locked_until = None
@@ -161,6 +170,12 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
                         replace(user, failed_login_count=failed_count, locked_until=locked_until)
                     )
                     rejection = INVALID_CREDENTIALS_MESSAGE
+                    failure_reason = "invalid_credentials"
+                    if locked_until is not None:
+                        lockout_event = {
+                            "failed_attempt_count": failed_count,
+                            "locked_until": locked_until.isoformat(),
+                        }
                 else:
                     rejection = is_login_allowed(user, now_utc)
                     if rejection is None:
@@ -183,9 +198,39 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
                             role=role.value,
                             role_code=role_codes,
                         )
+                    else:
+                        failure_reason = (
+                            "account_inactive"
+                            if not user.is_active or user.account_status == AccountStatus.DISABLED.value
+                            else "account_pending"
+                            if user.account_status == AccountStatus.PENDING.value
+                            else "account_locked"
+                        )
 
         if rejection or output is None:
+            await self.audit.record(
+                user_id=account_id,
+                action="LOGIN_FAILURE",
+                resource="authentication",
+                resource_id=str(account_id),
+                after={"reason": failure_reason or "authentication_rejected"},
+            )
+            if lockout_event is not None:
+                await self.audit.record(
+                    user_id=account_id,
+                    action="ACCOUNT_LOCKED",
+                    resource="user",
+                    resource_id=str(account_id),
+                    after=lockout_event,
+                )
             raise ValueError(rejection or INVALID_CREDENTIALS_MESSAGE)
+        await self.audit.record(
+            user_id=account_id,
+            action="LOGIN_SUCCESS",
+            resource="authentication",
+            resource_id=str(account_id),
+            after={"outcome": "success"},
+        )
         return output
 
 

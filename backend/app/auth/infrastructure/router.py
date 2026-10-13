@@ -26,7 +26,10 @@ from app.auth.infrastructure.dependencies import (
 )
 from app.auth.domain.entities.user import DEFAULT_SIGNUP_ROLE_CODE, Role
 from app.core.generics.mapper import ResponseEnvelope
+from app.auth.infrastructure.password_router import router as password_router
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+router.include_router(password_router)
 
 class LoginRequestSchema(BaseModel):
     # Accepts either the account's email address or employee code

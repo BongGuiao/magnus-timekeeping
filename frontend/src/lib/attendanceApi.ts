@@ -224,30 +224,6 @@ export interface SupervisorInvalidAttendance {
   time_out: string | null
 }
 
-export interface OvertimeRequest {
-  attendance_id: string
-  employee_id: string
-  employee_code: string
-  employee_name: string
-  work_date: string
-  calculated_regular_overtime_minutes: number
-  calculated_night_differential_overtime_minutes: number
-  calculated_night_differential_minutes: number
-  requested_regular_overtime_minutes: number
-  requested_night_differential_overtime_minutes: number
-  requested_night_differential_minutes: number
-  overtime_request_status: 'PENDING' | 'APPROVED' | 'REJECTED' | null
-  approved_regular_overtime_minutes: number
-  approved_night_differential_overtime_minutes: number
-  approved_night_differential_minutes: number
-}
-
-export interface OvertimeRequestAmounts {
-  regular_overtime_minutes: number
-  night_differential_overtime_minutes: number
-  night_differential_minutes: number
-}
-
 export interface OvertimeApplicationInput {
   overtime_type: OvertimeApplicationType
   requested_start_at?: string
@@ -364,46 +340,6 @@ export async function decideOvertimeApplication(
     return response.data.data
   } catch (err) {
     throw new Error(getAttendanceErrorMessage(err, 'Could not save the overtime application decision.'))
-  }
-}
-
-export async function submitOvertimeRequest(
-  attendanceId: string,
-  amounts: OvertimeRequestAmounts,
-): Promise<OvertimeRequest> {
-  try {
-    const response = await apiClient.post<ApiSuccessEnvelope<OvertimeRequest>>(
-      `/attendance/overtime/${encodeURIComponent(attendanceId)}/request`,
-      amounts,
-    )
-    return response.data.data
-  } catch (err) {
-    throw new Error(getAttendanceErrorMessage(err, 'Could not submit the overtime request.'))
-  }
-}
-
-export async function fetchPendingOvertimeRequests(): Promise<OvertimeRequest[]> {
-  try {
-    const response = await apiClient.get<ApiSuccessEnvelope<OvertimeRequest[]>>('/attendance/overtime/pending')
-    return response.data.data
-  } catch (err) {
-    throw new Error(getAttendanceErrorMessage(err, 'Could not load pending overtime requests.'))
-  }
-}
-
-export async function decideOvertimeRequest(
-  attendanceId: string,
-  decision: 'APPROVED' | 'REJECTED',
-  amounts: OvertimeRequestAmounts,
-): Promise<OvertimeRequest> {
-  try {
-    const response = await apiClient.post<ApiSuccessEnvelope<OvertimeRequest>>(
-      `/attendance/overtime/${encodeURIComponent(attendanceId)}/decision`,
-      { decision, ...amounts },
-    )
-    return response.data.data
-  } catch (err) {
-    throw new Error(getAttendanceErrorMessage(err, 'Could not save the overtime approval.'))
   }
 }
 

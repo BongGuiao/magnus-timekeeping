@@ -63,6 +63,11 @@ class RoleEntity:
     is_system_role: bool = False
     is_active: bool = True
     id: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+    created_by: Optional[UUID] = None
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[UUID] = None
+    row_version: Optional[int] = None
 
 
 @dataclass

@@ -1,12 +1,13 @@
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.filemaintenance.roles.infrastructure.db_model import UserRoleModel
 
 
 class UserModel(Base):
@@ -50,17 +51,3 @@ class RoleModel(Base):
     updated_by: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
-
-
-class UserRoleModel(Base):
-    __tablename__ = "user_roles"
-    __table_args__ = {"schema": "identity"}
-
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
-    user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=False)
-    role_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("identity.roles.id"), nullable=False)
-    company_id: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
-    org_unit_id: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
-    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
-    effective_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    assigned_by: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=True)

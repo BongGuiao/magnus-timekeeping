@@ -28,6 +28,8 @@ from app.filemaintenance.employees.infrastructure.related_router import assignme
 from app.filemaintenance.devices.infrastructure.router import router as devices_router
 from app.filemaintenance.payroll_groups.infrastructure.router import router as payroll_groups_router
 from app.filemaintenance.payroll_cutoffs.infrastructure.router import router as payroll_cutoffs_router
+from app.filemaintenance.roles.infrastructure.router import router as user_roles_router
+from app.filemaintenance.roles.infrastructure.role_catalog_router import router as roles_router
 from app.filemaintenance.schedule.infrastructure.router import router as schedule_templates_router
 from app.filemaintenance.schedule.infrastructure.employee_schedule_assignment_router import (
     router as employee_schedule_assignments_router,
@@ -122,6 +124,8 @@ app.include_router(skills_router)
 app.include_router(devices_router)
 app.include_router(payroll_groups_router)
 app.include_router(payroll_cutoffs_router)
+app.include_router(user_roles_router)
+app.include_router(roles_router)
 app.include_router(schedule_templates_router)
 app.include_router(rest_day_patterns_router)
 app.include_router(employee_schedule_assignments_router)

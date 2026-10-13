@@ -18,6 +18,7 @@ import EmployeeEntitlementsPanel from '../features/employees/EmployeeEntitlement
 import EmployeeScheduleAssignmentsPanel from '../features/employees/EmployeeScheduleAssignmentsPanel'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
 import EmployeeWfhPanel from '../features/employees/EmployeeWfhPanel'
+import EmployeeRolePanel from '../features/employees/EmployeeRolePanel'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
 import type { OrgUnit } from '../types/orgUnit'
@@ -28,16 +29,17 @@ interface Props {
   onLoggedOut?: () => void
 }
 
-type EmployeeTab = 'details' | 'assignments' | 'skills' | 'entitlements' | 'schedule' | 'face' | 'wfh'
+type EmployeeTab = 'details' | 'assignments' | 'skills' | 'entitlements' | 'schedule' | 'face' | 'wfh' | 'role'
 
 const employeeTabs: { id: EmployeeTab; label: string }[] = [
   { id: 'details', label: 'Employee Details' },
   { id: 'assignments', label: 'Employment Assignments' },
-  { id: 'skills', label: 'Skills' },
   { id: 'entitlements', label: 'Employee Entitlements' },
   { id: 'schedule', label: 'Schedule Assignments' },
   { id: 'face', label: 'Face Enrollment' },
   { id: 'wfh', label: 'WFH Location' },
+  { id: 'role', label: 'Role' },
+  { id: 'skills', label: 'Skills' },
 ]
 
 const employeeSchema = z.object({
@@ -137,6 +139,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const visibleEmployeeTabs = employeeTabs.filter((tab) =>
     (tab.id !== 'entitlements' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'wfh' || localStorage.getItem('role') === 'admin')
+    && (tab.id !== 'role' || (localStorage.getItem('role') === 'admin' && Boolean(editingEmployee)))
     && (tab.id !== 'schedule' || (localStorage.getItem('role') === 'admin' && Boolean(editingEmployee))),
   )
 
@@ -455,7 +458,9 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                         ? <EmployeeScheduleAssignmentsPanel employee={editingEmployee} />
                         : tab.id === 'wfh'
                           ? <EmployeeWfhPanel key={editingEmployee?.id} employee={editingEmployee} />
-                        : <EmployeeFaceEnrollmentPanel
+                          : tab.id === 'role'
+                            ? <EmployeeRolePanel key={editingEmployee?.id} employee={editingEmployee} companies={companies} orgUnits={orgUnits} />
+                            : <EmployeeFaceEnrollmentPanel
                       employee={editingEmployee}
                       isActive={activeTab === 'face'}
                       onPhotoReferenceSaved={(photoReference) => {

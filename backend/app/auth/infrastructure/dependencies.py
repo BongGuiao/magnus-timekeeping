@@ -3,23 +3,40 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
 from app.core.generics.uow import get_unit_of_work, GenUnitOfWork
+from app.audit.infrastructure.dependencies import get_audit_es_client
+from app.auth.application.change_password_use_case import ChangePasswordUseCase, LockoutPolicy
 from app.auth.application.use_case import (
     LoginUseCase,
     SearchUserByEmployeeCodeUseCase,
     SignUpUseCase,
 )
+from app.auth.infrastructure.adapters import Argon2PasswordHasher, ElasticsearchAuditTrail
+from app.auth.infrastructure.user_account_repository import SqlAlchemyUserAccountUnitOfWork
 from app.core import security as security_service
+from app.core.config import settings
 from app.auth.domain.entities.user import Role
 
 bearer_scheme = HTTPBearer()
 
 def get_login_use_case(
-        uow: GenUnitOfWork = Depends(get_unit_of_work)
+        uow: GenUnitOfWork = Depends(get_unit_of_work),
+        es_client=Depends(get_audit_es_client),
         ) -> LoginUseCase:
-    return LoginUseCase(uow, security_service)
+    return LoginUseCase(uow, security_service, ElasticsearchAuditTrail(es_client))
 
 def get_signup_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> SignUpUseCase:
     return SignUpUseCase(uow, security_service)
+
+def get_change_password_use_case(
+        uow: GenUnitOfWork = Depends(get_unit_of_work),
+        es_client=Depends(get_audit_es_client),
+        ) -> ChangePasswordUseCase:
+    return ChangePasswordUseCase(
+        SqlAlchemyUserAccountUnitOfWork(uow),
+        Argon2PasswordHasher(),
+        ElasticsearchAuditTrail(es_client),
+        LockoutPolicy(settings.AUTH_MAX_FAILED_LOGIN_ATTEMPTS, settings.AUTH_LOCKOUT_MINUTES),
+    )
 
 def get_search_user_by_employee_code_use_case(
         uow: GenUnitOfWork = Depends(get_unit_of_work)

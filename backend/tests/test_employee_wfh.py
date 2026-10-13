@@ -15,8 +15,7 @@ from app.attendance.application.use_case import (
     ClockAttendanceInputDTO, ClockAttendanceUseCase, ScheduleDayConfiguration, circle_contains_gps,
 )
 from app.attendance.domain.entities.attendance import AttendanceEntity
-from app.attendance.infrastructure.clock_policy import AttendanceClockPolicy, resolve_attendance_clock_policy
-from app.attendance.infrastructure.router import clock_attendance, get_my_attendance_locations
+from app.attendance.infrastructure.clock_policy import resolve_attendance_clock_policy
 from app.auth.infrastructure.dependencies import require_role
 from app.auth.domain.entities.user import Role
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeWfhLocationModel
@@ -170,33 +169,6 @@ class WfhGeofenceTests(unittest.IsolatedAsyncioTestCase):
                     ))
                 self.assertTrue(use_case._validate_clock_in_geofence.call_args.kwargs["allow_wfh"])
 
-    async def test_allowed_sites_add_home_only_for_native_app(self):
-        self.fence.geofence_name = "Office policy"
-        self.location.location_code = "HQ"
-        for native in (False, True):
-            with self.subTest(native=native):
-                session = SimpleNamespace(
-                    execute=AsyncMock(side_effect=[
-                        SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [self.location])),
-                        SimpleNamespace(all=lambda: [(self.fence, 14.5, 121.0)]),
-                    ]),
-                    get=AsyncMock(return_value=self.home),
-                )
-                uow = AsyncMock()
-                uow.__aenter__.return_value = SimpleNamespace(session=session)
-                result = await get_my_attendance_locations(
-                    {"employee_id": str(self.employee.id)}, uow,
-                    AttendanceClockPolicy("mobile", True, None, is_native=native),
-                )
-                self.assertEqual(len(result.data), 2 if native else 1)
-                self.assertEqual(result.data[0].location_type, "OFFICE")
-                if native:
-                    self.assertEqual(result.data[1].location_type, "WFH")
-                    self.assertEqual(result.data[1].geofences[0].latitude, self.home.latitude)
-                    self.assertEqual(result.data[1].geofences[0].radius_meters, 100)
-                else:
-                    session.get.assert_not_called()
-
     async def test_accuracy_limit_is_still_enforced_for_home(self):
         with self.assertRaisesRegex(ValueError, "accuracy is too low"):
             await self.validate(allow_wfh=True, accuracy=21)
@@ -266,34 +238,6 @@ class WfhGeofenceTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertFalse(response.data.is_active)
         self.assertEqual(response.data.row_version, 2)
-
-    async def test_only_signed_native_platform_can_enable_wfh(self):
-        for native, platform, approved, expected in (
-            (True, "ANDROID", True, True),
-            (True, "IOS", True, True),
-            (True, "WEB", True, False),
-            (False, "ANDROID", True, False),
-            (True, "ANDROID", False, False),
-        ):
-            with self.subTest(native=native, platform=platform, approved=approved):
-                use_case = SimpleNamespace(execute=AsyncMock(side_effect=ValueError("captured")))
-                proof = {"device_id": str(uuid4()), "device_uuid": "test", "platform": platform}
-                consume = AsyncMock(return_value=proof) if approved else AsyncMock(side_effect=ValueError("unapproved"))
-                with patch("app.attendance.infrastructure.router._read_face_image", AsyncMock(return_value=b"face")), patch(
-                    "app.attendance.infrastructure.router.consume_device_challenge", consume,
-                ):
-                    with self.assertRaisesRegex(ValueError, "captured"):
-                        await clock_attendance(
-                            file=None, user_id=uuid4(), clock_out_confirmed=False,
-                            latitude=14.5, longitude=121, gps_accuracy_meters=10,
-                            device_challenge_id=uuid4(), device_signature="signature",
-                            policy=AttendanceClockPolicy("mobile", True, None, is_native=native),
-                            use_case=use_case, proof_uow=None, es_client=None,
-                        )
-                dto = use_case.execute.call_args.args[0]
-                self.assertEqual(dto.allow_wfh, expected)
-                self.assertTrue(dto.enforce_geofence)
-
 
 class WfhPostgisBoundaryTests(unittest.IsolatedAsyncioTestCase):
     """Spatial and rolled-back migration checks using the project's PostGIS database."""

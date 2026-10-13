@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, MoreVertical } from 'lucide-react'
 import { fetchCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
@@ -28,6 +28,7 @@ export type NavView =
   | 'leave-application'
   | 'overtime-application'
   | 'official-business'
+  | 'change-password'
 
 const companySetupViews: NavView[] = [
   'companies',
@@ -141,6 +142,9 @@ function DashboardRoleSelect({
 
 export default function TopNav({ employeeName, activeView, onNavigate, onSignOut }: Props) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
+  const accountMenuRef = useRef<HTMLDivElement>(null)
+  const mobileAccountMenuRef = useRef<HTMLDivElement>(null)
   const [companies, setCompanies] = useState<Company[]>([])
   const [companyLoadError, setCompanyLoadError] = useState('')
   const [roleCode, setRoleCode] = useState<string>(getSelectedDashboardRoleCode)
@@ -204,8 +208,31 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
     }
   }, [companyId, isCompanySetupView, selectCompany])
 
+  useEffect(() => {
+    if (!isAccountMenuOpen) return
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (
+        event.target instanceof Node
+        && !accountMenuRef.current?.contains(event.target)
+        && !mobileAccountMenuRef.current?.contains(event.target)
+      ) {
+        setIsAccountMenuOpen(false)
+      }
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setIsAccountMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [isAccountMenuOpen])
+
   function navigateTo(view?: NavView) {
     if (view) onNavigate?.(view)
+    setIsAccountMenuOpen(false)
     setIsMobileMenuOpen(false)
   }
 
@@ -320,6 +347,35 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
             >
               Sign Out
             </button>
+            <div ref={accountMenuRef} className="relative hidden sm:block">
+              <button
+                type="button"
+                aria-label="More account options"
+                aria-haspopup="menu"
+                aria-expanded={isAccountMenuOpen}
+                onClick={() => setIsAccountMenuOpen((isOpen) => !isOpen)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                <MoreVertical className="h-4 w-4" aria-hidden="true" />
+              </button>
+              {isAccountMenuOpen && (
+                <div role="menu" aria-label="Account options" className="absolute right-0 top-full z-40 mt-2 min-w-48 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => navigateTo('change-password')}
+                    aria-current={activeView === 'change-password' ? 'page' : undefined}
+                    className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
+                      activeView === 'change-password'
+                        ? 'bg-indigo-50 text-indigo-700'
+                        : 'text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    Change Password
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               aria-label="Toggle navigation menu"
@@ -341,9 +397,40 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
               <p className="text-sm font-semibold text-slate-900">{employeeName}</p>
               <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
             </div>
-            <button type="button" onClick={signOut} className="text-sm font-semibold text-rose-600">
-              Sign Out
-            </button>
+            <div className="flex items-center gap-4">
+              <button type="button" onClick={signOut} className="text-sm font-semibold text-rose-600">
+                Sign Out
+              </button>
+              <div ref={mobileAccountMenuRef} className="relative">
+                <button
+                  type="button"
+                  aria-label="More account options"
+                  aria-haspopup="menu"
+                  aria-expanded={isAccountMenuOpen}
+                  onClick={() => setIsAccountMenuOpen((isOpen) => !isOpen)}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 transition hover:bg-slate-50 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                >
+                  <MoreVertical className="h-4 w-4" aria-hidden="true" />
+                </button>
+                {isAccountMenuOpen && (
+                  <div role="menu" aria-label="Account options" className="absolute right-0 top-full z-40 mt-2 min-w-48 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => navigateTo('change-password')}
+                      aria-current={activeView === 'change-password' ? 'page' : undefined}
+                      className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
+                        activeView === 'change-password'
+                          ? 'bg-indigo-50 text-indigo-700'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      Change Password
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
           <div className="space-y-4">
             {visibleNavLinks.map((group) => (

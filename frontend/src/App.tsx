@@ -17,6 +17,7 @@ import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
+import ChangePassword from './pages/ChangePassword'
 import type { NavView } from './components/dashboard/TopNav'
 import { getSelectedDashboardRole, hasEmployeeRoleCode } from './types/role'
 
@@ -24,7 +25,7 @@ const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'companies', 'org-units', 'locations',
   'geofences', 'employees', 'leave-management', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'schedule-templates', 'rest-day-patterns',
-  'overtime-application', 'official-business',
+  'overtime-application', 'official-business', 'change-password',
 ]
 
 function getStoredView(): NavView {
@@ -57,6 +58,10 @@ function App() {
   const onLoggedOut = () => {
     sessionStorage.removeItem('active_view')
     setIsAuthenticated(false)
+  }
+
+  if (view === 'change-password') {
+    return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
   }
 
   if (view === 'enrollment') {
