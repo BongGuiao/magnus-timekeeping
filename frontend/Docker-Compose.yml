@@ -1,0 +1,6 @@
+frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: app_frontend
+    # ... rest of frontend config

@@ -1,0 +1,1 @@
+"""Company application use cases."""

@@ -1,0 +1,37 @@
+filebeat.inputs:
+  - type: filestream
+    id: magnus-application-logs
+    paths:
+      - /var/log/magnus/*.ndjson*
+    parsers:
+      - ndjson:
+          target: ""
+          expand_keys: true
+          add_error_key: true
+
+processors:
+  - add_fields:
+      target: ""
+      fields:
+        service:
+          environment: development
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+queue.disk:
+  max_size: 1GB
+
+setup.ilm.enabled: true
+setup.ilm.policy_name: magnus-request-logs
+setup.ilm.policy_file: /usr/share/filebeat/magnus-ilm.json
+setup.ilm.overwrite: false
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0
+
+setup.kibana:
+  host: "http://kibana:5601"
+
+logging.level: info
+logging.to_files: false

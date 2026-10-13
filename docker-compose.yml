@@ -1,0 +1,165 @@
+
+services:
+  # 1. PostgreSQL Database
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # 2. Redis (Optional cache layer)
+  redis:
+    image: redis:alpine
+    container_name: redis_broker
+    restart: always
+    ports:
+      - "6379:6379"
+
+  # 3. Elasticsearch (development-only observability store)
+  elasticsearch:
+    image: elasticsearch:8.11.3
+    container_name: elasticsearch_search
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # 4. Kibana (Elasticsearch Dashboard)
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.3
+    container_name: kibana_dashboard
+    restart: always
+    ports:
+      - "127.0.0.1:5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.3
+    restart: always
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./observability/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./observability/magnus-ilm.json:/usr/share/filebeat/magnus-ilm.json:ro
+      - requestlogs:/var/log/magnus:ro
+      - filebeatdata:/usr/share/filebeat/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # 5. Main Web Application (FastAPI)
+  web:
+    build: .
+    container_name: app_backend
+    restart: always
+    command: gunicorn backend.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --forwarded-allow-ips="*"
+    volumes:
+      - .:/app
+      - ./static:/app/static
+      - requestlogs:/var/log/magnus
+    expose:
+      - "8000"
+    environment:
+      - PYTHONPATH=/app/backend
+      - REDIS_HOST=redis
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - REQUEST_LOGGING_ENABLED=true
+      - REQUEST_LOG_DIRECTORY=/var/log/magnus
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  celery_worker:
+    build: .
+    container_name: celery_worker
+    restart: always
+    working_dir: /app/backend
+    command: celery -A celery_app:app worker --loglevel=INFO
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app/backend
+      - REDIS_HOST=redis
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  celery_beat:
+    build: .
+    container_name: celery_beat
+    restart: always
+    working_dir: /app/backend
+    command: celery -A celery_app:app beat --loglevel=INFO --schedule=/var/run/celery/celerybeat-schedule
+    volumes:
+      - .:/app
+      - celerybeatdata:/var/run/celery
+    environment:
+      - PYTHONPATH=/app/backend
+      - REDIS_HOST=redis
+    env_file:
+      - .env
+    depends_on:
+      - db
+      - redis
+
+  # 6. React Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: app_frontend
+    restart: always
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_PROXY_TARGET=http://web:8000
+    depends_on:
+      - web
+
+  # 7. Nginx Reverse Proxy Gateway
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_proxy
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./static:/app/static
+      - ./frontend/dist:/usr/share/nginx/html
+    depends_on:
+      - web
+      - frontend
+
+volumes:
+  pgdata:
+  esdata:
+  requestlogs:
+  filebeatdata:
+  celerybeatdata:

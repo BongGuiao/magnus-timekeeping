@@ -1,0 +1,23 @@
+# Ignore node_modules wherever they are located
+**/node_modules
+**/dist
+**/build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Ignore Python virtual environments and caches
+.venv
+venv
+__pycache__
+*.pyc
+
+# Ignore Git and Environment files
+.git
+.gitignore
+.env
+
+# Ignore Database and Log files
+postgres_data
+es_data
+*.log

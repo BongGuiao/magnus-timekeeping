@@ -1,0 +1,1 @@
+"""Employee infrastructure adapters."""

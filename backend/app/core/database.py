@@ -1,0 +1,70 @@
+# app/core/database.py
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.orm import DeclarativeBase
+
+# 1. Define the Base class for your models
+class Base(DeclarativeBase):
+    pass
+def init_db_models():
+    from app.auth.infrastructure.db_model import RoleModel, UserModel, UserRoleModel  # noqa: F401
+    from app.enrollment.infrastructure.db_model import FaceEnrollmentModel  # noqa: F401
+    from app.attendance.infrastructure.db_model import (  # noqa: F401
+        AttendanceModel,
+        PunchExceptionModel,
+        OfficialBusinessRequestModel,
+        OvertimeApplicationModel,
+    )
+    from app.filemaintenance.companies.infrastructure.db_model import CompanyModel  # noqa: F401
+    from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit  # noqa: F401
+    from app.filemaintenance.holidays.calendar.infrastructure.db_model import (  # noqa: F401
+        HolidayCalendarModel,
+    )
+    from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel  # noqa: F401
+    from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel  # noqa: F401
+    from app.filemaintenance.leaves.infrastructure.leave_records_db_model import (  # noqa: F401
+        EmployeeEntitlementModel,
+        LeaveApplicationDateModel,
+        LeaveApplicationModel,
+        LeaveLedgerModel,
+    )
+    from app.filemaintenance.payroll_groups.infrastructure.db_model import (  # noqa: F401
+        PayrollGroupModel,
+    )
+    from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import (  # noqa: F401
+        PayrollCutoffModel,
+    )
+    from app.filemaintenance.schedule.infrastructure.db_model import (  # noqa: F401
+        EmployeeScheduleAssignmentModel,
+        RestDayPatternDayModel,
+        RestDayPatternModel,
+        ScheduleSegmentModel,
+        ScheduleTemplateModel,
+    )
+    from app.filemaintenance.location.infrastructure.db_model import Location  # noqa: F401
+    from app.filemaintenance.geofences.infrastructure.db_model import Geofence  # noqa: F401
+    from app.filemaintenance.employees.infrastructure.db_model import (  # noqa: F401
+        EmployeeModel,
+        EmployeeSkillModel,
+        EmploymentAssignmentModel,
+        EmployeeWfhLocationModel,
+    )
+    from app.filemaintenance.devices.infrastructure.db_model import (  # noqa: F401
+        DeviceChallengeModel,
+        DeviceCredentialModel,
+        DeviceModel,
+    )
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/dbname")
+
+engine = create_async_engine(DATABASE_URL, echo=True, future=True)
+AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+async def get_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
