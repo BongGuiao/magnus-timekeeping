@@ -7,11 +7,17 @@ from app.filemaintenance.leaves.application.leave_records_use_case import (
 
 
 class AvailableLeaveBalanceTests(unittest.TestCase):
-    def test_approved_paid_minutes_are_charged_when_provided(self) -> None:
-        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, paid_minutes=360), 360)
+    def test_approved_leave_with_zero_balance_is_unpaid(self) -> None:
+        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, available_minutes=0), 0)
 
-    def test_approved_request_minutes_are_charged_when_paid_minutes_are_unspecified(self) -> None:
-        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, paid_minutes=None), 480)
+    def test_approved_leave_uses_only_remaining_balance(self) -> None:
+        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, available_minutes=180), 180)
+
+    def test_approved_leave_with_sufficient_balance_is_fully_paid(self) -> None:
+        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, available_minutes=600), 480)
+
+    def test_approved_leave_with_negative_balance_is_unpaid(self) -> None:
+        self.assertEqual(approved_leave_charge_minutes(requested_minutes=480, available_minutes=-30), 0)
 
     def test_adds_credits_and_subtracts_charges(self) -> None:
         self.assertEqual(

@@ -1,6 +1,11 @@
 from fastapi import Depends
 
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
+from app.filemaintenance.roles.application.permission_use_cases import (
+    GetRolePermissionsUseCase,
+    ListPermissionsUseCase,
+    SetRolePermissionsUseCase,
+)
 from app.filemaintenance.roles.application.use_case import (
     CreateRoleUseCase,
     CreateUserRoleUseCase,
@@ -13,6 +18,24 @@ from app.filemaintenance.roles.application.use_case import (
     UpdateRoleUseCase,
     UpdateUserRoleUseCase,
 )
+
+
+def get_list_permissions_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> ListPermissionsUseCase:
+    return ListPermissionsUseCase(uow)
+
+
+def get_get_role_permissions_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> GetRolePermissionsUseCase:
+    return GetRolePermissionsUseCase(uow)
+
+
+def get_set_role_permissions_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> SetRolePermissionsUseCase:
+    return SetRolePermissionsUseCase(uow)
 
 
 def get_create_role_use_case(

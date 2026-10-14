@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { loginRequest } from '../lib/authApi'
+import { fetchCurrentAuthorization, loginRequest } from '../lib/authApi'
 import type { TokenResponse } from '../types/auth'
 
 interface UseLoginOptions {
@@ -27,8 +27,15 @@ export function useLogin(options: UseLoginOptions = {}) {
       localStorage.removeItem('dashboard_role')
       localStorage.removeItem('dashboard_role_code')
       localStorage.setItem('employee_name', result.employee_name)
+      const authorization = await fetchCurrentAuthorization()
+      localStorage.setItem('role_codes', JSON.stringify(authorization.role_codes))
+      localStorage.setItem('permission_codes', JSON.stringify(authorization.permission_codes))
       options.onSuccess?.(result)
     } catch (err) {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('role')
+      localStorage.removeItem('role_codes')
+      localStorage.removeItem('permission_codes')
       setError(err instanceof Error ? err.message : 'Login failed. Please try again.')
     } finally {
       setIsSubmitting(false)

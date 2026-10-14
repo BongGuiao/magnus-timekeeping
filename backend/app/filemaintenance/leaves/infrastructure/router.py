@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.leaves.application.use_case import (
@@ -25,7 +25,11 @@ from app.filemaintenance.leaves.infrastructure.dependencies import (
     get_update_leave_type_use_case,
 )
 
-router = APIRouter(prefix="/leave-types", tags=["Leave Types"])
+router = APIRouter(
+    prefix="/leave-types",
+    tags=["Leave Types"],
+    dependencies=[Depends(require_permission("leave.manage"))],
+)
 
 
 class LeaveTypeFields(BaseModel):

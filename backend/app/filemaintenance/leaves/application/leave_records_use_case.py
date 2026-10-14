@@ -54,8 +54,33 @@ def calculate_available_minutes(values: dict[str, Any]) -> int:
     )
 
 
-def approved_leave_charge_minutes(requested_minutes: int, paid_minutes: int | None) -> int:
-    return paid_minutes if paid_minutes is not None else requested_minutes
+def approved_leave_charge_minutes(requested_minutes: int, available_minutes: int) -> int:
+    return min(requested_minutes, max(available_minutes, 0))
+
+
+async def _validate_leave_type_company(
+    session: Any,
+    employee_id: UUID,
+    leave_type_id: UUID,
+    leave_date: date,
+) -> None:
+    leave_type = await session.get(LeaveTypeModel, leave_type_id)
+    if leave_type is None:
+        raise ValueError("The selected leave type was not found.")
+    assigned_companies = await session.scalars(
+        select(EmploymentAssignmentModel.company_id).where(
+            EmploymentAssignmentModel.employee_id == employee_id,
+            EmploymentAssignmentModel.is_active.is_(True),
+            EmploymentAssignmentModel.status == "ACTIVE",
+            EmploymentAssignmentModel.effective_from <= leave_date,
+            EmploymentAssignmentModel.effective_to.is_(None)
+            | (EmploymentAssignmentModel.effective_to >= leave_date),
+            EmploymentAssignmentModel.separation_date.is_(None)
+            | (EmploymentAssignmentModel.separation_date >= leave_date),
+        )
+    )
+    if leave_type.company_id not in set(assigned_companies.all()):
+        raise ValueError("The selected leave type does not belong to one of the employee's assigned companies.")
 
 
 def _with_calculated_balance(entity: EmployeeEntitlementEntity) -> EmployeeEntitlementEntity:
@@ -72,6 +97,7 @@ async def _validate_entitlement_grant(
         select(EmploymentAssignmentModel)
         .where(
             EmploymentAssignmentModel.employee_id == employee_id,
+            EmploymentAssignmentModel.primary_location_id.is_not(None),
             EmploymentAssignmentModel.is_active.is_(True),
             EmploymentAssignmentModel.status == "ACTIVE",
             EmploymentAssignmentModel.effective_from <= today,
@@ -124,7 +150,6 @@ async def _post_approved_leave_charge(session: Any, application: LeaveApplicatio
     if ledger_result.scalar_one_or_none() is not None:
         return
 
-    charged_minutes = approved_leave_charge_minutes(application.requested_minutes, application.paid_minutes)
     entitlement_year = application.start_at.astimezone(ZoneInfo("Asia/Manila")).year
     entitlement_result = await session.execute(
         select(EmployeeEntitlementModel)
@@ -138,9 +163,21 @@ async def _post_approved_leave_charge(session: Any, application: LeaveApplicatio
     entitlement = entitlement_result.scalar_one_or_none()
     if entitlement is None:
         raise ValueError(
-            "Cannot approve this leave: no matching employee entitlement exists "
-            f"for {entitlement_year}."
+            "Cannot approve this leave: no matching employee entitlement exists for "
+            f"employee {application.employee_id}, leave type {application.leave_type_id}, "
+            f"and entitlement year {entitlement_year}. The entitlement must reference "
+            "the exact leave type record used by this application."
         )
+
+    available_minutes = calculate_available_minutes(
+        {field: getattr(entitlement, field) for field in BALANCE_FIELDS}
+    )
+    charged_minutes = approved_leave_charge_minutes(
+        application.requested_minutes,
+        available_minutes,
+    )
+    application.paid_minutes = charged_minutes
+    application.unpaid_minutes = application.requested_minutes - charged_minutes
 
     now = datetime.now(timezone.utc)
     entitlement.used_minutes += charged_minutes
@@ -337,10 +374,58 @@ class LeaveApplicationUseCase:
         self.uow = uow
 
     async def create(self, values: dict[str, Any]) -> LeaveApplicationEntity:
-        return await _create(self.uow, LeaveApplicationModel, LeaveApplicationEntity, values)
+        local_start = values["start_at"].astimezone(ZoneInfo("Asia/Manila"))
+        async with self.uow as active_uow:
+            session = active_uow.session
+            if session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            await _validate_leave_type_company(
+                session,
+                values["employee_id"],
+                values["leave_type_id"],
+                local_start.date(),
+            )
+            model = LeaveApplicationModel(**values)
+            session.add(model)
+            await session.flush()
+            await session.refresh(model)
+            return _to_entity(model, LeaveApplicationEntity)
 
     async def get(self, record_id: UUID) -> LeaveApplicationEntity | None:
         return await _get(self.uow, LeaveApplicationModel, LeaveApplicationEntity, record_id)
+
+    async def submit_draft_for_approval(
+        self,
+        record_id: UUID,
+        actor_id: UUID,
+    ) -> LeaveApplicationEntity | None:
+        async with self.uow as active_uow:
+            result = await active_uow.session.execute(
+                select(LeaveApplicationModel)
+                .where(LeaveApplicationModel.id == record_id)
+                .with_for_update()
+            )
+            model = result.scalar_one_or_none()
+            if model is None or not model.is_active:
+                return None
+            if model.status != "DRAFT":
+                raise ValueError("Only draft leave applications can be submitted for approval.")
+            await _validate_leave_type_company(
+                active_uow.session,
+                model.employee_id,
+                model.leave_type_id,
+                model.start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+            )
+
+            now = datetime.now(timezone.utc)
+            model.status = "PENDING"
+            model.submitted_at = now
+            model.updated_by = actor_id
+            model.updated_at = now
+            model.row_version += 1
+            await active_uow.session.flush()
+            await active_uow.session.refresh(model)
+            return _to_entity(model, LeaveApplicationEntity)
 
     async def list(
         self,
@@ -537,13 +622,32 @@ class LeaveApplicationUseCase:
                 return None
 
             next_status = values.get("status", model.status)
-            if model.status == "APPROVED" and next_status != "APPROVED":
+            next_employee_id = values.get("employee_id", model.employee_id)
+            next_leave_type_id = values.get("leave_type_id", model.leave_type_id)
+            next_start_at = values.get("start_at", model.start_at)
+            await _validate_leave_type_company(
+                active_uow.session,
+                next_employee_id,
+                next_leave_type_id,
+                next_start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+            )
+            was_approved = model.status == "APPROVED"
+            if was_approved and next_status != "APPROVED":
                 raise ValueError("An approved leave application cannot be moved back to another status.")
-            if next_status == "APPROVED":
-                await _post_approved_leave_charge(active_uow.session, model, actor_id)
+            if was_approved and {
+                "employee_id",
+                "leave_type_id",
+                "start_at",
+                "requested_minutes",
+                "paid_minutes",
+                "unpaid_minutes",
+            }.intersection(values):
+                raise ValueError("The leave entitlement charge cannot be changed after approval.")
 
             for key, value in values.items():
                 setattr(model, key, value)
+            if next_status == "APPROVED" and not was_approved:
+                await _post_approved_leave_charge(active_uow.session, model, actor_id)
             if hasattr(model, "row_version"):
                 model.row_version += 1
             if hasattr(model, "updated_at"):

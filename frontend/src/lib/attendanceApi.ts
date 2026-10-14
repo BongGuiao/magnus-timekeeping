@@ -373,6 +373,15 @@ export async function fetchAdminDashboardSnapshot(): Promise<AdminDashboardSnaps
   }
 }
 
+export async function fetchTeamDashboardSnapshot(): Promise<AdminDashboardSnapshot> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<AdminDashboardSnapshot>>('/attendance/team-dashboard')
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load team dashboard details.'))
+  }
+}
+
 export async function fetchRecentAttendanceSnapshot(): Promise<{
   entries: AttendanceLogEntry[]
   weeklyHoursWorked: number

@@ -4,6 +4,7 @@ interface StatCardProps {
   hint?: string
   icon: string
   accent?: 'indigo' | 'rose' | 'amber' | 'emerald'
+  compact?: boolean
 }
 
 const accentClasses: Record<NonNullable<StatCardProps['accent']>, { bar: string; icon: string; hint: string }> = {
@@ -13,7 +14,7 @@ const accentClasses: Record<NonNullable<StatCardProps['accent']>, { bar: string;
   emerald: { bar: 'before:bg-emerald-500', icon: 'bg-emerald-50 text-emerald-600', hint: 'text-emerald-600' },
 }
 
-export default function StatCard({ label, value, hint, icon, accent = 'indigo' }: StatCardProps) {
+export default function StatCard({ label, value, hint, icon, accent = 'indigo', compact = false }: StatCardProps) {
   const styles = accentClasses[accent]
 
   return (
@@ -21,11 +22,16 @@ export default function StatCard({ label, value, hint, icon, accent = 'indigo' }
       className={`relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 ${styles.bar}`}
     >
       <div className="flex items-start justify-between">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{label}</p>
-        <span className={`flex h-8 w-8 items-center justify-center rounded-full text-sm ${styles.icon}`}>{icon}</span>
+        <p className={compact
+          ? 'text-sm font-semibold text-slate-600'
+          : 'text-[11px] font-bold uppercase tracking-wide text-slate-400'}
+        >
+          {label}
+        </p>
+        <span className={`flex items-center justify-center rounded-full ${compact ? 'h-7 w-7 text-xs' : 'h-8 w-8 text-sm'} ${styles.icon}`}>{icon}</span>
       </div>
-      <p className="mt-3 text-2xl font-extrabold text-slate-900">{value}</p>
-      {hint && <p className={`mt-1 text-xs font-medium ${styles.hint}`}>{hint}</p>}
+      <p className={`mt-3 font-extrabold text-slate-900 ${compact ? 'text-xl' : 'text-2xl'}`}>{value}</p>
+      {hint && <p className={`mt-1 font-medium ${compact ? 'text-[11px]' : 'text-xs'} ${styles.hint}`}>{hint}</p>}
     </div>
   )
 }

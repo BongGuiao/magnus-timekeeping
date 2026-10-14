@@ -361,6 +361,17 @@ export async function createLeaveApplication(payload: LeaveApplicationPayload): 
   }
 }
 
+export async function submitLeaveApplication(applicationId: string): Promise<LeaveApplication> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<LeaveApplication>>(
+      `/leave-applications/${encodeURIComponent(applicationId)}/submit`,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not submit your leave application for approval.')
+  }
+}
+
 export async function createLeaveType(payload: LeaveTypePayload): Promise<LeaveType> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<LeaveType>>('/leave-types/create', toLeaveTypePayload(payload))

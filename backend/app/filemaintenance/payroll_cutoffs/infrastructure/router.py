@@ -10,10 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case,
+    get_current_user_claims,
+    require_permission,
+)
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
+    CalculateEmployeeCutoffResultsUseCase,
     CreatePayrollCutoffUseCase,
     GetPayrollCutoffUseCase,
     ListPayrollCutoffsUseCase,
@@ -22,14 +28,27 @@ from app.filemaintenance.payroll_cutoffs.application.use_case import (
     UpdatePayrollCutoffUseCase,
 )
 from app.filemaintenance.payroll_cutoffs.domain.entities.payroll_cutoff import PayrollCutoffEntity
+from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result import (
+    EmployeeCutoffResultEntity,
+)
 from app.filemaintenance.payroll_cutoffs.infrastructure.dependencies import (
+    get_calculate_employee_cutoff_results_use_case,
     get_create_payroll_cutoff_use_case,
     get_get_payroll_cutoff_use_case,
     get_list_payroll_cutoffs_use_case,
     get_update_payroll_cutoff_use_case,
 )
 
-router = APIRouter(prefix="/payroll-cutoffs", tags=["Payroll Cutoffs"])
+router = APIRouter(
+    prefix="/payroll-cutoffs",
+    tags=["Payroll Cutoffs"],
+    dependencies=[Depends(require_permission("payroll.manage"))],
+)
+
+acknowledgement_router = APIRouter(
+    prefix="/payroll-cutoffs",
+    tags=["Payroll Cutoff Acknowledgments"],
+)
 
 
 class CreatePayrollCutoffSchema(BaseModel):
@@ -250,4 +269,147 @@ async def get_payroll_cutoff(
     _actor_id(claims)
     _require_admin(claims)
     result = await use_case.execute(cutoff_id)
+    return ResponseEnvelope(status="success", data=result)
+
+
+@router.post(
+    "/{cutoff_id}/calculate",
+    response_model=ResponseEnvelope[list[EmployeeCutoffResultEntity]],
+    status_code=status.HTTP_200_OK,
+)
+async def calculate_employee_cutoff_results(
+    cutoff_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
+        get_calculate_employee_cutoff_results_use_case
+    ),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    _require_admin(claims)
+    try:
+        results = await use_case.calculate(cutoff_id, actor_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await log_entity_action(
+        es_client,
+        user_id=actor_id,
+        action="CALCULATE",
+        resource="employee_cutoff_results",
+        resource_id=cutoff_id,
+        after={"result_count": len(results), "calculation_version": "TIME_TOTALS_V1"},
+    )
+    return ResponseEnvelope(status="success", data=results)
+
+
+@router.get(
+    "/{cutoff_id}/results",
+    response_model=ResponseEnvelope[list[EmployeeCutoffResultEntity]],
+    status_code=status.HTTP_200_OK,
+)
+async def list_employee_cutoff_results(
+    cutoff_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
+        get_calculate_employee_cutoff_results_use_case
+    ),
+):
+    _actor_id(claims)
+    _require_admin(claims)
+    try:
+        results = await use_case.list(cutoff_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return ResponseEnvelope(status="success", data=results)
+
+
+@acknowledgement_router.get(
+    "/results/mine",
+    response_model=ResponseEnvelope[list[EmployeeCutoffResultEntity]],
+    status_code=status.HTTP_200_OK,
+)
+async def list_my_payroll_cutoff_results(
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
+        get_calculate_employee_cutoff_results_use_case
+    ),
+):
+    actor_id = _actor_id(claims)
+    try:
+        results = await use_case.list_my_results(actor_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return ResponseEnvelope(status="success", data=results)
+
+
+@acknowledgement_router.get(
+    "/results/team",
+    response_model=ResponseEnvelope[list[EmployeeCutoffResultEntity]],
+    status_code=status.HTTP_200_OK,
+)
+async def list_my_team_payroll_cutoff_results(
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
+        get_calculate_employee_cutoff_results_use_case
+    ),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
+):
+    actor_id = _actor_id(claims)
+    authorization = await authorization_use_case.execute(actor_id)
+    if not {
+        "payroll.acknowledge_team",
+        "payroll.manage",
+    }.intersection(authorization.permission_codes):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+    try:
+        results = await use_case.list_team_results(actor_id)
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return ResponseEnvelope(status="success", data=results)
+
+
+@acknowledgement_router.post(
+    "/{cutoff_id}/results/{result_id}/acknowledge",
+    response_model=ResponseEnvelope[EmployeeCutoffResultEntity],
+    status_code=status.HTTP_200_OK,
+)
+async def acknowledge_payroll_cutoff_result(
+    cutoff_id: UUID,
+    result_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
+        get_calculate_employee_cutoff_results_use_case
+    ),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    authorization = await authorization_use_case.execute(actor_id)
+    try:
+        result = await use_case.acknowledge(
+            cutoff_id,
+            result_id,
+            actor_id,
+            can_manage_payroll="payroll.manage" in authorization.permission_codes,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await log_entity_action(
+        es_client,
+        user_id=actor_id,
+        action="ACKNOWLEDGE",
+        resource="employee_cutoff_results",
+        resource_id=result_id,
+        after=result,
+    )
     return ResponseEnvelope(status="success", data=result)

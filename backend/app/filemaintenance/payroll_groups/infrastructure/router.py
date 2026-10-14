@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.payroll_groups.application.use_case import (
@@ -29,7 +29,11 @@ from app.filemaintenance.payroll_groups.infrastructure.dependencies import (
     get_update_payroll_group_use_case,
 )
 
-router = APIRouter(prefix="/payroll-groups", tags=["Payroll Groups"])
+router = APIRouter(
+    prefix="/payroll-groups",
+    tags=["Payroll Groups"],
+    dependencies=[Depends(require_permission("payroll.manage"))],
+)
 PayFrequency = Literal["WEEKLY", "BIWEEKLY", "SEMIMONTHLY", "MONTHLY"]
 RateType = Literal["MONTHLY", "DAILY", "HOURLY"]
 

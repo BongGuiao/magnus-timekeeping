@@ -16,10 +16,17 @@ class AdminDashboardRepository(Protocol):
         """Valid attendance this month for employees currently supervised by the given employee."""
         ...
 
-    async def list_pending_leaves(self) -> list[PendingLeaveSummary]: ...
+    async def list_pending_leaves(
+        self, supervisor_employee_id: UUID | None = None, today: date | None = None
+    ) -> list[PendingLeaveSummary]: ...
 
-    async def list_weekly_attendance(self, week_start: date, today: date) -> list[WeeklyAttendanceSample]:
-        """Valid attendance of every active employee from the week start through today."""
+    async def list_weekly_attendance(
+        self,
+        week_start: date,
+        today: date,
+        supervisor_employee_id: UUID | None = None,
+    ) -> list[WeeklyAttendanceSample]:
+        """Valid attendance in the period, optionally limited to a supervisor's active team."""
         ...
 
 

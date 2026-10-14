@@ -9,7 +9,7 @@ from elasticsearch import AsyncElasticsearch
 from app.audit.domain import AuditLogCreate
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import log_entity_change, stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.location.application.use_case import (
@@ -26,7 +26,11 @@ from app.filemaintenance.location.infrastructure.dependencies import (
     get_update_location_use_case,
 )
 
-router = APIRouter(prefix="/locations", tags=["Locations"])
+router = APIRouter(
+    prefix="/locations",
+    tags=["Locations"],
+    dependencies=[Depends(require_permission("company.setup"))],
+)
 
 
 def _get_user_id(claims: dict[str, Any]) -> UUID:

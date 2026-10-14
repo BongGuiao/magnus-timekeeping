@@ -32,7 +32,7 @@ from app.attendance.infrastructure.overtime_schemas import (
     OvertimeCutoffSchema,
 )
 from app.auth.domain.entities.user import Role
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.generics.mapper import ResponseEnvelope
 
 router = APIRouter()
@@ -91,7 +91,7 @@ def _attendance_item(record: OvertimeAttendance) -> RecentAttendanceItem:
 
 @router.get("/overtime-attendance-options", response_model=ResponseEnvelope[OvertimeAttendanceOptionsSchema])
 async def get_overtime_attendance_options(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("overtime.submit_own")),
     use_case: GetOvertimeAttendanceOptionsUseCase = Depends(get_overtime_attendance_options_use_case),
 ):
     with _http_errors():
@@ -117,7 +117,7 @@ async def get_overtime_attendance_options(
 async def submit_overtime_application(
     attendance_id: UUID,
     payload: OvertimeApplicationInputSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("overtime.submit_own")),
     use_case: SubmitOvertimeApplicationUseCase = Depends(get_submit_overtime_application_use_case),
 ):
     with _http_errors():
@@ -141,7 +141,7 @@ async def submit_overtime_application(
     response_model=ResponseEnvelope[list[OvertimeApplicationSchema]],
 )
 async def get_my_overtime_applications(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("overtime.submit_own")),
     use_case: ListMyOvertimeApplicationsUseCase = Depends(get_list_my_overtime_applications_use_case),
 ):
     records = await use_case.execute(ListMyOvertimeApplicationsInput(user_id=_user_id(claims)))
@@ -153,7 +153,7 @@ async def get_my_overtime_applications(
     response_model=ResponseEnvelope[list[OvertimeApplicationSchema]],
 )
 async def get_pending_overtime_applications(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("overtime.approve_team")),
     use_case: ListPendingOvertimeApplicationsUseCase = Depends(get_list_pending_overtime_applications_use_case),
 ):
     supervisor_employee_id = None
@@ -178,7 +178,7 @@ async def get_pending_overtime_applications(
 async def decide_overtime_application(
     application_id: UUID,
     payload: OvertimeApplicationDecisionSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("overtime.approve_team")),
     use_case: DecideOvertimeApplicationUseCase = Depends(get_decide_overtime_application_use_case),
 ):
     is_admin = claims.get("role") == Role.ADMIN.value

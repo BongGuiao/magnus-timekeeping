@@ -10,17 +10,17 @@ interface Props {
 
 export default function LeaveBalanceGrid({ balances, isLoading = false, error, refreshedAt }: Props) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-500">Leave Balances</h2>
         {refreshedAt && <span className="text-[11px] text-slate-400">Updated {new Date(refreshedAt).toLocaleTimeString()}</span>}
       </div>
-      {error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
+      {error && <p role="alert" className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       {isLoading ? (
-        <p className="mt-3 text-sm text-slate-500">Loading leave balances…</p>
+        <p className="mt-2 text-sm text-slate-500">Loading leave balances…</p>
       ) : balances.length === 0 ? (
-        <p className="mt-3 text-sm text-slate-500">No leave entitlements found for this year.</p>
-      ) : <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <p className="mt-2 text-sm text-slate-500">No leave entitlements found for this year.</p>
+      ) : <div className="mt-2 grid grid-cols-2 gap-2">
         {balances.map((leave) => {
           const remaining = leave.available ?? leave.allotted - leave.used
           const format = (minutes: number) => {
@@ -35,9 +35,9 @@ export default function LeaveBalanceGrid({ balances, isLoading = false, error, r
             return `${formattedValue} ${unitLabel}`
           }
           return (
-            <div key={leave.type} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-center">
+            <div key={leave.type} className="rounded-lg border border-slate-100 bg-slate-50 p-2 text-center">
               <p className="text-xs font-medium text-slate-500">{leave.label}</p>
-              <p className="mt-1 text-xl font-bold text-slate-900">{format(remaining)}</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">{format(remaining)}</p>
               <p className="text-[11px] text-slate-400">available · {format(leave.allotted)} total</p>
             </div>
           )

@@ -6,7 +6,7 @@ from elasticsearch import AsyncElasticsearch
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.companies.domain.entities.company import CompanyEntity
@@ -21,7 +21,11 @@ from app.filemaintenance.location.application.use_case import ListLocationsUseCa
 from app.filemaintenance.location.domain.entities.location import LocationEntity
 from app.filemaintenance.location.infrastructure.dependencies import get_list_locations_use_case
 
-router = APIRouter(prefix="/companies", tags=["Companies"])
+router = APIRouter(
+    prefix="/companies",
+    tags=["Companies"],
+    dependencies=[Depends(require_permission("company.setup"))],
+)
 
 
 @router.post(

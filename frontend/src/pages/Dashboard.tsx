@@ -5,6 +5,7 @@ import {
   approveSupervisorInvalidAttendance,
   decideOvertimeApplication,
   fetchPendingOvertimeApplications,
+  fetchTeamDashboardSnapshot,
   fetchSupervisorInvalidAttendance,
   fetchAdminDashboardSnapshot,
   fetchRecentAttendanceSnapshot,
@@ -37,7 +38,13 @@ import {
   LeaveRequestsCard,
   SupervisorPendingLeavesCard,
 } from '../components/dashboard/SideCards'
-import { getSelectedDashboardRole, normalizeDashboardRole, type DashboardRole } from '../types/role'
+import {
+  getSelectedDashboardRole,
+  hasAnyPermission,
+  hasPermission,
+  normalizeDashboardRole,
+  type DashboardRole,
+} from '../types/role'
 import type {
   AttendanceLogEntry,
   LeaveBalance,
@@ -52,6 +59,7 @@ interface Props {
 
 type DeviceReviewStatus = Exclude<DeviceRecord['registration_status'], 'PENDING'>
 type AdminDashboardPanel = 'no-login' | 'no-logout' | 'pending-leaves' | 'weekly-hours' | 'invalid-attendance'
+type TeamAttendancePanel = 'no-login' | 'no-logout'
 
 function formatWeeklyHours(hours: number): string {
   const totalMinutes = Math.round(hours * 60)
@@ -85,6 +93,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const { logout } = useLogout({ onLoggedOut })
   const [role, setRole] = useState<DashboardRole>(getSelectedDashboardRole)
   const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
+  const canReviewTeamLeave = hasPermission('leave.approve_team')
+  const canReviewTeamAttendance = hasPermission('attendance.read_team')
+  const canReviewTeamOvertime = hasPermission('overtime.approve_team')
+  const canReviewTeamOfficialBusiness = hasPermission('official_business.approve_team')
+  const canReadOrgAttendance = hasPermission('attendance.read_org')
   const [pendingDevices, setPendingDevices] = useState<DeviceRecord[]>([])
   const [isLoadingDevices, setIsLoadingDevices] = useState(isAdmin)
   const [hasLoadedDevices, setHasLoadedDevices] = useState(false)
@@ -96,6 +109,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [adminDashboardSnapshot, setAdminDashboardSnapshot] = useState<AdminDashboardSnapshot | null>(null)
   const [isLoadingAdminDashboard, setIsLoadingAdminDashboard] = useState(isAdmin)
   const [adminDashboardError, setAdminDashboardError] = useState<string | null>(null)
+  const [teamDashboardSnapshot, setTeamDashboardSnapshot] = useState<AdminDashboardSnapshot | null>(null)
+  const [isLoadingTeamDashboard, setIsLoadingTeamDashboard] = useState(false)
+  const [teamDashboardError, setTeamDashboardError] = useState<string | null>(null)
+  const [teamAttendancePanel, setTeamAttendancePanel] = useState<TeamAttendancePanel | null>(null)
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
@@ -109,7 +126,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [leaveDashboardError, setLeaveDashboardError] = useState<string | null>(null)
   const [leaveDashboardRefreshedAt, setLeaveDashboardRefreshedAt] = useState<string | null>(null)
   const [supervisorPendingLeaves, setSupervisorPendingLeaves] = useState<SupervisorPendingLeave[]>([])
-  const [supervisorPendingLeaveCount, setSupervisorPendingLeaveCount] = useState(0)
+  const [supervisorPendingLeaveCount, setSupervisorPendingLeaveCount] = useState<number | null>(null)
+  const [isLoadingSupervisorLeaveCount, setIsLoadingSupervisorLeaveCount] = useState(false)
   const [isLoadingSupervisorLeaves, setIsLoadingSupervisorLeaves] = useState(false)
   const [supervisorLeavesError, setSupervisorLeavesError] = useState<string | null>(null)
   const [isSupervisorLeavePanelOpen, setIsSupervisorLeavePanelOpen] = useState(false)
@@ -128,6 +146,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [pendingOfficialBusinessCount, setPendingOfficialBusinessCount] = useState<number | null>(null)
   const [savingOvertimeRequestId, setSavingOvertimeRequestId] = useState<string | null>(null)
   const showEmployeeAttendance = role === 'employee'
+  const teamWeeklyMinutesTotal = teamDashboardSnapshot?.weekly_hours.reduce(
+    (total, employee) => total + employee.minutes_worked,
+    0,
+  )
 
   useEffect(() => {
     const updateRole = () => setRole(getSelectedDashboardRole())
@@ -219,10 +241,16 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   }, [role])
 
   useEffect(() => {
-    if (role !== 'supervisor' && role !== 'manager' && !(isAdmin && role === 'administrator')) return
+    if (
+      role !== 'supervisor'
+      && role !== 'manager'
+      && !(isAdmin && role === 'administrator')
+    ) return
 
     let isCurrent = true
     const refreshPendingLeaveCount = async () => {
+      if (!canReviewTeamLeave) return
+      setIsLoadingSupervisorLeaveCount(true)
       try {
         const count = await fetchSupervisorPendingLeaveCount()
         if (!isCurrent) return
@@ -233,10 +261,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         setSupervisorLeavesError(
           error instanceof Error ? error.message : 'Could not load pending team leave applications.',
         )
+      } finally {
+        if (isCurrent) setIsLoadingSupervisorLeaveCount(false)
       }
     }
 
     const refreshInvalidAttendance = async (showLoading = false) => {
+      if (!canReviewTeamAttendance) return
       if (showLoading) setIsLoadingInvalidAttendance(true)
       try {
         const records = await fetchSupervisorInvalidAttendance()
@@ -254,6 +285,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     }
 
     const refreshOvertimeRequests = async (showLoading = false) => {
+      if (!canReviewTeamOvertime) return
       if (showLoading) setIsLoadingOvertimeRequests(true)
       try {
         const requests = await fetchPendingOvertimeApplications()
@@ -270,18 +302,18 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       }
     }
 
-    void refreshPendingLeaveCount()
-    void refreshInvalidAttendance(true)
-    void refreshOvertimeRequests(true)
+    if (canReviewTeamLeave) void refreshPendingLeaveCount()
+    if (canReviewTeamAttendance) void refreshInvalidAttendance(true)
+    if (canReviewTeamOvertime) void refreshOvertimeRequests(true)
     const refreshTimer = window.setInterval(() => {
-      void refreshPendingLeaveCount()
-      void refreshInvalidAttendance()
-      void refreshOvertimeRequests()
+      if (canReviewTeamLeave) void refreshPendingLeaveCount()
+      if (canReviewTeamAttendance) void refreshInvalidAttendance()
+      if (canReviewTeamOvertime) void refreshOvertimeRequests()
     }, 30 * 1000)
     const handleFocus = () => {
-      void refreshPendingLeaveCount()
-      void refreshInvalidAttendance()
-      void refreshOvertimeRequests()
+      if (canReviewTeamLeave) void refreshPendingLeaveCount()
+      if (canReviewTeamAttendance) void refreshInvalidAttendance()
+      if (canReviewTeamOvertime) void refreshOvertimeRequests()
     }
     window.addEventListener('focus', handleFocus)
     return () => {
@@ -289,7 +321,49 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       window.clearInterval(refreshTimer)
       window.removeEventListener('focus', handleFocus)
     }
-  }, [isAdmin, role])
+  }, [
+    canReviewTeamAttendance,
+    canReviewTeamLeave,
+    canReviewTeamOvertime,
+    isAdmin,
+    role,
+  ])
+
+  useEffect(() => {
+    if (
+      (role !== 'supervisor' && role !== 'manager')
+      || !canReviewTeamLeave
+      || !canReviewTeamAttendance
+    ) return
+
+    let isCurrent = true
+    const refreshTeamDashboard = async (showLoading: boolean) => {
+      if (showLoading) setIsLoadingTeamDashboard(true)
+      try {
+        const snapshot = await fetchTeamDashboardSnapshot()
+        if (!isCurrent) return
+        setTeamDashboardSnapshot(snapshot)
+        setTeamDashboardError(null)
+      } catch (error) {
+        if (!isCurrent) return
+        setTeamDashboardError(
+          error instanceof Error ? error.message : 'Could not load team dashboard details.',
+        )
+      } finally {
+        if (isCurrent && showLoading) setIsLoadingTeamDashboard(false)
+      }
+    }
+
+    void refreshTeamDashboard(true)
+    const refreshTimer = window.setInterval(() => void refreshTeamDashboard(false), 5 * 60 * 1000)
+    const handleFocus = () => void refreshTeamDashboard(false)
+    window.addEventListener('focus', handleFocus)
+    return () => {
+      isCurrent = false
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [canReviewTeamAttendance, canReviewTeamLeave, role])
 
   async function toggleSupervisorLeavePanel() {
     const shouldOpen = !isSupervisorLeavePanelOpen
@@ -372,7 +446,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     try {
       await decideSupervisorPendingLeave(applicationId, decision)
       setSupervisorPendingLeaves((current) => current.filter((leave) => leave.id !== applicationId))
-      setSupervisorPendingLeaveCount((current) => Math.max(0, current - 1))
+      setSupervisorPendingLeaveCount((current) => Math.max(0, (current ?? 0) - 1))
       setSupervisorLeaveDecisions((current) => {
         const { [applicationId]: _savedDecision, ...remaining } = current
         return remaining
@@ -390,7 +464,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const dashboardLeaveBalances = role === 'employee' ? leaveBalances : data.leaveBalances
 
   useEffect(() => {
-    if (!isAdmin) return
+    if (!isAdmin || !canReadOrgAttendance || !canReviewTeamLeave) return
 
     let isCurrent = true
     const refreshPendingDevices = async (showLoading: boolean) => {
@@ -419,7 +493,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       isCurrent = false
       window.clearInterval(refreshTimer)
     }
-  }, [isAdmin])
+  }, [canReadOrgAttendance, canReviewTeamLeave, isAdmin])
 
   useEffect(() => {
     if (!isAdmin) return
@@ -504,29 +578,108 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         { label: 'No Login', value: isLoadingAdminDashboard ? '…' : adminDashboardSnapshot?.no_login.length ?? '—', hint: 'Click to view this month', icon: '🚪', accent: 'rose' },
         { label: 'No Logout', value: isLoadingAdminDashboard ? '…' : adminDashboardSnapshot?.no_logout.length ?? '—', hint: 'Click to view this month', icon: '⏱️', accent: 'amber' },
         { label: 'Pending Leave', value: isLoadingAdminDashboard ? '…' : adminDashboardSnapshot?.pending_leaves.length ?? '—', hint: 'Click to view pending requests', icon: '📋', accent: 'indigo' },
-        { label: 'Invalid Attendance', value: isLoadingInvalidAttendance ? '…' : supervisorInvalidAttendance.length, hint: 'Click to review and approve', icon: '⚠️', accent: 'amber' },
+        {
+          label: 'Invalid Attendance',
+          value: isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : supervisorInvalidAttendance.length,
+          hint: 'Click to review and approve',
+          icon: '⚠️',
+          accent: 'amber',
+        },
         { label: 'Hours This Week', value: isLoadingAdminDashboard ? '…' : adminWeeklyMinutesTotal === undefined ? '—' : formatWeeklyHours(adminWeeklyMinutesTotal / 60), hint: 'Click to view employee hours', icon: '📊', accent: 'emerald' },
       ],
     },
     manager: {
       title: 'Team Overview',
-      description: 'Preview team attendance exceptions, leave requests, and work hours.',
+      description: 'Team attendance exceptions, leave approvals, and work hours.',
       metrics: [
-        { label: 'Team No Login', value: data.attendanceExceptions.noLogin, hint: 'Needs follow-up', icon: '🚪', accent: 'rose' },
-        { label: 'Team No Logout', value: data.attendanceExceptions.noLogout, hint: 'Needs follow-up', icon: '⏱️', accent: 'amber' },
-        { label: 'Leave Requests', value: data.leaveRequests.filter((request) => request.status === 'pending').length, hint: 'Pending approval', icon: '📋', accent: 'indigo' },
-        { label: 'Team Hours', value: `${data.workHours.weeklyHours}h`, hint: `Weekly target ${data.workHours.weeklyTarget}h`, icon: '📊', accent: 'emerald' },
+        {
+          label: 'Team No Login',
+          value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
+          hint: 'Click to review this month',
+          icon: '🚪',
+          accent: 'rose',
+        },
+        {
+          label: 'Team No Logout',
+          value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_logout.length ?? '—',
+          hint: 'Click to review this month',
+          icon: '⏱️',
+          accent: 'amber',
+        },
+        {
+          label: 'Leave Requests',
+          value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+          hint: 'Click to review team leave',
+          icon: '📋',
+          accent: 'indigo',
+        },
+        {
+          label: 'Invalid Attendance',
+          value: isLoadingInvalidAttendance ? '…' : supervisorInvalidAttendance.length,
+          hint: 'Click to review and approve',
+          icon: '⚠️',
+          accent: 'amber',
+        },
+        {
+          label: 'Team Hours',
+          value: isLoadingTeamDashboard
+            ? '…'
+            : teamDashboardError
+              ? 'Unavailable'
+              : teamWeeklyMinutesTotal === undefined
+                ? '—'
+                : formatWeeklyHours(teamWeeklyMinutesTotal / 60),
+          hint: 'Team hours recorded',
+          icon: '📊',
+          accent: 'emerald',
+        },
       ],
     },
     supervisor: {
       title: 'Shift Overview',
-      description: 'Preview shift attendance and the exceptions that need attention.',
+      description: 'Team attendance exceptions, pending requests, and work hours.',
       metrics: [
-        { label: 'Missing Clock-In', value: data.attendanceExceptions.noLogin, hint: 'Review attendance', icon: '🚪', accent: 'rose' },
-        { label: 'Missing Clock-Out', value: data.attendanceExceptions.noLogout, hint: 'Review attendance', icon: '⏱️', accent: 'amber' },
-        { label: 'Pending Requests', value: supervisorPendingLeaveCount, hint: 'Click to review team leave', icon: '📋', accent: 'indigo' },
-        { label: 'Invalid Attendance', value: isLoadingInvalidAttendance ? '…' : supervisorInvalidAttendance.length, hint: 'Click to review and approve', icon: '⚠️', accent: 'amber' },
-        { label: 'Hours This Week', value: `${data.workHours.weeklyHours}h`, hint: 'Shift hours recorded', icon: '📊', accent: 'emerald' },
+        {
+          label: 'Missing Clock-In',
+          value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
+          hint: 'Click to review this month',
+          icon: '🚪',
+          accent: 'rose',
+        },
+        {
+          label: 'Missing Clock-Out',
+          value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_logout.length ?? '—',
+          hint: 'Click to review this month',
+          icon: '⏱️',
+          accent: 'amber',
+        },
+        {
+          label: 'Pending Requests',
+          value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+          hint: 'Click to review team leave',
+          icon: '📋',
+          accent: 'indigo',
+        },
+        {
+          label: 'Invalid Attendance',
+          value: isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : supervisorInvalidAttendance.length,
+          hint: 'Click to review and approve',
+          icon: '⚠️',
+          accent: 'amber',
+        },
+        {
+          label: 'Hours This Week',
+          value: isLoadingTeamDashboard
+            ? '…'
+            : teamDashboardError
+              ? 'Unavailable'
+              : teamWeeklyMinutesTotal === undefined
+                ? '—'
+                : formatWeeklyHours(teamWeeklyMinutesTotal / 60),
+          hint: 'Team hours recorded',
+          icon: '📊',
+          accent: 'emerald',
+        },
       ],
     },
     employee: {
@@ -573,6 +726,22 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     },
   }
   const content = roleContent[role]
+  const visibleMetrics = content.metrics.filter((metric) => {
+    if (role === 'employee') {
+      return metric.label === 'Leave Applications'
+        ? hasPermission('leave.read_own')
+        : hasPermission('attendance.read_own')
+    }
+    if (role === 'administrator') {
+      if (metric.label === 'Pending Leave') return canReviewTeamLeave
+      if (metric.label === 'Invalid Attendance') return canReviewTeamAttendance
+      return canReadOrgAttendance
+    }
+    if (metric.label.toLowerCase().includes('leave') || metric.label === 'Pending Requests') {
+      return canReviewTeamLeave
+    }
+    return hasAnyPermission(['attendance.read_team', 'attendance.read_org'])
+  })
 
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
@@ -588,18 +757,23 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
               <p className="mt-1 text-sm text-slate-500">{content.description}</p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="inline-block w-fit rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600">
-                {isAdmin && role === 'administrator'
-                  ? 'Attendance: This month · Hours: This week'
-                  : data.attendanceExceptions.periodLabel}
+                  <span className="inline-block w-fit rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600">
+                    {role === 'supervisor' || role === 'manager'
+                      ? 'Team attendance: This month · Hours: This week'
+                      : isAdmin && role === 'administrator'
+                        ? 'Attendance: This month · Hours: This week'
+                        : data.attendanceExceptions.periodLabel}
               </span>
             </div>
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {content.metrics.map((metric) => {
+            {visibleMetrics.map((metric) => {
               const adminPanelForMetric = getAdminPanelForMetric(metric.label)
-              if (role === 'supervisor' && metric.label === 'Pending Requests') {
+              if (
+                ((role === 'supervisor' || role === 'manager') && metric.label === 'Pending Requests')
+                || (role === 'manager' && metric.label === 'Leave Requests')
+              ) {
                 return (
                   <button
                     key={metric.label}
@@ -612,7 +786,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                       <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
                       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-50 text-sm text-indigo-600">{metric.icon}</span>
                     </div>
-                    <p className="mt-3 text-2xl font-extrabold text-slate-900">{supervisorPendingLeaveCount}</p>
+                    <p className="mt-3 text-2xl font-extrabold text-slate-900">
+                      {isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—'}
+                    </p>
                     <p className="mt-1 text-xs font-medium text-indigo-600">
                       {isSupervisorLeavePanelOpen ? 'Hide approval list' : metric.hint}
                     </p>
@@ -620,7 +796,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 )
               }
 
-              if (role === 'supervisor' && metric.label === 'Invalid Attendance') {
+              if ((role === 'supervisor' || role === 'manager') && metric.label === 'Invalid Attendance') {
                 return (
                   <button
                     key={metric.label}
@@ -636,6 +812,33 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                     <p className="mt-3 text-2xl font-extrabold text-slate-900">{metric.value}</p>
                     <p className="mt-1 text-xs font-medium text-amber-700">
                       {isInvalidAttendancePanelOpen ? 'Hide approval list' : metric.hint}
+                    </p>
+                  </button>
+                )
+              }
+
+              if (
+                (role === 'supervisor' && (metric.label === 'Missing Clock-In' || metric.label === 'Missing Clock-Out'))
+                || (role === 'manager' && (metric.label === 'Team No Login' || metric.label === 'Team No Logout'))
+              ) {
+                const panel: TeamAttendancePanel = metric.label === 'Missing Clock-In' || metric.label === 'Team No Login'
+                  ? 'no-login'
+                  : 'no-logout'
+                return (
+                  <button
+                    key={metric.label}
+                    type="button"
+                    aria-expanded={teamAttendancePanel === panel}
+                    onClick={() => setTeamAttendancePanel((current) => current === panel ? null : panel)}
+                    className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-rose-500 hover:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-300"
+                  >
+                    <div className="flex items-start justify-between">
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-sm text-rose-600">{metric.icon}</span>
+                    </div>
+                    <p className="mt-3 text-2xl font-extrabold text-slate-900">{metric.value}</p>
+                    <p className="mt-1 text-xs font-medium text-rose-600">
+                      {teamAttendancePanel === panel ? 'Hide details' : metric.hint}
                     </p>
                   </button>
                 )
@@ -685,7 +888,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </p>
               </button>
             )}
-            {(role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
+            {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
               <button
                 type="button"
                 aria-expanded={isOvertimeApprovalPanelOpen}
@@ -699,14 +902,14 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                   </span>
                 </div>
                 <p className="mt-3 text-2xl font-extrabold text-slate-900">
-                  {isLoadingOvertimeRequests ? '…' : pendingOvertimeRequests.length}
+                  {isLoadingOvertimeRequests ? '…' : overtimeRequestsError ? 'Unavailable' : pendingOvertimeRequests.length}
                 </p>
                 <p className="mt-1 text-xs font-medium text-emerald-700">
                   {isOvertimeApprovalPanelOpen ? 'Hide approval list' : 'Review overtime requests'}
                 </p>
               </button>
             )}
-            {(role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
+            {canReviewTeamOfficialBusiness && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
               <button
                 type="button"
                 aria-expanded={isOfficialBusinessPanelOpen}
@@ -730,7 +933,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </div>
         </section>
 
-        {(role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOvertimeApprovalPanelOpen && (
+        {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOvertimeApprovalPanelOpen && (
           <OvertimeApprovalsPanel
             requests={pendingOvertimeRequests}
             isLoading={isLoadingOvertimeRequests}
@@ -740,8 +943,84 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           />
         )}
 
-        {(role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOfficialBusinessPanelOpen && (
+        {canReviewTeamOfficialBusiness && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOfficialBusinessPanelOpen && (
           <OfficialBusinessApprovalsPanel onPendingCountChange={setPendingOfficialBusinessCount} />
+        )}
+
+        {(role === 'supervisor' || role === 'manager') && teamAttendancePanel !== null && (
+          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900">
+                  {teamAttendancePanel === 'no-login' ? 'Team members with no clock-in' : 'Team members with no clock-out'}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">Attendance exceptions recorded this month.</p>
+                {teamDashboardSnapshot && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Snapshot refreshed {new Date(teamDashboardSnapshot.refreshed_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setTeamAttendancePanel(null)}
+                className="w-fit rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+            {teamDashboardError && (
+              <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {teamDashboardError}
+              </p>
+            )}
+            {isLoadingTeamDashboard && !teamDashboardSnapshot ? (
+              <p className="mt-5 text-sm text-slate-500">Loading team attendance…</p>
+            ) : teamDashboardError && !teamDashboardSnapshot ? null : (
+              (() => {
+                const records = teamAttendancePanel === 'no-login'
+                  ? teamDashboardSnapshot?.no_login ?? []
+                  : teamDashboardSnapshot?.no_logout ?? []
+                return records.length === 0 ? (
+                  <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    No matching attendance records.
+                  </p>
+                ) : (
+                  <div className="mt-5 overflow-x-auto">
+                    <table className="w-full min-w-[680px] text-left text-sm">
+                      <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                        <tr>
+                          <th className="px-3 py-3">Employee</th>
+                          <th className="px-3 py-3">Date</th>
+                          <th className="px-3 py-3">Clock in</th>
+                          <th className="px-3 py-3">Clock out</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {records.map((record) => (
+                          <tr key={`${record.employee_id}-${record.work_date}`}>
+                            <td className="px-3 py-3">
+                              <p className="font-semibold text-slate-900">{record.employee_name}</p>
+                              <p className="text-xs text-slate-500">{record.employee_code}</p>
+                            </td>
+                            <td className="px-3 py-3 text-slate-600">
+                              {new Date(`${record.work_date}T00:00:00+08:00`).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila' })}
+                            </td>
+                            <td className="px-3 py-3 text-slate-600">
+                              {record.time_in ? new Date(record.time_in).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' }) : '—'}
+                            </td>
+                            <td className="px-3 py-3 text-slate-600">
+                              {record.time_out ? new Date(record.time_out).toLocaleTimeString('en-PH', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' }) : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })()
+            )}
+          </section>
         )}
 
         {isAdmin && role === 'administrator' && adminPanel !== null && (
@@ -961,7 +1240,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {role === 'supervisor' && isSupervisorLeavePanelOpen && (
+        {(role === 'supervisor' || role === 'manager') && canReviewTeamLeave && isSupervisorLeavePanelOpen && (
           <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
@@ -971,7 +1250,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </p>
               </div>
               <span className="w-fit rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                {supervisorPendingLeaveCount} pending
+                {isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—'} pending
               </span>
             </div>
 
@@ -1054,7 +1333,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {role === 'supervisor' && isInvalidAttendancePanelOpen && (
+        {(role === 'supervisor' || role === 'manager') && canReviewTeamAttendance && isInvalidAttendancePanelOpen && (
           <section className="mt-6 rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
@@ -1274,12 +1553,33 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           <div className="space-y-6 lg:col-span-2">
             {role === 'employee' ? (
               <>
-                <LeaveBalanceGrid
-                  balances={dashboardLeaveBalances}
-                  isLoading={isLoadingLeaveDashboard}
-                  error={leaveDashboardError}
-                  refreshedAt={leaveDashboardRefreshedAt}
-                />
+                <div className={hasPermission('payroll.read_own') ? 'grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3' : ''}>
+                  <div className={hasPermission('payroll.read_own') ? 'lg:col-span-1' : ''}>
+                    <LeaveBalanceGrid
+                      balances={dashboardLeaveBalances}
+                      isLoading={isLoadingLeaveDashboard}
+                      error={leaveDashboardError}
+                      refreshedAt={leaveDashboardRefreshedAt}
+                    />
+                  </div>
+                  {hasPermission('payroll.read_own') && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate?.('payroll-review')}
+                      aria-label="Open Payroll Review"
+                      className="rounded-xl text-left transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 lg:col-span-2"
+                    >
+                      <StatCard
+                        label="Payroll Review"
+                        value="Review now"
+                        hint="Acknowledge your payroll calculations"
+                        icon="📊"
+                        accent="emerald"
+                        compact
+                      />
+                    </button>
+                  )}
+                </div>
                 <WorkHoursCard
                   hours={data.workHours}
                   weeklyHoursWorked={weeklyHoursWorked}
@@ -1292,6 +1592,45 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                   refreshedAt={attendanceSnapshotRefreshedAt}
                 />
               </>
+            ) : role === 'supervisor' || role === 'manager' ? (
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="text-lg font-extrabold text-slate-900">Team hours this week</h2>
+                <p className="mt-1 text-sm text-slate-500">Recorded hours for your currently assigned direct reports.</p>
+                {teamDashboardError && (
+                  <p role="alert" className="mt-4 text-sm text-rose-700">{teamDashboardError}</p>
+                )}
+                {isLoadingTeamDashboard && !teamDashboardSnapshot ? (
+                  <p className="mt-5 text-sm text-slate-500">Loading team hours…</p>
+                ) : teamDashboardSnapshot?.weekly_hours.length ? (
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="w-full min-w-[520px] text-left text-sm">
+                      <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                        <tr>
+                          <th className="px-3 py-3">Employee</th>
+                          <th className="px-3 py-3 text-right">Hours recorded</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {teamDashboardSnapshot.weekly_hours.map((employee) => (
+                          <tr key={employee.employee_id}>
+                            <td className="px-3 py-3">
+                              <p className="font-semibold text-slate-900">{employee.employee_name}</p>
+                              <p className="text-xs text-slate-500">{employee.employee_code}</p>
+                            </td>
+                            <td className="px-3 py-3 text-right text-slate-700">
+                              {formatWeeklyHours(employee.minutes_worked / 60)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : !teamDashboardError ? (
+                  <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    No team hours have been recorded this week.
+                  </p>
+                ) : null}
+              </section>
             ) : (
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-500">Role preview</h2>
@@ -1304,7 +1643,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </div>
 
           <div className="space-y-6">
-            {role === 'employee' && (
+            {role === 'employee' && hasPermission('overtime.submit_own') && (
               <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-500">My Overtime Applications</h2>
                 <p className="mt-2 text-xs leading-5 text-slate-500">Apply using completed attendance and track your approval status.</p>
@@ -1313,7 +1652,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </button>
               </section>
             )}
-            {role === 'employee' && (
+            {role === 'employee' && hasPermission('official_business.submit_own') && (
               <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-500">My Official Business</h2>
                 <p className="mt-2 text-xs leading-5 text-slate-500">File client visits and field work outside your usual workplace, then track approval.</p>
@@ -1322,20 +1661,24 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </button>
               </section>
             )}
-            {role === 'supervisor' ? (
+            {(role === 'supervisor' || role === 'manager') && canReviewTeamLeave ? (
               <SupervisorPendingLeavesCard
                 applications={supervisorPendingLeaves}
                 isLoading={isLoadingSupervisorLeaves}
                 error={supervisorLeavesError}
               />
-            ) : role !== 'administrator' ? (
+            ) : role === 'employee' && hasPermission('leave.read_own') ? (
               <LeaveRequestsCard
                 requests={dashboardLeaveRequests}
-                onApply={role === 'employee' ? () => onNavigate?.('leave-application') : undefined}
+                onApply={() => onNavigate?.('leave-application')}
               />
             ) : null}
-            <HolidaysCard holidays={data.upcomingHolidays} />
-            <AnnouncementsCard announcements={data.announcements} />
+            {role === 'employee' && (
+              <>
+                <HolidaysCard holidays={data.upcomingHolidays} />
+                <AnnouncementsCard announcements={data.announcements} />
+              </>
+            )}
           </div>
         </div>
       </main>

@@ -19,8 +19,7 @@ from app.attendance.infrastructure.dependencies import (
     get_recent_attendance_snapshot_use_case,
 )
 from app.attendance.infrastructure.http_errors import http_errors
-from app.auth.domain.entities.user import Role
-from app.auth.infrastructure.dependencies import get_current_user_claims, require_role
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.generics.mapper import ResponseEnvelope
 
 router = APIRouter()
@@ -115,13 +114,12 @@ def _dashboard_schema(dashboard: AdminDashboard) -> AdminDashboardSnapshotSchema
 @router.get(
     "/admin-dashboard",
     response_model=ResponseEnvelope[AdminDashboardSnapshotSchema],
+    dependencies=[Depends(require_permission("leave.approve_team"))],
 )
 async def get_admin_dashboard_snapshot(
-    claims: dict = Depends(require_role([Role.ADMIN])),
+    claims: dict = Depends(require_permission("attendance.read_org")),
     use_case: GetAdminDashboardUseCase = Depends(get_admin_dashboard_use_case),
 ):
-    if claims.get("role") != Role.ADMIN.value:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
     try:
         supervisor_employee_id = UUID(str(claims["employee_id"]))
     except (KeyError, TypeError, ValueError) as error:
@@ -135,12 +133,35 @@ async def get_admin_dashboard_snapshot(
 
 
 @router.get(
+    "/team-dashboard",
+    response_model=ResponseEnvelope[AdminDashboardSnapshotSchema],
+    dependencies=[Depends(require_permission("leave.approve_team"))],
+)
+async def get_team_dashboard_snapshot(
+    claims: dict = Depends(require_permission("attendance.read_team")),
+    use_case: GetAdminDashboardUseCase = Depends(get_admin_dashboard_use_case),
+):
+    try:
+        supervisor_employee_id = UUID(str(claims["employee_id"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not linked to an employee profile.",
+        ) from error
+
+    dashboard = await use_case.execute(
+        GetAdminDashboardInput(supervisor_employee_id=supervisor_employee_id, team_scope=True)
+    )
+    return ResponseEnvelope(status="success", data=_dashboard_schema(dashboard))
+
+
+@router.get(
     "/recent",
     response_model=ResponseEnvelope[RecentAttendanceSnapshot],
 )
 async def get_recent_attendance_snapshot(
     force_refresh: bool = Query(default=False),
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("attendance.read_own")),
     use_case: GetRecentAttendanceSnapshotUseCase = Depends(get_recent_attendance_snapshot_use_case),
 ):
     try:

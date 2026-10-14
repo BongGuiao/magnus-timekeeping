@@ -19,7 +19,10 @@ from app.attendance.domain.entities.admin_dashboard import (
     WeeklyAttendanceSample,
 )
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
-from app.attendance.infrastructure.attendance_dashboard_router import get_admin_dashboard_snapshot
+from app.attendance.infrastructure.attendance_dashboard_router import (
+    get_admin_dashboard_snapshot,
+    get_team_dashboard_snapshot,
+)
 
 # Wednesday 2026-10-14 in Manila (UTC+8).
 NOW = datetime(2026, 10, 14, 4, tzinfo=timezone.utc)
@@ -110,12 +113,12 @@ class FakeDashboardRepository:
         self.calls.append(("team", supervisor_employee_id, today, month_start))
         return self.team
 
-    async def list_pending_leaves(self):
-        self.calls.append(("leaves",))
+    async def list_pending_leaves(self, supervisor_employee_id=None, today=None):
+        self.calls.append(("leaves", supervisor_employee_id, today))
         return self.leaves
 
-    async def list_weekly_attendance(self, week_start, today):
-        self.calls.append(("weekly", week_start, today))
+    async def list_weekly_attendance(self, week_start, today, supervisor_employee_id=None):
+        self.calls.append(("weekly", week_start, today, supervisor_employee_id))
         return self.weekly
 
 
@@ -138,7 +141,19 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
             GetAdminDashboardInput(supervisor)
         )
         self.assertEqual(repository.calls[0], ("team", supervisor, date(2026, 10, 14), date(2026, 10, 1)))
-        self.assertEqual(repository.calls[2], ("weekly", date(2026, 10, 12), date(2026, 10, 14)))
+        self.assertEqual(repository.calls[2], ("weekly", date(2026, 10, 12), date(2026, 10, 14), None))
+
+    async def test_team_scope_filters_pending_leaves_and_weekly_hours_to_the_supervisor(self):
+        repository = FakeDashboardRepository()
+        supervisor = uuid4()
+        await GetAdminDashboardUseCase(FakeUnitOfWork(repository), clock=lambda: NOW).execute(
+            GetAdminDashboardInput(supervisor, team_scope=True)
+        )
+        self.assertEqual(repository.calls[1], ("leaves", supervisor, date(2026, 10, 14)))
+        self.assertEqual(
+            repository.calls[2],
+            ("weekly", date(2026, 10, 12), date(2026, 10, 14), supervisor),
+        )
 
     async def test_month_boundary_uses_manila_date_not_utc(self):
         late_utc = datetime(2026, 10, 31, 17, tzinfo=timezone.utc)
@@ -191,3 +206,16 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
                 await get_admin_dashboard_snapshot(claims=claims, use_case=use_case)
             self.assertEqual(error.exception.status_code, 403)
         use_case.execute.assert_not_awaited()
+
+    async def test_team_dashboard_requests_team_scoped_data(self):
+        dashboard = AdminDashboard(refreshed_at=NOW)
+        use_case = MagicMock(execute=AsyncMock(return_value=dashboard))
+        employee_id = uuid4()
+        await get_team_dashboard_snapshot(
+            claims={"employee_id": str(employee_id)},
+            use_case=use_case,
+        )
+        self.assertEqual(
+            use_case.execute.await_args.args[0],
+            GetAdminDashboardInput(employee_id, team_scope=True),
+        )

@@ -30,6 +30,7 @@ def total_weekly_minutes(samples: Iterable[WeeklyAttendanceSample]) -> list[Empl
 @dataclass
 class GetAdminDashboardInput:
     supervisor_employee_id: UUID
+    team_scope: bool = False
 
 
 class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
@@ -46,8 +47,16 @@ class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
             team_days = await uow.dashboard.list_team_attendance(
                 data.supervisor_employee_id, today, month_start
             )
-            pending_leaves = await uow.dashboard.list_pending_leaves()
-            weekly_samples = await uow.dashboard.list_weekly_attendance(week_start, today)
+            supervisor_employee_id = data.supervisor_employee_id if data.team_scope else None
+            pending_leaves = await uow.dashboard.list_pending_leaves(
+                supervisor_employee_id=supervisor_employee_id,
+                today=today if data.team_scope else None,
+            )
+            weekly_samples = await uow.dashboard.list_weekly_attendance(
+                week_start,
+                today,
+                supervisor_employee_id=supervisor_employee_id,
+            )
 
         no_login, no_logout = classify_attendance_exceptions(team_days, now)
         return AdminDashboard(

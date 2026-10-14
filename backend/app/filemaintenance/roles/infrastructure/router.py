@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.domain.entities.user import RoleEntity, UserRoleEntity
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.roles.application.use_case import (
     CreateUserRoleUseCase,
@@ -27,7 +27,11 @@ from app.filemaintenance.roles.infrastructure.dependencies import (
     get_update_user_role_use_case,
 )
 
-router = APIRouter(prefix="/user-roles", tags=["User Roles"])
+router = APIRouter(
+    prefix="/user-roles",
+    tags=["User Roles"],
+    dependencies=[Depends(require_permission("system.manage"))],
+)
 
 
 class CreateUserRoleSchema(BaseModel):

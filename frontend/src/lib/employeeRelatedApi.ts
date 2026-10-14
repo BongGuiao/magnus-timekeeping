@@ -28,15 +28,27 @@ export async function fetchEmploymentAssignments(employeeId: string): Promise<Em
 }
 
 export async function fetchCurrentEmploymentAssignment(employeeId: string): Promise<EmploymentAssignment | null> {
+  const assignments = await fetchCurrentEmploymentAssignments(employeeId)
+  return assignments[0] ?? null
+}
+
+export async function fetchCurrentEmploymentAssignmentWithPrimaryLocation(
+  employeeId: string,
+): Promise<EmploymentAssignment | null> {
+  const assignments = await fetchCurrentEmploymentAssignments(employeeId)
+  return assignments.find((assignment) => assignment.primary_location_id !== null) ?? null
+}
+
+export async function fetchCurrentEmploymentAssignments(employeeId: string): Promise<EmploymentAssignment[]> {
   const assignments = await fetchEmploymentAssignments(employeeId)
   const today = getManilaDate()
-  return assignments.find((assignment) =>
+  return assignments.filter((assignment) =>
     assignment.is_active
     && assignment.status === 'ACTIVE'
     && assignment.effective_from <= today
     && (!assignment.effective_to || assignment.effective_to >= today)
     && (!assignment.separation_date || assignment.separation_date >= today),
-  ) ?? null
+  )
 }
 
 export function getManilaDate(asOf = new Date()): string {

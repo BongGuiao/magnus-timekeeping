@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useLogout } from './hooks/useLogout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Enrollment from './pages/Enrollment'
@@ -15,16 +16,18 @@ import OvertimeApplication from './pages/OvertimeApplication'
 import OfficialBusiness from './pages/OfficialBusiness'
 import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
+import PayrollResultsReview from './pages/PayrollResultsReview'
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
 import type { NavView } from './components/dashboard/TopNav'
-import { getSelectedDashboardRole, hasEmployeeRoleCode } from './types/role'
+import { fetchCurrentAuthorization } from './lib/authApi'
+import { getSelectedDashboardRole, hasAnyPermission, hasEmployeeRoleCode, hasPermission } from './types/role'
 
 const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'companies', 'org-units', 'locations',
   'geofences', 'employees', 'leave-management', 'employee-entitlements',
-  'leave-application', 'payroll-groups', 'payroll-cutoffs', 'schedule-templates', 'rest-day-patterns',
+  'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
   'overtime-application', 'official-business', 'change-password',
 ]
 
@@ -35,8 +38,47 @@ function getStoredView(): NavView {
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('access_token')))
+  const [isAuthorizationLoaded, setIsAuthorizationLoaded] = useState(
+    () => !Boolean(localStorage.getItem('access_token')),
+  )
   const [employeeName, setEmployeeName] = useState(() => localStorage.getItem('employee_name') ?? '')
   const [view, setView] = useState<NavView>(getStoredView)
+  const [authorizationError, setAuthorizationError] = useState(false)
+  const [authorizationRefreshKey, setAuthorizationRefreshKey] = useState(0)
+  const { logout } = useLogout({
+    onLoggedOut: () => {
+      sessionStorage.removeItem('active_view')
+      setEmployeeName('')
+      setIsAuthenticated(false)
+    },
+  })
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setIsAuthorizationLoaded(true)
+      return
+    }
+    let isCurrent = true
+    setAuthorizationError(false)
+    fetchCurrentAuthorization()
+      .then((authorization) => {
+        if (!isCurrent) return
+        localStorage.setItem('role_codes', JSON.stringify(authorization.role_codes))
+        localStorage.setItem('permission_codes', JSON.stringify(authorization.permission_codes))
+        setIsAuthorizationLoaded(true)
+      })
+      .catch(() => {
+        if (!isCurrent) return
+        localStorage.removeItem('permission_codes')
+        setView('dashboard')
+        sessionStorage.setItem('active_view', 'dashboard')
+        setAuthorizationError(true)
+        setIsAuthorizationLoaded(true)
+      })
+    return () => {
+      isCurrent = false
+    }
+  }, [authorizationRefreshKey, isAuthenticated])
 
   function navigateTo(nextView: NavView) {
     sessionStorage.setItem('active_view', nextView)
@@ -55,84 +97,131 @@ function App() {
     )
   }
 
-  const onLoggedOut = () => {
-    sessionStorage.removeItem('active_view')
-    setIsAuthenticated(false)
+  if (!isAuthorizationLoaded) return null
+
+  if (authorizationError) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h1 className="text-lg font-bold text-slate-900">Access permissions unavailable</h1>
+          <p role="alert" className="mt-2 text-sm text-slate-600">
+            We couldn&apos;t load your current access permissions. Retry, or sign in again.
+          </p>
+          <div className="mt-5 flex gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthorizationError(false)
+                setIsAuthorizationLoaded(false)
+                setAuthorizationRefreshKey((current) => current + 1)
+              }}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={logout}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+            >
+              Sign out
+            </button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  const requiredPermissionByView: Partial<Record<NavView, string | string[]>> = {
+    attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+    companies: 'company.setup',
+    'org-units': 'company.setup',
+    locations: 'company.setup',
+    geofences: 'company.setup',
+    employees: 'employees.read',
+    'payroll-groups': 'payroll.manage',
+    'payroll-cutoffs': 'payroll.manage',
+    'payroll-review': ['payroll.read_own', 'payroll.acknowledge_team'],
+    'schedule-templates': 'schedule.manage',
+    'rest-day-patterns': 'schedule.manage',
+    'leave-management': 'leave.manage',
+    'employee-entitlements': 'leave.manage',
+    'leave-application': 'leave.submit',
+    'overtime-application': 'overtime.submit_own',
+    'official-business': 'official_business.submit_own',
+  }
+  const requiredPermission = requiredPermissionByView[view]
+  const hasRequiredPermission = typeof requiredPermission === 'string'
+    ? hasPermission(requiredPermission)
+    : requiredPermission
+      ? hasAnyPermission(requiredPermission)
+      : true
+  if (!hasRequiredPermission) {
+    return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'change-password') {
-    return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'enrollment') {
-    return <Enrollment employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Enrollment employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'attendance') {
-    return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'companies') {
-    return <Companies employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Companies employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'org-units') {
-    return <OrgUnits employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <OrgUnits employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'locations') {
-    return <Locations employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Locations employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'geofences') {
-    return <Geofences employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Geofences employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'employees') {
-    return <Employees employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <Employees employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'leave-management' || view === 'employee-entitlements') {
-    if (localStorage.getItem('role') !== 'admin') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
-    }
     if (view === 'leave-management') {
-      return <LeaveManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+      return <LeaveManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
-    return <EmployeeEntitlements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <EmployeeEntitlements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'payroll-groups') {
-    if (localStorage.getItem('role') !== 'admin') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
-    }
-    return <PayrollGroups employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <PayrollGroups employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'payroll-cutoffs') {
-    if (localStorage.getItem('role') !== 'admin') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
-    }
-    return <PayrollCutoffs employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <PayrollCutoffs employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'payroll-review') {
+    return <PayrollResultsReview employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'schedule-templates') {
-    if (localStorage.getItem('role') !== 'admin') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
-    }
-    return <ScheduleTemplates employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <ScheduleTemplates employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'rest-day-patterns') {
-    if (localStorage.getItem('role') !== 'admin') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
-    }
-    return <RestDayPatterns employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+    return <RestDayPatterns employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'leave-application') {
     if (getSelectedDashboardRole() !== 'employee') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     return (
@@ -140,36 +229,36 @@ function App() {
         employeeName={employeeName}
         previewOnly={!hasEmployeeRoleCode()}
         onNavigate={navigateTo}
-        onLoggedOut={onLoggedOut}
+        onLoggedOut={logout}
       />
     )
   }
 
   if (view === 'overtime-application') {
     if (getSelectedDashboardRole() !== 'employee') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
     return <OvertimeApplication
       employeeName={employeeName}
       previewOnly={!hasEmployeeRoleCode()}
       onNavigate={navigateTo}
-      onLoggedOut={onLoggedOut}
+      onLoggedOut={logout}
     />
   }
 
   if (view === 'official-business') {
     if (getSelectedDashboardRole() !== 'employee') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
     return <OfficialBusiness
       employeeName={employeeName}
       previewOnly={!hasEmployeeRoleCode()}
       onNavigate={navigateTo}
-      onLoggedOut={onLoggedOut}
+      onLoggedOut={logout}
     />
   }
 
-  return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={onLoggedOut} />
+  return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
 }
 
 export default App

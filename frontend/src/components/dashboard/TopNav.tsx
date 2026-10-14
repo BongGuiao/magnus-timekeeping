@@ -5,9 +5,11 @@ import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
 import {
   getAvailableRoleCodes,
+  canPreviewDashboardRoles,
+  hasPermission,
+  hasAnyPermission,
   getSelectedDashboardRoleCode,
-  getSelectedDashboardRole,
-  type DashboardRole,
+  normalizeDashboardRole,
 } from '../../types/role'
 
 export type NavView =
@@ -21,6 +23,7 @@ export type NavView =
   | 'employees'
   | 'payroll-groups'
   | 'payroll-cutoffs'
+  | 'payroll-review'
   | 'schedule-templates'
   | 'rest-day-patterns'
   | 'leave-management'
@@ -45,6 +48,7 @@ const companySetupViews: NavView[] = [
 interface NavLink {
   label: string
   view?: NavView
+  permission?: string | string[]
   hasDropdown?: boolean
   children?: NavLink[]
 }
@@ -54,14 +58,18 @@ const navLinks: NavLink[] = [
   {
     label: 'Timekeeping',
     children: [
-      { label: 'Attendance', view: 'attendance' },
+      {
+        label: 'Attendance',
+        view: 'attendance',
+        permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      },
     ],
   },
   { label: 'Reports', hasDropdown: true },
   {
     label: 'People',
     children: [
-      { label: 'Employees', view: 'employees' },
+      { label: 'Employees', view: 'employees', permission: 'employees.read' },
     ],
   },
   {
@@ -74,25 +82,25 @@ const navLinks: NavLink[] = [
           {
             label: 'Organization',
             children: [
-              { label: 'Companies', view: 'companies' },
-              { label: 'Org Units', view: 'org-units' },
-              { label: 'Locations', view: 'locations' },
-              { label: 'Geofences', view: 'geofences' },
+              { label: 'Companies', view: 'companies', permission: 'company.setup' },
+              { label: 'Org Units', view: 'org-units', permission: 'company.setup' },
+              { label: 'Locations', view: 'locations', permission: 'company.setup' },
+              { label: 'Geofences', view: 'geofences', permission: 'company.setup' },
             ],
           },
           {
             label: 'Payroll',
             children: [
-              { label: 'Payroll Groups', view: 'payroll-groups' },
-              { label: 'Payroll Cutoffs', view: 'payroll-cutoffs' },
+              { label: 'Payroll Groups', view: 'payroll-groups', permission: 'payroll.manage' },
+              { label: 'Payroll Cutoffs', view: 'payroll-cutoffs', permission: 'payroll.manage' },
             ],
           },
           {
             label: 'Work Rules',
             children: [
-              { label: 'Schedule Templates', view: 'schedule-templates' },
-              { label: 'Rest Day Patterns', view: 'rest-day-patterns' },
-              { label: 'Leave Management', view: 'leave-management' },
+              { label: 'Schedule Templates', view: 'schedule-templates', permission: 'schedule.manage' },
+              { label: 'Rest Day Patterns', view: 'rest-day-patterns', permission: 'schedule.manage' },
+              { label: 'Leave Management', view: 'leave-management', permission: 'leave.manage' },
             ],
           },
         ],
@@ -119,10 +127,10 @@ function DashboardRoleSelect({
 }) {
   return (
     <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
-      <span className="sr-only">Preview dashboard as</span>
+      <span className="sr-only">Choose an assigned dashboard role</span>
       <span aria-hidden="true">View as</span>
       <select
-        aria-label="Preview dashboard as role"
+        aria-label="View dashboard as assigned role"
         value={roleCode}
         disabled={roleCodes.length === 0}
         onChange={(event) => onChange(event.target.value)}
@@ -149,37 +157,38 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
   const [companyLoadError, setCompanyLoadError] = useState('')
   const [roleCode, setRoleCode] = useState<string>(getSelectedDashboardRoleCode)
   const roleCodes = getAvailableRoleCodes()
-  const role: DashboardRole = getSelectedDashboardRole()
-  const hasLeaveAdminAccess = localStorage.getItem('role') === 'admin'
+  const canPreviewRoles = canPreviewDashboardRoles()
+  const hasMultipleAssignedDashboardRoles = new Set(
+    roleCodes.map((availableRoleCode) => normalizeDashboardRole(availableRoleCode)),
+  ).size > 1
+  const showDashboardRoleSelect = canPreviewRoles || hasMultipleAssignedDashboardRoles
   const { companyId, selectCompany } = useCompanySetupSelection()
   const isCompanySetupView = companySetupViews.includes(activeView)
-  const visibleNavLinks = navLinks.map((link) => {
-    const children = link.children?.map((child) => {
-      if (child.label !== 'Company Setup') return child
-      const setupChildren = child.children?.map((section) => ({
-        ...section,
-        children: section.children?.filter((setupChild) =>
-          (setupChild.view !== 'leave-management' && setupChild.view !== 'payroll-groups'
-            && setupChild.view !== 'payroll-cutoffs' && setupChild.view !== 'schedule-templates'
-            && setupChild.view !== 'rest-day-patterns')
-          || hasLeaveAdminAccess,
-        ),
-      })).filter((section) => (section.children?.length ?? 0) > 0)
-      return {
-        ...child,
-        children: companyId
-          ? setupChildren
-          : setupChildren?.map((section) => ({
-            ...section,
-            children: section.children?.filter((setupChild) => setupChild.view === 'companies'),
-          })).filter((section) => (section.children?.length ?? 0) > 0),
-      }
-    })
+  const filterByPermission = (link: NavLink): NavLink | null => {
+    if (typeof link.permission === 'string' && !hasPermission(link.permission)) return null
+    if (Array.isArray(link.permission) && !hasAnyPermission(link.permission)) return null
+    const children = link.children?.map(filterByPermission).filter((child): child is NavLink => child !== null)
+    if (link.children && children?.length === 0) return null
     return { ...link, children }
-  }).filter((link) => {
-    if (link.view === 'leave-application') return role === 'employee'
-    return link.children === undefined || link.children.length > 0
-  })
+  }
+  const visibleNavLinks = navLinks
+    .map(filterByPermission)
+    .filter((link): link is NavLink => link !== null)
+    .map((link) => {
+      const children = link.children?.map((child) => {
+        if (child.label !== 'Company Setup') return child
+        return {
+          ...child,
+          children: companyId
+            ? child.children
+            : child.children?.map((section) => ({
+              ...section,
+              children: section.children?.filter((setupChild) => setupChild.view === 'companies'),
+            })).filter((section) => (section.children?.length ?? 0) > 0),
+        }
+      })
+      return { ...link, children }
+    })
   const companySetupSections = visibleNavLinks
     .find((link) => link.label === 'Settings')
     ?.children?.find((link) => link.label === 'Company Setup')
@@ -338,7 +347,9 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
           <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden text-right leading-tight sm:block">
               <p className="text-sm font-semibold text-slate-900">{employeeName}</p>
-              <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
+              {showDashboardRoleSelect && (
+                <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
+              )}
             </div>
             <button
               type="button"
@@ -395,7 +406,9 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
           <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3 sm:hidden">
             <div className="leading-tight">
               <p className="text-sm font-semibold text-slate-900">{employeeName}</p>
-              <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
+              {showDashboardRoleSelect && (
+                <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
+              )}
             </div>
             <div className="flex items-center gap-4">
               <button type="button" onClick={signOut} className="text-sm font-semibold text-rose-600">

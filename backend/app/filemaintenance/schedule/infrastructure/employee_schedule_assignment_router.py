@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.schedule.application.employee_schedule_assignment_use_case import (
@@ -37,6 +37,7 @@ from app.filemaintenance.schedule.infrastructure.dependencies import (
 router = APIRouter(
     prefix="/employee-schedule-assignments",
     tags=["Employee Schedule Assignments"],
+    dependencies=[Depends(require_permission("schedule.manage"))],
 )
 
 

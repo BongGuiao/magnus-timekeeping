@@ -13,7 +13,7 @@ from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.domain.entities.user import Role
 from app.auth.infrastructure.db_model import UserModel
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import (
@@ -426,7 +426,7 @@ async def _own_request(
 
 @router.get("/options", response_model=ResponseEnvelope[OfficialBusinessOptionsSchema])
 async def get_official_business_options(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     user_id = _user_id(claims)
@@ -493,7 +493,7 @@ async def get_official_business_options(
 
 @router.get("", response_model=ResponseEnvelope[list[OfficialBusinessSchema]])
 async def get_my_official_business_requests(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     user_id = _user_id(claims)
@@ -524,7 +524,7 @@ async def get_my_official_business_requests(
 )
 async def create_official_business_request(
     payload: OfficialBusinessCreateSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -559,7 +559,7 @@ async def create_official_business_request(
 async def update_official_business_request(
     request_id: UUID,
     payload: OfficialBusinessUpdateSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -589,7 +589,7 @@ async def update_official_business_request(
 async def submit_official_business_request(
     request_id: UUID,
     payload: OfficialBusinessVersionSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -635,7 +635,7 @@ async def submit_official_business_request(
 async def cancel_official_business_request(
     request_id: UUID,
     payload: OfficialBusinessVersionSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.submit_own")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -666,7 +666,7 @@ async def cancel_official_business_request(
 
 @router.get("/pending", response_model=ResponseEnvelope[list[OfficialBusinessSchema]])
 async def get_pending_official_business_requests(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.approve_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     _, is_admin, reviewer_employee_id = _reviewer(claims)
@@ -696,7 +696,7 @@ async def get_pending_official_business_requests(
 async def decide_official_business_request(
     request_id: UUID,
     payload: OfficialBusinessDecisionSchema,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("official_business.approve_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):

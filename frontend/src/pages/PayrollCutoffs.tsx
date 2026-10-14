@@ -1,11 +1,18 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, ChevronsUpDown, Pencil, Plus, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, Calculator, ChevronsUpDown, Eye, Pencil, Plus, Search } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
-import { createPayrollCutoff, fetchPayrollCutoffs, updatePayrollCutoff } from '../lib/payrollCutoffApi'
-import type { PayrollCutoff, PayrollCutoffPayload } from '../lib/payrollCutoffApi'
+import {
+  acknowledgePayrollCutoffResult,
+  calculatePayrollCutoff,
+  createPayrollCutoff,
+  fetchPayrollCutoffResults,
+  fetchPayrollCutoffs,
+  updatePayrollCutoff,
+} from '../lib/payrollCutoffApi'
+import type { EmployeeCutoffResult, PayrollCutoff, PayrollCutoffPayload } from '../lib/payrollCutoffApi'
 import { fetchPayrollGroups } from '../lib/payrollGroupApi'
 import type { PayrollGroup } from '../lib/payrollGroupApi'
 
@@ -74,6 +81,13 @@ function deadlineText(value: string | null) {
   }).format(new Date(value))
 }
 
+function formatMinutesAsHours(minutes: number) {
+  return `${(minutes / 60).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} hr`
+}
+
 export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }: Props) {
   const { logout } = useLogout({ onLoggedOut })
   const { companyId } = useCompanySetupSelection()
@@ -89,6 +103,10 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [resultsCutoff, setResultsCutoff] = useState<PayrollCutoff | null>(null)
+  const [results, setResults] = useState<EmployeeCutoffResult[]>([])
+  const [resultsLoading, setResultsLoading] = useState(false)
+  const [calculatingCutoffId, setCalculatingCutoffId] = useState<string | null>(null)
 
   useEffect(() => {
     setEditing(null)
@@ -156,6 +174,57 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
     setSuccess('')
   }
 
+  async function showResults(cutoff: PayrollCutoff) {
+    setError('')
+    setSuccess('')
+    setResultsCutoff(cutoff)
+    setResults([])
+    setResultsLoading(true)
+    try {
+      setResults(await fetchPayrollCutoffResults(cutoff.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not load payroll cutoff results.')
+    } finally {
+      setResultsLoading(false)
+    }
+  }
+
+  async function calculateResults(cutoff: PayrollCutoff) {
+    setError('')
+    setSuccess('')
+    setCalculatingCutoffId(cutoff.id)
+    setResultsCutoff(cutoff)
+    setResultsLoading(true)
+    try {
+      const calculatedResults = await calculatePayrollCutoff(cutoff.id)
+      setResults(calculatedResults)
+      setSuccess(`Calculated payroll totals for ${calculatedResults.length} employee${calculatedResults.length === 1 ? '' : 's'}.`)
+      const groupedCutoffs = await Promise.all(groups.map((group) => fetchPayrollCutoffs(group.id)))
+      setCutoffs(groupedCutoffs.flat())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not calculate payroll cutoff results.')
+    } finally {
+      setCalculatingCutoffId(null)
+      setResultsLoading(false)
+    }
+  }
+
+  async function acknowledgeHrResult(result: EmployeeCutoffResult) {
+    if (!resultsCutoff) return
+    setError('')
+    setSuccess('')
+    setResultsLoading(true)
+    try {
+      const updated = await acknowledgePayrollCutoffResult(resultsCutoff.id, result.id)
+      setResults((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setSuccess(`HR acknowledged the calculation for ${updated.employee_name || 'the employee'}.`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not acknowledge this payroll calculation.')
+    } finally {
+      setResultsLoading(false)
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -175,6 +244,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
       export_batch_id: form.export_batch_id.trim() || null,
       is_active: form.is_active,
     }
+
     try {
       if (editing) await updatePayrollCutoff(editing.id, payload)
       else await createPayrollCutoff(payload)
@@ -372,9 +442,31 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                       {cutoff.export_batch_id && <p className="text-slate-500">Exported</p>}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button type="button" onClick={() => beginEdit(cutoff)} aria-label={`Edit ${cutoff.cutoff_code}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700">
-                        <Pencil className="h-4 w-4" />
-                      </button>
+                      <div className="inline-flex flex-wrap justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void showResults(cutoff)}
+                          disabled={resultsLoading || calculatingCutoffId !== null}
+                          aria-label={`View results for ${cutoff.cutoff_code}`}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                        >
+                          <Eye className="h-4 w-4" aria-hidden="true" /> Results
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void calculateResults(cutoff)}
+                          disabled={!cutoff.is_active || Boolean(cutoff.locked_at) || cutoff.status.toUpperCase() === 'LOCKED' || calculatingCutoffId !== null || resultsLoading}
+                          aria-label={`${cutoff.calculation_version ? 'Recalculate' : 'Calculate'} ${cutoff.cutoff_code}`}
+                          title={cutoff.locked_at || cutoff.status.toUpperCase() === 'LOCKED' ? 'Locked cutoffs cannot be recalculated' : undefined}
+                          className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Calculator className="h-4 w-4" aria-hidden="true" />
+                          {calculatingCutoffId === cutoff.id ? 'Calculating…' : cutoff.calculation_version ? 'Recalculate' : 'Calculate'}
+                        </button>
+                        <button type="button" onClick={() => beginEdit(cutoff)} aria-label={`Edit ${cutoff.cutoff_code}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700">
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -382,6 +474,115 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             </table>
           </div>
         </section>}
+        {resultsCutoff && !isFormOpen && (
+          <section aria-labelledby="payroll-cutoff-results-heading" className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:px-5">
+              <div>
+                <h2 id="payroll-cutoff-results-heading" className="text-lg font-bold text-slate-900">
+                  Results · {resultsCutoff.cutoff_code}
+                </h2>
+                <p className="text-sm text-slate-500">
+                  {groupLabel(resultsCutoff.payroll_group_id, groups)} · {resultsCutoff.period_start} → {resultsCutoff.period_end}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Time totals only; no monetary payroll amounts are calculated.</p>
+              </div>
+              <button type="button" onClick={() => { setResultsCutoff(null); setResults([]) }} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-white">
+                Close results
+              </button>
+            </div>
+            {resultsLoading ? (
+              <p role="status" className="px-5 py-6 text-sm text-slate-500">
+                {calculatingCutoffId === resultsCutoff.id ? 'Calculating cutoff totals…' : 'Loading saved results…'}
+              </p>
+            ) : results.length === 0 ? (
+              <p className="px-5 py-6 text-sm text-slate-500">No saved results for this cutoff yet. Choose Calculate to create them.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[2150px] w-full text-left text-xs">
+                  <thead className="bg-slate-50 text-[10px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-3 py-3">Employee</th>
+                      <th className="px-3 py-3">Scheduled days</th>
+                      <th className="px-3 py-3">Paid days</th>
+                      <th className="px-3 py-3">Regular (hours)</th>
+                      <th className="px-3 py-3">Late (hours)</th>
+                      <th className="px-3 py-3">Undertime (hours)</th>
+                      <th className="px-3 py-3">Absence (hours)</th>
+                      <th className="px-3 py-3">Paid leave (hours)</th>
+                      <th className="px-3 py-3">Unpaid leave (hours)</th>
+                      <th className="px-3 py-3">Ordinary OT (hours)</th>
+                      <th className="px-3 py-3">Rest day (hours)</th>
+                      <th className="px-3 py-3">Rest day OT (hours)</th>
+                      <th className="px-3 py-3">Special day (hours)</th>
+                      <th className="px-3 py-3">Special day OT (hours)</th>
+                      <th className="px-3 py-3">Holiday (hours)</th>
+                      <th className="px-3 py-3">Holiday OT (hours)</th>
+                      <th className="px-3 py-3">Night regular (hours)</th>
+                      <th className="px-3 py-3">Night OT (hours)</th>
+                      <th className="px-3 py-3">Official business (hours)</th>
+                      <th className="px-3 py-3">Exceptions</th>
+                      <th className="px-3 py-3">Employee</th>
+                      <th className="px-3 py-3">Supervisor</th>
+                      <th className="px-3 py-3">HR</th>
+                      <th className="px-3 py-3">Payroll</th>
+                      <th className="px-3 py-3">Acknowledgment</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {results.map((result) => (
+                      <tr key={result.id}>
+                        <td className="whitespace-nowrap px-3 py-3">
+                          <p className="font-medium text-slate-800">{result.employee_name || 'Employee name unavailable'}</p>
+                        </td>
+                        <td className="px-3 py-3">{result.scheduled_days.toLocaleString()}</td>
+                        <td className="px-3 py-3">{result.paid_days.toLocaleString()}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.regular_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.late_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.undertime_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.absence_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.paid_leave_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.unpaid_leave_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.ordinary_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.rest_day_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.rest_day_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.special_day_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.special_day_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.night_regular_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.night_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.official_business_minutes)}</td>
+                        <td className="px-3 py-3">{result.exception_count}</td>
+                        <td className="px-3 py-3">{result.employee_confirmation_status}</td>
+                        <td className="px-3 py-3">{result.supervisor_status}</td>
+                        <td className="px-3 py-3">{result.hr_status}</td>
+                        <td className="px-3 py-3">{result.payroll_status}</td>
+                        <td className="px-3 py-3">
+                          {result.employee_confirmation_status === 'ACKNOWLEDGED'
+                            && result.supervisor_status === 'ACKNOWLEDGED'
+                            && result.hr_status === 'PENDING' ? (
+                              <button
+                                type="button"
+                                onClick={() => void acknowledgeHrResult(result)}
+                                disabled={resultsLoading}
+                                className="whitespace-nowrap rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                              >
+                                Acknowledge as HR
+                              </button>
+                            ) : result.hr_status === 'ACKNOWLEDGED' ? (
+                              <span className="whitespace-nowrap text-xs font-semibold text-emerald-700">Calculation acknowledged</span>
+                            ) : (
+                              <span className="whitespace-nowrap text-xs text-slate-500">Awaiting prior acknowledgment</span>
+                            )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
       </main>
     </div>
   )

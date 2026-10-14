@@ -25,6 +25,40 @@ export interface PayrollCutoff {
   is_active: boolean
 }
 
+export interface EmployeeCutoffResult {
+  id: string
+  cutoff_id: string
+  cutoff_code: string | null
+  period_start: string | null
+  period_end: string | null
+  employee_id: string
+  employee_name: string | null
+  scheduled_days: number
+  paid_days: number
+  regular_minutes: number
+  late_minutes: number
+  undertime_minutes: number
+  absence_minutes: number
+  paid_leave_minutes: number
+  unpaid_leave_minutes: number
+  ordinary_ot_minutes: number
+  rest_day_minutes: number
+  rest_day_ot_minutes: number
+  special_day_minutes: number
+  special_day_ot_minutes: number
+  holiday_minutes: number
+  holiday_ot_minutes: number
+  night_regular_minutes: number
+  night_ot_minutes: number
+  official_business_minutes: number
+  exception_count: number
+  employee_confirmation_status: string
+  supervisor_status: string
+  hr_status: string
+  payroll_status: string
+  calculated_at: string | null
+}
+
 export type PayrollCutoffPayload = Omit<
   PayrollCutoff,
   | 'id'
@@ -40,7 +74,19 @@ export type PayrollCutoffPayload = Omit<
 function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
     const body = error.response?.data as ApiErrorEnvelope | undefined
-    throw new Error(body?.detail ?? fallback)
+    const status = error.response?.status
+    const message = body?.detail ?? fallback
+    if (status && status >= 500) {
+      throw new Error(
+        `${message} (HTTP ${status}). Check the backend logs and confirm ` +
+        '`payroll.employee_cutoff_results` includes `official_business_minutes`; ' +
+        'apply `backend/sql/20261014_add_official_business_minutes_to_employee_cutoff_results.sql` if needed.',
+      )
+    }
+    if (status) {
+      throw new Error(`${message} (HTTP ${status}).`)
+    }
+    throw new Error(`${message} ${error.message}`)
   }
   throw error
 }
@@ -77,5 +123,63 @@ export async function updatePayrollCutoff(
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not update the payroll cutoff.')
+  }
+}
+
+export async function calculatePayrollCutoff(cutoffId: string): Promise<EmployeeCutoffResult[]> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<EmployeeCutoffResult[]>>(
+      `/payroll-cutoffs/${encodeURIComponent(cutoffId)}/calculate`,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not calculate payroll cutoff results.')
+  }
+}
+
+export async function fetchPayrollCutoffResults(cutoffId: string): Promise<EmployeeCutoffResult[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<EmployeeCutoffResult[]>>(
+      `/payroll-cutoffs/${encodeURIComponent(cutoffId)}/results`,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load payroll cutoff results.')
+  }
+}
+
+export async function acknowledgePayrollCutoffResult(
+  cutoffId: string,
+  resultId: string,
+): Promise<EmployeeCutoffResult> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<EmployeeCutoffResult>>(
+      `/payroll-cutoffs/${encodeURIComponent(cutoffId)}/results/${encodeURIComponent(resultId)}/acknowledge`,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not acknowledge this payroll calculation.')
+  }
+}
+
+export async function fetchMyPayrollCutoffResults(): Promise<EmployeeCutoffResult[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<EmployeeCutoffResult[]>>(
+      '/payroll-cutoffs/results/mine',
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load your payroll cutoff results.')
+  }
+}
+
+export async function fetchMyTeamPayrollCutoffResults(): Promise<EmployeeCutoffResult[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<EmployeeCutoffResult[]>>(
+      '/payroll-cutoffs/results/team',
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load your team payroll cutoff results.')
   }
 }

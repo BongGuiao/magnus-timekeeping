@@ -1,9 +1,12 @@
+from uuid import UUID
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
 from app.core.generics.uow import get_unit_of_work, GenUnitOfWork
 from app.audit.infrastructure.dependencies import get_audit_es_client
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.auth.application.change_password_use_case import ChangePasswordUseCase, LockoutPolicy
 from app.auth.application.use_case import (
     LoginUseCase,
@@ -42,6 +45,35 @@ def get_search_user_by_employee_code_use_case(
         uow: GenUnitOfWork = Depends(get_unit_of_work)
         ) -> SearchUserByEmployeeCodeUseCase:
     return SearchUserByEmployeeCodeUseCase(uow)
+
+def get_current_authorization_use_case(
+        uow: GenUnitOfWork = Depends(get_unit_of_work)
+        ) -> GetCurrentAuthorizationUseCase:
+    return GetCurrentAuthorizationUseCase(uow)
+
+
+def require_permission(permission_code: str):
+    async def permission_checker(
+        claims: dict = Depends(get_current_user_claims),
+        use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+    ) -> dict:
+        try:
+            user_id = UUID(str(claims["sub"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user identity in authentication token.",
+            ) from error
+        authorization = await use_case.execute(user_id)
+        if permission_code not in authorization.permission_codes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permission denied.",
+            )
+        return claims
+
+    return permission_checker
+
 
 def get_current_user_claims(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
     try:

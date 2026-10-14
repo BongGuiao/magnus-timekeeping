@@ -13,7 +13,7 @@ from redis.exceptions import RedisError
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
@@ -40,9 +40,17 @@ from app.tasks.dashboard_tasks import (
     refresh_leave_dashboard_snapshots,
 )
 
-entitlements_router = APIRouter(prefix="/employee-entitlements", tags=["Employee Leave Entitlements"])
+entitlements_router = APIRouter(
+    prefix="/employee-entitlements",
+    tags=["Employee Leave Entitlements"],
+    dependencies=[Depends(require_permission("leave.manage"))],
+)
 applications_router = APIRouter(prefix="/leave-applications", tags=["Leave Applications"])
-ledger_router = APIRouter(prefix="/leave-ledger", tags=["Leave Ledger"])
+ledger_router = APIRouter(
+    prefix="/leave-ledger",
+    tags=["Leave Ledger"],
+    dependencies=[Depends(require_permission("leave.manage"))],
+)
 logger = logging.getLogger(__name__)
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
 
@@ -60,14 +68,6 @@ def _actor_id(claims: dict[str, Any]) -> UUID:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User id claim missing or invalid in authentication token.",
         ) from error
-
-
-def _require_admin(claims: dict[str, Any]) -> None:
-    if claims.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrator role is required to manage leave entitlements and ledger entries.",
-        )
 
 
 def _employee_id(claims: dict[str, Any]) -> UUID:
@@ -344,12 +344,11 @@ class LeaveLedgerCreateSchema(BaseModel):
 )
 async def create_employee_entitlement(
     payload: EntitlementCreateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: EmployeeEntitlementUseCase = Depends(get_employee_entitlement_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
     try:
         result = await use_case.create(payload.model_dump())
     except ValueError as error:
@@ -369,12 +368,11 @@ async def create_employee_entitlement(
 async def update_employee_entitlement(
     payload: EntitlementUpdateSchema,
     entitlement_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: EmployeeEntitlementUseCase = Depends(get_employee_entitlement_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
     before = _require_record(await use_case.get(entitlement_id), "Employee entitlement not found.")
     values = payload.model_dump(exclude_unset=True)
     try:
@@ -399,11 +397,10 @@ async def list_employee_entitlements(
     entitlement_year: int | None = Query(default=None, ge=1900, le=2200),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: EmployeeEntitlementUseCase = Depends(get_employee_entitlement_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
     result = await use_case.list(employee_id, leave_type_id, entitlement_year, offset, limit)
     return ResponseEnvelope(status="success", data=result)
 
@@ -411,11 +408,10 @@ async def list_employee_entitlements(
 @entitlements_router.get("/{entitlement_id}", response_model=ResponseEnvelope[EmployeeEntitlementEntity])
 async def get_employee_entitlement(
     entitlement_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: EmployeeEntitlementUseCase = Depends(get_employee_entitlement_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
     result = _require_record(await use_case.get(entitlement_id), "Employee entitlement not found.")
     return ResponseEnvelope(status="success", data=result)
 
@@ -427,7 +423,7 @@ async def get_employee_entitlement(
 )
 async def create_leave_application(
     payload: LeaveApplicationCreateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -466,7 +462,13 @@ async def create_leave_application(
         )
     values = stamp_audit_fields(payload.model_dump(exclude={"employee_id"}), actor_id, creating=True)
     values["employee_id"] = employee_id
-    result = await use_case.create(values)
+    try:
+        result = await use_case.create(values)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
     await log_entity_action(
         es_client, user_id=actor_id, action="CREATE", resource="leave_application",
         resource_id=result.id, after=result,
@@ -478,7 +480,7 @@ async def create_leave_application(
 @applications_router.put("/update", response_model=ResponseEnvelope[LeaveApplicationEntity])
 async def update_leave_application(
     payload: LeaveApplicationUpdateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -525,6 +527,44 @@ async def update_leave_application(
     return ResponseEnvelope(status="success", data=result)
 
 
+@applications_router.post(
+    "/{application_id}/submit",
+    response_model=ResponseEnvelope[LeaveApplicationEntity],
+)
+async def submit_leave_application(
+    application_id: UUID,
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
+    use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    before = _require_record(await use_case.get(application_id), "Leave application not found.")
+    if claims.get("role") != "admin" and before.employee_id != _employee_id(claims):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only submit your own leave application.",
+        )
+    try:
+        result = await use_case.submit_draft_for_approval(application_id, actor_id)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
+    result = _require_record(result, "Leave application not found.")
+    await log_entity_action(
+        es_client,
+        user_id=actor_id,
+        action="UPDATE",
+        resource="leave_application",
+        resource_id=application_id,
+        before=before,
+        after=result,
+    )
+    _queue_leave_dashboard_refresh(result.employee_id)
+    return ResponseEnvelope(status="success", data=result)
+
+
 @applications_router.get("/list", response_model=ResponseEnvelope[list[LeaveApplicationEntity]])
 async def list_leave_applications(
     employee_id: UUID | None = None,
@@ -532,7 +572,7 @@ async def list_leave_applications(
     application_status: str | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.read_own")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -549,7 +589,7 @@ async def list_leave_applications(
     response_model=ResponseEnvelope[int],
 )
 async def count_supervisor_pending_leave_applications(
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -566,7 +606,7 @@ async def count_supervisor_pending_leave_applications(
     response_model=ResponseEnvelope[list[SupervisorPendingLeaveSchema]],
 )
 async def list_supervisor_pending_leave_applications(
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -585,7 +625,7 @@ async def list_supervisor_pending_leave_applications(
 async def decide_supervisor_pending_leave_application(
     application_id: UUID,
     payload: SupervisorLeaveDecisionSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -627,7 +667,7 @@ async def decide_supervisor_pending_leave_application(
     response_model=ResponseEnvelope[LeaveDashboardSnapshotSchema],
 )
 async def get_leave_dashboard_snapshot(
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.read_own")),
 ):
     _actor_id(claims)
     employee_id = _employee_id(claims)
@@ -679,7 +719,7 @@ async def get_leave_dashboard_snapshot(
 async def create_leave_application_date(
     application_id: UUID,
     payload: LeaveApplicationDateCreateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
     application_use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     date_use_case: LeaveApplicationDateUseCase = Depends(get_leave_application_date_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
@@ -723,7 +763,7 @@ async def list_leave_application_dates(
     application_id: UUID,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.read_own")),
     application_use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     date_use_case: LeaveApplicationDateUseCase = Depends(get_leave_application_date_use_case),
 ):
@@ -741,7 +781,7 @@ async def list_leave_application_dates(
 @applications_router.put("/dates/update", response_model=ResponseEnvelope[LeaveApplicationDateEntity])
 async def update_leave_application_date(
     payload: LeaveApplicationDateUpdateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
     use_case: LeaveApplicationDateUseCase = Depends(get_leave_application_date_use_case),
     application_use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
@@ -781,7 +821,7 @@ async def update_leave_application_date(
 @applications_router.delete("/dates/{date_id}", response_model=ResponseEnvelope[dict[str, bool]])
 async def delete_leave_application_date(
     date_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
     use_case: LeaveApplicationDateUseCase = Depends(get_leave_application_date_use_case),
     application_use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
@@ -807,7 +847,7 @@ async def delete_leave_application_date(
 @applications_router.get("/{application_id}", response_model=ResponseEnvelope[LeaveApplicationEntity])
 async def get_leave_application(
     application_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.read_own")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -824,12 +864,11 @@ async def get_leave_application(
 )
 async def post_leave_ledger_entry(
     payload: LeaveLedgerCreateSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: LeaveLedgerUseCase = Depends(get_leave_ledger_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
     result = await use_case.create({**payload.model_dump(), "posted_by": actor_id})
     await log_entity_action(
         es_client, user_id=actor_id, action="CREATE", resource="leave_ledger",
@@ -846,11 +885,10 @@ async def list_leave_ledger(
     transaction_date_to: date | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=1000),
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: LeaveLedgerUseCase = Depends(get_leave_ledger_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
     if (
         transaction_date_from is not None
         and transaction_date_to is not None
@@ -874,10 +912,9 @@ async def list_leave_ledger(
 @ledger_router.get("/{entry_id}", response_model=ResponseEnvelope[LeaveLedgerEntity])
 async def get_leave_ledger_entry(
     entry_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: LeaveLedgerUseCase = Depends(get_leave_ledger_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
     result = _require_record(await use_case.get(entry_id), "Leave ledger entry not found.")
     return ResponseEnvelope(status="success", data=result)

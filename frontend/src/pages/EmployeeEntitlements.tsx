@@ -4,7 +4,7 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { fetchEmployees } from '../lib/employeeApi'
-import { fetchCurrentEmploymentAssignment, getCompletedServiceMonths, getManilaDate } from '../lib/employeeRelatedApi'
+import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../lib/employeeRelatedApi'
 import {
   calculateAvailableMinutes,
   createEmployeeEntitlement,
@@ -60,7 +60,7 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
   const { logout } = useLogout({ onLoggedOut })
   const [employees, setEmployees] = useState<Employee[]>([])
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
-  const [assignment, setAssignment] = useState<Awaited<ReturnType<typeof fetchCurrentEmploymentAssignment>>>(null)
+  const [assignment, setAssignment] = useState<Awaited<ReturnType<typeof fetchCurrentEmploymentAssignmentWithPrimaryLocation>>>(null)
   const [isLoadingAssignment, setIsLoadingAssignment] = useState(false)
   const [rows, setRows] = useState<EmployeeEntitlement[]>([])
   const [form, setForm] = useState<EmployeeEntitlementPayload>(blankForm)
@@ -111,7 +111,7 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
     setIsLoadingAssignment(true)
     setAssignment(null)
     setError('')
-    fetchCurrentEmploymentAssignment(form.employee_id)
+    fetchCurrentEmploymentAssignmentWithPrimaryLocation(form.employee_id)
       .then((currentAssignment) => {
         if (!isCurrent) return
         setAssignment(currentAssignment)

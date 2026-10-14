@@ -1,7 +1,7 @@
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -116,7 +116,37 @@ class SqlAlchemyAdminDashboardRepository:
             for row in rows
         ]
 
-    async def list_pending_leaves(self) -> list[PendingLeaveSummary]:
+    async def list_pending_leaves(
+        self, supervisor_employee_id: UUID | None = None, today: date | None = None
+    ) -> list[PendingLeaveSummary]:
+        conditions = [
+            LeaveApplicationModel.is_active.is_(True),
+            LeaveApplicationModel.status == "PENDING",
+            EmployeeModel.is_active.is_(True),
+            EmployeeModel.record_status == "ACTIVE",
+        ]
+        if supervisor_employee_id is not None:
+            if today is None:
+                raise ValueError("A date is required when loading team-scoped leave applications.")
+            conditions.append(
+                exists(
+                    select(EmploymentAssignmentModel.id).where(
+                        EmploymentAssignmentModel.employee_id == EmployeeModel.id,
+                        EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
+                        EmploymentAssignmentModel.is_active.is_(True),
+                        EmploymentAssignmentModel.status == "ACTIVE",
+                        EmploymentAssignmentModel.effective_from <= today,
+                        or_(
+                            EmploymentAssignmentModel.effective_to.is_(None),
+                            EmploymentAssignmentModel.effective_to >= today,
+                        ),
+                        or_(
+                            EmploymentAssignmentModel.separation_date.is_(None),
+                            EmploymentAssignmentModel.separation_date >= today,
+                        ),
+                    )
+                )
+            )
         rows = (
             await self._session.execute(
                 select(
@@ -131,12 +161,7 @@ class SqlAlchemyAdminDashboardRepository:
                 )
                 .join(EmployeeModel, EmployeeModel.id == LeaveApplicationModel.employee_id)
                 .join(LeaveTypeModel, LeaveTypeModel.id == LeaveApplicationModel.leave_type_id)
-                .where(
-                    LeaveApplicationModel.is_active.is_(True),
-                    LeaveApplicationModel.status == "PENDING",
-                    EmployeeModel.is_active.is_(True),
-                    EmployeeModel.record_status == "ACTIVE",
-                )
+                .where(*conditions)
                 .order_by(LeaveApplicationModel.start_at, EmployeeModel.employee_no)
             )
         ).all()
@@ -154,7 +179,41 @@ class SqlAlchemyAdminDashboardRepository:
             for row in rows
         ]
 
-    async def list_weekly_attendance(self, week_start: date, today: date) -> list[WeeklyAttendanceSample]:
+    async def list_weekly_attendance(
+        self,
+        week_start: date,
+        today: date,
+        supervisor_employee_id: UUID | None = None,
+    ) -> list[WeeklyAttendanceSample]:
+        conditions = [
+            EmployeeModel.is_active.is_(True),
+            EmployeeModel.record_status == "ACTIVE",
+            UserModel.is_active.is_(True),
+            UserModel.account_status == "ACTIVE",
+            AttendanceModel.record_status == "VALID",
+            AttendanceModel.work_date >= week_start,
+            AttendanceModel.work_date <= today,
+        ]
+        if supervisor_employee_id is not None:
+            conditions.append(
+                exists(
+                    select(EmploymentAssignmentModel.id).where(
+                        EmploymentAssignmentModel.employee_id == EmployeeModel.id,
+                        EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
+                        EmploymentAssignmentModel.is_active.is_(True),
+                        EmploymentAssignmentModel.status == "ACTIVE",
+                        EmploymentAssignmentModel.effective_from <= today,
+                        or_(
+                            EmploymentAssignmentModel.effective_to.is_(None),
+                            EmploymentAssignmentModel.effective_to >= today,
+                        ),
+                        or_(
+                            EmploymentAssignmentModel.separation_date.is_(None),
+                            EmploymentAssignmentModel.separation_date >= today,
+                        ),
+                    )
+                )
+            )
         rows = (
             await self._session.execute(
                 select(
@@ -167,15 +226,7 @@ class SqlAlchemyAdminDashboardRepository:
                 )
                 .join(UserModel, UserModel.employee_id == EmployeeModel.id)
                 .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
-                .where(
-                    EmployeeModel.is_active.is_(True),
-                    EmployeeModel.record_status == "ACTIVE",
-                    UserModel.is_active.is_(True),
-                    UserModel.account_status == "ACTIVE",
-                    AttendanceModel.record_status == "VALID",
-                    AttendanceModel.work_date >= week_start,
-                    AttendanceModel.work_date <= today,
-                )
+                .where(*conditions)
             )
         ).all()
         return [

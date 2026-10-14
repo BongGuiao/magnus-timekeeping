@@ -10,8 +10,7 @@ from sqlalchemy import or_, select
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims, require_role
-from app.auth.domain.entities.user import Role
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
@@ -79,7 +78,7 @@ class EmployeeWfhResponse(EmployeeWfhInput):
 @router.get("/{employee_id}/wfh", response_model=ResponseEnvelope[EmployeeWfhResponse | None])
 async def get_employee_wfh(
     employee_id: UUID,
-    claims: dict = Depends(require_role([Role.ADMIN])),
+    claims: dict = Depends(require_permission("employees.manage")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     _get_user_id(claims)
@@ -96,7 +95,7 @@ async def get_employee_wfh(
 async def save_employee_wfh(
     employee_id: UUID,
     payload: EmployeeWfhInput,
-    claims: dict = Depends(require_role([Role.ADMIN])),
+    claims: dict = Depends(require_permission("employees.manage")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -182,7 +181,7 @@ async def save_employee_wfh(
 )
 async def create_employee(
     payload: dict[str, Any],
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("employees.manage")),
     use_case: CreateEmployeeUseCase = Depends(get_create_employee_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -208,7 +207,7 @@ async def create_employee(
 )
 async def update_employee(
     payload: dict[str, Any],
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("employees.manage")),
     use_case: UpdateEmployeeUseCase = Depends(get_update_employee_use_case),
     get_use_case: GetEmployeeUseCase = Depends(get_employee_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
@@ -250,7 +249,7 @@ async def update_employee(
     status_code=status.HTTP_200_OK,
 )
 async def list_employees(
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("employees.read")),
     use_case: ListEmployeesUseCase = Depends(get_list_employees_use_case),
 ):
     _require_email(claims)
@@ -265,7 +264,7 @@ async def list_employees(
 )
 async def get_employee(
     employee_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("employees.read")),
     use_case: GetEmployeeUseCase = Depends(get_employee_use_case),
 ):
     _require_email(claims)

@@ -5,10 +5,24 @@ import type {
   ApiSuccessEnvelope,
   ChangePasswordRequest,
   ChangePasswordResult,
+  CurrentAuthorization,
   LoginRequest,
   TokenResponse,
   UserSummary,
 } from '../types/auth'
+
+export async function fetchCurrentAuthorization(): Promise<CurrentAuthorization> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<CurrentAuthorization>>('/auth/me/authorization')
+    return response.data.data
+  } catch (err) {
+    if (err instanceof AxiosError) {
+      const body = err.response?.data as ApiErrorEnvelope | undefined
+      throw new Error(body?.detail ?? 'Your access permissions could not be loaded.')
+    }
+    throw err
+  }
+}
 
 // Relative path: nginx proxies /auth/* to the FastAPI backend (see nginx/default.conf).
 export async function loginRequest(payload: LoginRequest): Promise<TokenResponse> {

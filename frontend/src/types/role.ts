@@ -46,6 +46,32 @@ export function getAvailableRoleCodes(): string[] {
   return [localStorage.getItem('role') ?? 'user']
 }
 
+export function getPermissionCodes(): string[] {
+  const storedPermissionCodes = localStorage.getItem('permission_codes')
+  if (!storedPermissionCodes) return []
+  try {
+    const permissionCodes: unknown = JSON.parse(storedPermissionCodes)
+    return Array.isArray(permissionCodes)
+      ? permissionCodes.filter((permissionCode): permissionCode is string => typeof permissionCode === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+export function hasPermission(permissionCode: string): boolean {
+  return getPermissionCodes().includes(permissionCode)
+}
+
+export function hasAnyPermission(permissionCodes: string[]): boolean {
+  const grantedPermissions = new Set(getPermissionCodes())
+  return permissionCodes.some((permissionCode) => grantedPermissions.has(permissionCode))
+}
+
+export function canPreviewDashboardRoles(): boolean {
+  return hasPermission('system.manage')
+}
+
 export function hasEmployeeRoleCode(): boolean {
   return getAvailableRoleCodes().some((roleCode) => roleCode.trim().toUpperCase() === 'EMPLOYEE')
 }
@@ -55,11 +81,13 @@ export function getSelectedDashboardRoleCode(): string {
   const selectedRoleCode = localStorage.getItem('dashboard_role_code')
   if (selectedRoleCode && roleCodes.includes(selectedRoleCode)) return selectedRoleCode
 
-  const legacyPreviewRole = localStorage.getItem('dashboard_role')
-  const legacySelection = roleCodes.find(
-    (roleCode) => normalizeDashboardRole(roleCode) === normalizeDashboardRole(legacyPreviewRole),
-  )
-  if (legacySelection) return legacySelection
+  if (canPreviewDashboardRoles()) {
+    const legacyPreviewRole = localStorage.getItem('dashboard_role')
+    const legacySelection = roleCodes.find(
+      (roleCode) => normalizeDashboardRole(roleCode) === normalizeDashboardRole(legacyPreviewRole),
+    )
+    if (legacySelection) return legacySelection
+  }
 
   const appRole = localStorage.getItem('role')
   return roleCodes.find((roleCode) => normalizeDashboardRole(roleCode) === normalizeDashboardRole(appRole))

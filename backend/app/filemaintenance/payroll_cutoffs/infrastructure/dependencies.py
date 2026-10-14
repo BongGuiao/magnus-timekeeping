@@ -2,6 +2,7 @@ from fastapi import Depends
 
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
+    CalculateEmployeeCutoffResultsUseCase,
     CreatePayrollCutoffUseCase,
     GetPayrollCutoffUseCase,
     ListPayrollCutoffsUseCase,
@@ -31,3 +32,9 @@ def get_update_payroll_cutoff_use_case(
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ) -> UpdatePayrollCutoffUseCase:
     return UpdatePayrollCutoffUseCase(uow)
+
+
+def get_calculate_employee_cutoff_results_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> CalculateEmployeeCutoffResultsUseCase:
+    return CalculateEmployeeCutoffResultsUseCase(uow)

@@ -18,7 +18,13 @@ from app.auth.application.use_case import (
     SearchUserByEmployeeCodeInputDTO,
     SearchUserByEmployeeCodeOutputDTO,
 )
+from app.auth.application.authorization import (
+    CurrentAuthorization,
+    GetCurrentAuthorizationUseCase,
+)
 from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case,
+    get_current_user_claims,
     get_login_use_case,
     get_signup_use_case,
     get_search_user_by_employee_code_use_case,
@@ -63,6 +69,36 @@ class UserResponseSchema(BaseModel):
     account_status: str
     is_active: bool
     photo_reference: str | None = None
+
+
+class CurrentAuthorizationSchema(BaseModel):
+    role_codes: list[str]
+    permission_codes: list[str]
+
+
+@router.get(
+    "/me/authorization",
+    response_model=ResponseEnvelope[CurrentAuthorizationSchema],
+)
+async def get_my_authorization(
+    claims: dict = Depends(get_current_user_claims),
+    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+):
+    try:
+        user_id = UUID(str(claims["sub"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user identity in authentication token.",
+        ) from error
+    authorization: CurrentAuthorization = await use_case.execute(user_id)
+    return ResponseEnvelope(
+        status="success",
+        data=CurrentAuthorizationSchema(
+            role_codes=authorization.role_codes,
+            permission_codes=authorization.permission_codes,
+        ),
+    )
 
 @router.post("/login", response_model=ResponseEnvelope[TokenResponseSchema])
 async def login(

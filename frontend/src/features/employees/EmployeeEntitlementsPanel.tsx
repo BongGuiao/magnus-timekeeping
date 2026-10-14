@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
-import { fetchCurrentEmploymentAssignment, getCompletedServiceMonths, getManilaDate } from '../../lib/employeeRelatedApi'
+import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../../lib/employeeRelatedApi'
 import {
   calculateAvailableMinutes,
   createEmployeeEntitlement,
@@ -51,7 +51,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [entitlements, setEntitlements] = useState<EmployeeEntitlement[]>([])
   const [form, setForm] = useState<EmployeeEntitlementPayload>(() => emptyEntitlement(employee?.id ?? ''))
-  const [assignment, setAssignment] = useState<Awaited<ReturnType<typeof fetchCurrentEmploymentAssignment>>>(null)
+  const [assignment, setAssignment] = useState<Awaited<ReturnType<typeof fetchCurrentEmploymentAssignmentWithPrimaryLocation>>>(null)
   const [editing, setEditing] = useState<EmployeeEntitlement | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(employee))
   const [isSaving, setIsSaving] = useState(false)
@@ -84,7 +84,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
         if (isCurrent) setErrorMessage(errorText(error))
       }
     }
-    Promise.all([fetchCurrentEmploymentAssignment(employeeId), fetchEmployeeEntitlements(employeeId)])
+    Promise.all([fetchCurrentEmploymentAssignmentWithPrimaryLocation(employeeId), fetchEmployeeEntitlements(employeeId)])
       .then(async ([currentAssignment, rows]) => {
         if (!isCurrent) return
         setAssignment(currentAssignment)

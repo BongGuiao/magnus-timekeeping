@@ -22,7 +22,11 @@ class EmployeeEntitlementEligibilityTests(unittest.IsolatedAsyncioTestCase):
         company_id = uuid4()
         employee_id = uuid4()
         leave_type_id = uuid4()
-        assignment = SimpleNamespace(company_id=company_id, hire_date=date(2025, 4, 9))
+        assignment = SimpleNamespace(
+            company_id=company_id,
+            hire_date=date(2025, 4, 9),
+            primary_location_id=uuid4(),
+        )
         leave_type = SimpleNamespace(
             company_id=company_id,
             is_active=True,
@@ -44,7 +48,11 @@ class EmployeeEntitlementEligibilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_grant_rejected_before_minimum_service_months(self) -> None:
         company_id = uuid4()
-        assignment = SimpleNamespace(company_id=company_id, hire_date=date(2025, 4, 10))
+        assignment = SimpleNamespace(
+            company_id=company_id,
+            hire_date=date(2025, 4, 10),
+            primary_location_id=uuid4(),
+        )
         leave_type = SimpleNamespace(
             company_id=company_id,
             is_active=True,
@@ -66,7 +74,11 @@ class EmployeeEntitlementEligibilityTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_grant_rejected_when_leave_type_belongs_to_another_company(self) -> None:
-        assignment = SimpleNamespace(company_id=uuid4(), hire_date=date(2020, 1, 1))
+        assignment = SimpleNamespace(
+            company_id=uuid4(),
+            hire_date=date(2020, 1, 1),
+            primary_location_id=uuid4(),
+        )
         leave_type = SimpleNamespace(company_id=uuid4())
         session = SimpleNamespace(
             execute=AsyncMock(side_effect=[QueryResult(assignment), QueryResult(leave_type)])

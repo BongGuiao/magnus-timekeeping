@@ -2,15 +2,18 @@ import { useEffect, useState, type FormEvent } from 'react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
+import { fetchCurrentEmploymentAssignments } from '../lib/employeeRelatedApi'
 import {
   createLeaveApplication,
+  fetchLeaveDashboardSnapshot,
   fetchLeaveTypes,
   fetchMyLeaveApplications,
   getAuthenticatedEmployeeId,
   leaveUnitsToMinutes,
   minutesToLeaveUnits,
+  submitLeaveApplication,
 } from '../lib/leaveApi'
-import type { LeaveApplication, LeaveType } from '../lib/leaveApi'
+import type { LeaveApplication, LeaveDashboardSnapshot, LeaveType } from '../lib/leaveApi'
 
 interface Props {
   employeeName: string
@@ -45,22 +48,40 @@ function applicationNumber(): string {
 }
 
 async function loadLeaveApplicationData(previewOnly: boolean) {
-  const [types, myApplications] = await Promise.all([
-    fetchLeaveTypes(),
-    previewOnly ? Promise.resolve([]) : fetchMyLeaveApplications(),
+  if (previewOnly) {
+    return { allTypes: [], activeTypes: [], applications: [] }
+  }
+  const employeeId = getAuthenticatedEmployeeId()
+  if (!employeeId) {
+    throw new Error('This account is not linked to an employee profile.')
+  }
+  const [assignments, myApplications] = await Promise.all([
+    fetchCurrentEmploymentAssignments(employeeId),
+    fetchMyLeaveApplications(),
   ])
-  const now = new Date()
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const assignmentWithPrimaryLocation = assignments.find((assignment) => assignment.primary_location_id)
+  if (!assignmentWithPrimaryLocation) {
+    throw new Error('No active employment assignment with a primary location was found, so company leave types cannot be loaded.')
+  }
+  const companyId = assignmentWithPrimaryLocation.company_id
+  const allTypes = (await fetchLeaveTypes({ companyId }))
+    .filter((type) => type.company_id === companyId)
   return {
-    allTypes: types,
-    activeTypes: types.filter((type) =>
-      type.is_active
-      && type.status === 'ACTIVE'
-      && type.effective_from <= today
-      && (!type.effective_to || type.effective_to >= today),
-    ),
+    allTypes,
+    activeTypes: getActiveLeaveTypes(allTypes),
     applications: myApplications,
   }
+}
+
+function getActiveLeaveTypes(types: LeaveType[]): LeaveType[] {
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return types.filter((type) =>
+    type.is_active
+    && type.status === 'ACTIVE'
+    && type.effective_from <= today
+    && (!type.effective_to || type.effective_to >= today),
+  )
 }
 
 const inputClass = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100'
@@ -70,6 +91,10 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [allLeaveTypes, setAllLeaveTypes] = useState<LeaveType[]>([])
   const [applications, setApplications] = useState<LeaveApplication[]>([])
+  const [leaveBalances, setLeaveBalances] = useState<LeaveDashboardSnapshot['balances']>([])
+  const [balancesRefreshedAt, setBalancesRefreshedAt] = useState('')
+  const [balancesLoading, setBalancesLoading] = useState(!previewOnly)
+  const [balancesError, setBalancesError] = useState('')
   const [leaveTypeId, setLeaveTypeId] = useState('')
   const [startAt, setStartAt] = useState(() => localDateTime(1, 9))
   const [endAt, setEndAt] = useState(() => localDateTime(1, 18))
@@ -78,6 +103,7 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
   const [contactInformation, setContactInformation] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [submittingApplicationId, setSubmittingApplicationId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -93,7 +119,48 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       .finally(() => setLoading(false))
   }, [previewOnly])
 
+  useEffect(() => {
+    if (previewOnly) return
+    let isCurrent = true
+    void fetchLeaveDashboardSnapshot()
+      .then((snapshot) => {
+        if (!isCurrent) return
+        setLeaveBalances(snapshot.balances)
+        setBalancesRefreshedAt(snapshot.refreshed_at)
+        setBalancesError('')
+      })
+      .catch((cause: unknown) => {
+        if (isCurrent) setBalancesError(cause instanceof Error ? cause.message : 'Could not load your leave balances.')
+      })
+      .finally(() => {
+        if (isCurrent) setBalancesLoading(false)
+      })
+    return () => {
+      isCurrent = false
+    }
+  }, [previewOnly])
+
   const selectedLeaveType = leaveTypes.find((type) => type.id === leaveTypeId)
+  const requestedMinutes = selectedLeaveType
+    ? leaveUnitsToMinutes(Number(duration), selectedLeaveType.unit_type)
+    : 0
+
+  async function submitDraft(applicationId: string) {
+    setError('')
+    setSuccess('')
+    setSubmittingApplicationId(applicationId)
+    try {
+      const submittedApplication = await submitLeaveApplication(applicationId)
+      setApplications((current) => current.map((application) =>
+        application.id === submittedApplication.id ? submittedApplication : application,
+      ))
+      setSuccess('Leave application submitted for supervisor approval.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not submit your leave application for approval.')
+    } finally {
+      setSubmittingApplicationId(null)
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -103,7 +170,6 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       setError('There are no active leave types available for application.')
       return
     }
-    const requestedMinutes = leaveUnitsToMinutes(Number(duration), selectedLeaveType.unit_type)
     if (!Number.isFinite(requestedMinutes) || requestedMinutes <= 0) {
       setError('Enter a leave duration greater than zero.')
       return
@@ -164,6 +230,35 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
         {error && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}
 
+        <section aria-labelledby="leave-balances-heading" className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 id="leave-balances-heading" className="text-lg font-bold text-slate-900">My Remaining Leave Balance</h2>
+            {balancesRefreshedAt && (
+              <p className="text-xs text-slate-500">Updated {formatDateTime(balancesRefreshedAt)}</p>
+            )}
+          </div>
+          {balancesError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{balancesError}</p>}
+          {balancesLoading ? (
+            <p role="status" className="mt-3 text-sm text-slate-500">Loading your leave balances…</p>
+          ) : previewOnly ? (
+            <p className="mt-3 text-sm text-slate-500">Sign in with an employee-linked account to view leave balances.</p>
+          ) : balancesError ? null : leaveBalances.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">No leave balances are available for this year.</p>
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {leaveBalances.map((balance) => (
+                <div key={`${balance.type}-${balance.entitlement_year}`} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
+                  <p className="text-sm font-medium text-slate-600">{balance.label}</p>
+                  <p className="mt-1 text-2xl font-bold text-indigo-700">
+                    {formatDuration(balance.available_minutes, balance.unit_type)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">remaining · {balance.entitlement_year}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           {loading ? <p className="text-sm text-slate-500">Loading leave options…</p> : (
             <form onSubmit={(event) => void submit(event)} className="grid gap-4 sm:grid-cols-2">
@@ -222,20 +317,44 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
             <p className="mt-3 text-sm text-slate-500">{loading ? 'Loading applications…' : 'No leave applications yet.'}</p>
           ) : (
             <div className="mt-4 overflow-x-auto">
-              <table className="w-full min-w-[640px] text-left text-sm">
+              <table className="w-full min-w-[760px] text-left text-sm">
                 <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
-                  <tr><th className="px-3 py-3">Application</th><th className="px-3 py-3">Leave type</th><th className="px-3 py-3">Dates</th><th className="px-3 py-3">Duration</th><th className="px-3 py-3">Status</th></tr>
+                  <tr><th className="px-3 py-3">Application</th><th className="px-3 py-3">Leave type</th><th className="px-3 py-3">Dates</th><th className="px-3 py-3">Duration</th><th className="px-3 py-3">Pay breakdown</th><th className="px-3 py-3">Status</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {applications.map((application) => {
                     const type = allLeaveTypes.find((item) => item.id === application.leave_type_id)
+                    const unit = type?.unit_type ?? 'MINUTES'
+                    const payBreakdown = application.status === 'APPROVED'
+                      ? [
+                        application.paid_minutes !== null
+                          ? `With pay: ${formatDuration(application.paid_minutes, unit)}`
+                          : null,
+                        application.unpaid_minutes !== null
+                          ? `Without pay: ${formatDuration(application.unpaid_minutes, unit)}`
+                          : null,
+                      ].filter((part): part is string => part !== null).join(' · ') || 'Not recorded'
+                      : '—'
                     return (
                       <tr key={application.id}>
                         <td className="px-3 py-3 font-medium text-slate-800">{application.application_no}</td>
                         <td className="px-3 py-3 text-slate-600">{type?.leave_name ?? 'Leave type'}</td>
                         <td className="px-3 py-3 text-slate-600">{formatDateTime(application.start_at)} – {formatDateTime(application.end_at)}</td>
-                        <td className="px-3 py-3 text-slate-600">{formatDuration(application.requested_minutes, type?.unit_type ?? 'MINUTES')}</td>
-                        <td className="px-3 py-3"><span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">{application.status}</span></td>
+                        <td className="px-3 py-3 text-slate-600">{formatDuration(application.requested_minutes, unit)}</td>
+                        <td className="px-3 py-3 text-slate-600">{payBreakdown}</td>
+                        <td className="px-3 py-3">
+                          <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">{application.status}</span>
+                          {application.status === 'DRAFT' && (
+                            <button
+                              type="button"
+                              disabled={submittingApplicationId !== null}
+                              onClick={() => void submitDraft(application.id)}
+                              className="ml-2 rounded-md border border-indigo-200 px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {submittingApplicationId === application.id ? 'Submitting…' : 'Submit for approval'}
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     )
                   })}

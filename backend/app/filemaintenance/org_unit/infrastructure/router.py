@@ -6,7 +6,7 @@ from elasticsearch import AsyncElasticsearch
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.org_unit.application.use_case import (
@@ -23,7 +23,11 @@ from app.filemaintenance.org_unit.infrastructure.dependencies import (
     get_update_org_unit_use_case,
 )
 
-router = APIRouter(prefix="/org-units", tags=["Org Units"])
+router = APIRouter(
+    prefix="/org-units",
+    tags=["Org Units"],
+    dependencies=[Depends(require_permission("company.setup"))],
+)
 
 
 def _require_email(claims: dict[str, Any]) -> None:

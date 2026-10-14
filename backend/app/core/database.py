@@ -8,6 +8,10 @@ class Base(DeclarativeBase):
     pass
 def init_db_models():
     from app.auth.infrastructure.db_model import RoleModel, UserModel, UserRoleModel  # noqa: F401
+    from app.filemaintenance.roles.infrastructure.permission_db_model import PermissionModel  # noqa: F401
+    from app.filemaintenance.roles.infrastructure.role_permission_db_model import (  # noqa: F401
+        RolePermissionModel,
+    )
     from app.enrollment.infrastructure.db_model import FaceEnrollmentModel  # noqa: F401
     from app.attendance.infrastructure.db_model import (  # noqa: F401
         AttendanceModel,
@@ -33,6 +37,9 @@ def init_db_models():
     )
     from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import (  # noqa: F401
         PayrollCutoffModel,
+    )
+    from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (  # noqa: F401
+        EmployeeCutoffResultModel,
     )
     from app.filemaintenance.schedule.infrastructure.db_model import (  # noqa: F401
         EmployeeScheduleAssignmentModel,

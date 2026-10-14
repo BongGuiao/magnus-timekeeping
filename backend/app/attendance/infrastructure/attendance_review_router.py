@@ -17,7 +17,7 @@ from app.attendance.infrastructure.dependencies import (
 )
 from app.attendance.infrastructure.http_errors import http_errors
 from app.auth.domain.entities.user import Role
-from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.dependencies import require_permission
 from app.core.generics.mapper import ResponseEnvelope
 
 router = APIRouter()
@@ -53,7 +53,7 @@ def _schema(record: ReviewableAttendanceRecord) -> SupervisorInvalidAttendanceSc
     response_model=ResponseEnvelope[list[SupervisorInvalidAttendanceSchema]],
 )
 async def get_supervisor_invalid_attendance(
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("attendance.read_team")),
     use_case: ListInvalidAttendanceUseCase = Depends(get_list_invalid_attendance_use_case),
 ):
     supervisor_employee_id = None
@@ -72,7 +72,7 @@ async def get_supervisor_invalid_attendance(
 )
 async def approve_supervisor_invalid_attendance(
     attendance_id: UUID,
-    claims: dict = Depends(get_current_user_claims),
+    claims: dict = Depends(require_permission("attendance.read_team")),
     use_case: ApproveInvalidAttendanceUseCase = Depends(get_approve_invalid_attendance_use_case),
 ):
     is_admin = claims.get("role") == Role.ADMIN.value

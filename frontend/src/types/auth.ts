@@ -35,6 +35,11 @@ export interface UserSummary {
   photo_reference?: string | null
 }
 
+export interface CurrentAuthorization {
+  role_codes: string[]
+  permission_codes: string[]
+}
+
 export interface ApiSuccessEnvelope<T> {
   status: 'success'
   data: T
