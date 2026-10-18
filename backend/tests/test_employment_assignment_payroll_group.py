@@ -1,9 +1,13 @@
 import unittest
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from app.filemaintenance.employees.application.related_use_case import _validate_assignment
+from app.filemaintenance.employees.application.related_use_case import (
+    _ensure_single_active_assignment,
+    _validate_assignment,
+)
 from app.filemaintenance.employees.infrastructure.db_model import EmploymentAssignmentModel
 from app.filemaintenance.payroll_groups.domain.entities.payroll_group import PayrollGroupEntity
 
@@ -28,6 +32,27 @@ class _FakeUnitOfWork:
 
 
 class EmploymentAssignmentPayrollGroupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_assignment_rejects_a_second_active_assignment(self):
+        session = SimpleNamespace(scalar=AsyncMock(return_value=uuid4()))
+        uow = SimpleNamespace(session=session)
+
+        with self.assertRaisesRegex(ValueError, "only one active employment assignment"):
+            await _ensure_single_active_assignment(
+                uow,
+                {"employee_id": uuid4(), "status": "ACTIVE", "is_active": True},
+            )
+
+    async def test_inactive_assignment_does_not_conflict_with_active_assignment(self):
+        session = SimpleNamespace(scalar=AsyncMock())
+        uow = SimpleNamespace(session=session)
+
+        await _ensure_single_active_assignment(
+            uow,
+            {"employee_id": uuid4(), "status": "INACTIVE", "is_active": True},
+        )
+
+        session.scalar.assert_not_awaited()
+
     async def test_assignment_rejects_payroll_group_from_another_company(self):
         company_id = uuid4()
         values = {

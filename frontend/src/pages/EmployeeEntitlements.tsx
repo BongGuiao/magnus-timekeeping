@@ -3,7 +3,7 @@ import { Pencil, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
-import { fetchEmployees } from '../lib/employeeApi'
+import { EMPLOYEE_CREATED_EVENT, fetchEmployees } from '../lib/employeeApi'
 import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../lib/employeeRelatedApi'
 import {
   calculateAvailableMinutes,
@@ -115,9 +115,6 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
       .then((currentAssignment) => {
         if (!isCurrent) return
         setAssignment(currentAssignment)
-        if (!currentAssignment) {
-          setError('The selected employee has no active employment assignment.')
-        }
       })
       .catch((cause: unknown) => {
         if (isCurrent) setError(cause instanceof Error ? cause.message : 'Could not load the employee assignment.')
@@ -132,8 +129,9 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
 
   useEffect(() => {
     const refreshRows = () => {
-      fetchEmployeeEntitlements()
-        .then((nextRows) => {
+      Promise.all([fetchEmployees(), fetchEmployeeEntitlements()])
+        .then(([nextEmployees, nextRows]) => {
+          setEmployees(nextEmployees)
           setRows(nextRows)
           setForm((current) => {
             if (!editing) return current
@@ -145,11 +143,18 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
         })
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Could not refresh entitlements.'))
     }
+    const refreshEmployees = () => {
+      fetchEmployees()
+        .then(setEmployees)
+        .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Could not refresh employees.'))
+    }
     const interval = window.setInterval(refreshRows, 30_000)
     window.addEventListener('focus', refreshRows)
+    window.addEventListener(EMPLOYEE_CREATED_EVENT, refreshEmployees)
     return () => {
       window.clearInterval(interval)
       window.removeEventListener('focus', refreshRows)
+      window.removeEventListener(EMPLOYEE_CREATED_EVENT, refreshEmployees)
     }
   }, [editing])
 
@@ -271,7 +276,20 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
                 {availableLeaveTypes.map((type) => <option key={type.id} value={type.id}>{type.leave_code} — {type.leave_name}</option>)}
               </select>
               {isLoadingAssignment && <p className="mt-1 text-xs font-normal text-slate-500">Loading employee assignment…</p>}
-              {!isLoadingAssignment && form.employee_id && !assignment && <p className="mt-1 text-xs font-normal text-rose-700">No active employment assignment found for this employee.</p>}
+              {!isLoadingAssignment && form.employee_id && !assignment && (
+                <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs font-normal text-amber-900">
+                  <p>This employee has no active employment assignment. Add an assignment in the Employees module before creating an entitlement.</p>
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('employees')}
+                      className="mt-2 font-semibold text-indigo-700 underline underline-offset-2 hover:text-indigo-900"
+                    >
+                      Go to Employees
+                    </button>
+                  )}
+                </div>
+              )}
             </label>
             <label className="text-sm font-semibold text-slate-700">Entitlement year
               <input className={inputClass} type="number" min={1900} max={2200} required value={form.entitlement_year} onChange={(event) => setField('entitlement_year', Number(event.target.value))} />

@@ -5,6 +5,7 @@ import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import {
   fetchMyOvertimeApplications, fetchOvertimeAttendanceOptions, submitOvertimeApplication,
+  updateOvertimeApplication,
   type OvertimePayrollCutoff,
   type OvertimeApplication as Application,
 } from '../lib/attendanceApi'
@@ -48,6 +49,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
   const [cutoff, setCutoff] = useState<OvertimePayrollCutoff | null>(null)
   const [applications, setApplications] = useState<Application[]>([])
   const [attendanceId, setAttendanceId] = useState('')
+  const [editingApplicationId, setEditingApplicationId] = useState<string | null>(null)
   const [type, setType] = useState<OvertimeApplicationType>('REGULAR_OVERTIME')
   const [period, setPeriod] = useState<OvertimePeriod>({ requested_start_at: '', requested_end_at: '' })
   const [reason, setReason] = useState('')
@@ -74,22 +76,31 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
     return () => { current = false }
   }, [previewOnly])
 
-  function availableTypes(entry: AttendanceLogEntry): OvertimeApplicationType[] {
+  function availableTypes(entry: AttendanceLogEntry, excludeApplicationId?: string): OvertimeApplicationType[] {
     return types.filter((item) => potential(entry, item) > 0 && !applications.some((application) =>
       application.attendance_record_id === entry.attendanceId && application.overtime_type === item
+      && application.id !== excludeApplicationId
       && ['PENDING', 'APPROVED'].includes(application.status),
     ))
   }
   const eligible = entries.filter((entry) =>
     entry.attendanceId && entry.timeOut && entry.status !== 'no-logout' && entry.status !== 'no-login'
-    && availableTypes(entry).length > 0,
+    && (
+      availableTypes(entry).length > 0
+      || applications.some((application) =>
+        application.attendance_record_id === entry.attendanceId
+        && ['PENDING', 'REJECTED'].includes(application.status)
+        && !application.payroll_posted,
+      )
+    ),
   )
   const selected = eligible.find((entry) => entry.attendanceId === attendanceId)
-  const available = selected ? availableTypes(selected) : []
+  const available = selected ? availableTypes(selected, editingApplicationId ?? undefined) : []
   const maximum = selected ? potential(selected, type) : 0
   const duration = overtimePeriodMinutes(period)
 
   function selectAttendance(id: string) {
+    setEditingApplicationId(null)
     const entry = eligible.find((item) => item.attendanceId === id)
     const nextType = entry ? availableTypes(entry)[0] : undefined
     setAttendanceId(id)
@@ -100,6 +111,31 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
     } else {
       setPeriod({ requested_start_at: '', requested_end_at: '' })
     }
+    setSuccess('')
+  }
+
+  function editApplication(application: Application) {
+    setAttendanceId(application.attendance_record_id)
+    setEditingApplicationId(application.id)
+    setType(application.overtime_type)
+    setPeriod({
+      requested_start_at: philippineDateTime(application.requested_start_at),
+      requested_end_at: philippineDateTime(application.requested_end_at),
+    })
+    setReason(application.reason)
+    setWork(application.work_accomplished ?? '')
+    setError('')
+    setSuccess('')
+    document.getElementById('overtime-application-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  function cancelEdit() {
+    setEditingApplicationId(null)
+    setAttendanceId('')
+    setPeriod({ requested_start_at: '', requested_end_at: '' })
+    setReason('')
+    setWork('')
+    setError('')
     setSuccess('')
   }
 
@@ -120,13 +156,19 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
     }
     setSaving(true)
     try {
-      const application = await submitOvertimeApplication(attendanceId, {
+      const payload = {
         overtime_type: type, requested_minutes: requested, reason: reason.trim(), work_accomplished: work.trim() || null,
         requested_start_at: overtimeTimestamp(period.requested_start_at),
         requested_end_at: overtimeTimestamp(period.requested_end_at),
-      })
-      setApplications((current) => [application, ...current])
+      }
+      const application = editingApplicationId
+        ? await updateOvertimeApplication(editingApplicationId, payload)
+        : await submitOvertimeApplication(attendanceId, payload)
+      setApplications((current) => editingApplicationId
+        ? current.map((item) => item.id === application.id ? application : item)
+        : [application, ...current])
       setAttendanceId('')
+      setEditingApplicationId(null)
       setPeriod({ requested_start_at: '', requested_end_at: '' })
       setReason('')
       setWork('')
@@ -159,7 +201,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
           {cutoff && <p className="mt-3 rounded-lg bg-indigo-50 p-3 text-sm text-indigo-800">Current payroll cutoff: <strong>{cutoff.cutoff_code}</strong> | {cutoff.period_start} to {cutoff.period_end} (inclusive)</p>}
           {loading && <p role="status" className="mt-4 text-sm text-slate-500">Loading eligible attendance...</p>}
           {loaded && eligible.length === 0 && <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">No eligible overtime in your current payroll cutoff. Complete your punches first, or check whether the calculated types already have applications.</p>}
-          <form onSubmit={(event) => void submit(event)} className="mt-5">
+          <form id="overtime-application-form" onSubmit={(event) => void submit(event)} className="mt-5">
             <fieldset disabled={previewOnly || !loaded || loading || saving} className="grid gap-4 sm:grid-cols-2">
               <legend className="sr-only">Overtime application details</legend>
               <label className="text-xs font-semibold text-slate-700">Completed attendance
@@ -210,10 +252,17 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
               <label className="text-xs font-semibold text-slate-700 sm:col-span-2">Work accomplished (optional)
                 <textarea maxLength={5000} value={work} onChange={(event) => setWork(event.target.value)} rows={2} className={inputClass} />
               </label>
-              <div className="flex justify-end sm:col-span-2">
+              <div className="flex justify-end gap-2 sm:col-span-2">
+                {editingApplicationId && <button type="button" onClick={cancelEdit} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700">Cancel edit</button>}
                 <button type="submit" disabled={!selected || duration <= 0 || duration > maximum} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
                   {saving ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
-                  {saving ? 'Submitting...' : 'Submit for approval'}
+                  {saving
+                    ? (editingApplicationId ? 'Saving...' : 'Submitting...')
+                    : editingApplicationId
+                      ? (applications.find((application) => application.id === editingApplicationId)?.status === 'REJECTED'
+                        ? 'Save changes and resubmit'
+                        : 'Save changes')
+                      : 'Submit for approval'}
                 </button>
               </div>
             </fieldset>
@@ -224,7 +273,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
           {!loading && loaded && applications.length === 0 && <p className="mt-4 text-sm text-slate-500">No overtime applications yet.</p>}
           {applications.length > 0 && <div className="mt-4 overflow-x-auto">
             <table className="w-full min-w-[800px] text-left text-xs">
-              <thead className="border-b border-slate-200 text-slate-500"><tr>{['Application', 'Date / interval', 'Type', 'Requested', 'Approved', 'Payable', 'Status'].map((heading) => <th key={heading} className="px-3 py-3">{heading}</th>)}</tr></thead>
+              <thead className="border-b border-slate-200 text-slate-500"><tr>{['Application', 'Date / interval', 'Type', 'Requested', 'Approved', 'Payable', 'Status', ''].map((heading) => <th key={heading} className="px-3 py-3">{heading}</th>)}</tr></thead>
               <tbody className="divide-y divide-slate-100">{applications.map((application) => <tr key={application.id}>
                 <td className="px-3 py-3 font-semibold text-slate-800">{application.application_no}</td>
                 <td className="px-3 py-3 text-slate-600"><p>{application.attendance_date}</p><p className="mt-1">{formatTime(application.requested_start_at)} - {formatTime(application.requested_end_at)}</p></td>
@@ -233,6 +282,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
                 <td className="px-3 py-3">{application.supervisor_approved_minutes === null ? '--' : `${application.supervisor_approved_minutes} min`}</td>
                 <td className="px-3 py-3">{application.final_payable_minutes === null ? '--' : `${application.final_payable_minutes} min`}</td>
                 <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${application.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : application.status === 'REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>{application.status}</span></td>
+                <td className="px-3 py-3">{['PENDING', 'REJECTED'].includes(application.status) && !application.payroll_posted && entries.some((entry) => entry.attendanceId === application.attendance_record_id) && <button type="button" onClick={() => editApplication(application)} className="rounded-md border border-indigo-200 px-2.5 py-1.5 font-semibold text-indigo-700 hover:bg-indigo-50">Edit</button>}</td>
               </tr>)}</tbody>
             </table>
           </div>}

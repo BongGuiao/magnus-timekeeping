@@ -7,6 +7,7 @@ from sqlalchemy import func, or_
 
 from app.auth.application.password_ports import AuditTrail
 from app.auth.application.accounts import (
+    DEFAULT_EMPLOYEE_PASSWORD,
     create_user_account,
     employee_display_name,
     get_app_role,
@@ -53,6 +54,7 @@ class LoginOutputDTO:
     expires_in_hours: int = 12
     role: str = "user"
     role_code: list[str] = field(default_factory=list)
+    must_change_password: bool = False
 
 
 
@@ -197,6 +199,7 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
                             expires_in_hours=12,
                             role=role.value,
                             role_code=role_codes,
+                            must_change_password=input_dto.password == DEFAULT_EMPLOYEE_PASSWORD,
                         )
                     else:
                         failure_reason = (

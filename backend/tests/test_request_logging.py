@@ -163,9 +163,29 @@ class RequestLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.private_value, json.dumps(event))
 
     async def test_other_routes_are_not_logged(self) -> None:
-        for path in ("/docs", "/auth/login", "/locations-extra"):
+        for path in ("/docs", "/auth/login", "/locations-extra", "/attendance/last", "/attendance/clock-policy"):
             await self.request(path)
         self.assertEqual(self.handler.events, [])
+
+    async def test_attendance_clock_and_break_are_logged(self) -> None:
+        @self.app.post("/attendance/clock", status_code=201)
+        async def clock():
+            return {"ok": True}
+
+        @self.app.post("/attendance/clock-break")
+        async def clock_break():
+            raise ValueError(self.private_value)
+
+        await self.request("/attendance/clock", method="POST")
+        await self.request("/attendance/clock-break", method="POST")
+        clock_event, break_event = self.handler.events
+        self.assertEqual(clock_event["url.path"], "/attendance/clock")
+        self.assertEqual(clock_event["http.response.status_code"], 201)
+        self.assertEqual(clock_event["event.outcome"], "success")
+        self.assertEqual(break_event["url.path"], "/attendance/clock-break")
+        self.assertEqual(break_event["http.response.status_code"], 400)
+        self.assertEqual(break_event["event.outcome"], "failure")
+        self.assertNotIn(self.private_value, json.dumps(self.handler.events))
 
     async def test_unmatched_path_is_redacted(self) -> None:
         await self.request("/locations/private-path/unknown")
@@ -244,7 +264,7 @@ class RequestFileTests(unittest.TestCase):
             with patch.object(handler, "shouldRollover", side_effect=OSError("disk full")):
                 with self.assertLogs("app.core.request_logging", level="ERROR") as captured:
                     logger.info({"event.outcome": "success"})
-            self.assertIn("Failed to persist request telemetry", captured.output[0])
+            self.assertIn("Failed to persist structured application logs", captured.output[0])
             self.tearDown()
 
 

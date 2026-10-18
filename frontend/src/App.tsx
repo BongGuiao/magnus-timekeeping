@@ -4,12 +4,15 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Enrollment from './pages/Enrollment'
 import Attendance from './pages/Attendance'
+import AttendanceRecalculation from './pages/AttendanceRecalculation'
 import Companies from './pages/Companies'
 import OrgUnits from './pages/OrgUnits'
 import Employees from './pages/Employees'
 import Locations from './pages/Locations'
 import Geofences from './pages/Geofences'
 import LeaveManagement from './pages/LeaveManagement'
+import Calendar from './pages/Calendar'
+import Announcements from './pages/Announcements'
 import EmployeeEntitlements from './pages/EmployeeEntitlements'
 import LeaveApplication from './pages/LeaveApplication'
 import OvertimeApplication from './pages/OvertimeApplication'
@@ -22,11 +25,17 @@ import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
 import type { NavView } from './components/dashboard/TopNav'
 import { fetchCurrentAuthorization } from './lib/authApi'
-import { getSelectedDashboardRole, hasAnyPermission, hasEmployeeRoleCode, hasPermission } from './types/role'
+import {
+  getSelectedDashboardRole,
+  hasAnyPermission,
+  hasEmployeeRoleCode,
+  hasPermission,
+  normalizeDashboardRole,
+} from './types/role'
 
 const navViews: NavView[] = [
-  'dashboard', 'enrollment', 'attendance', 'companies', 'org-units', 'locations',
-  'geofences', 'employees', 'leave-management', 'employee-entitlements',
+  'dashboard', 'enrollment', 'attendance', 'attendance-recalculation', 'companies', 'org-units', 'locations',
+  'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
   'overtime-application', 'official-business', 'change-password',
 ]
@@ -145,10 +154,18 @@ function App() {
     'schedule-templates': 'schedule.manage',
     'rest-day-patterns': 'schedule.manage',
     'leave-management': 'leave.manage',
+    calendar: 'leave.manage',
+    announcements: 'system.manage',
     'employee-entitlements': 'leave.manage',
     'leave-application': 'leave.submit',
     'overtime-application': 'overtime.submit_own',
     'official-business': 'official_business.submit_own',
+  }
+  if (
+    view === 'attendance-recalculation'
+    && normalizeDashboardRole(localStorage.getItem('role')) !== 'administrator'
+  ) {
+    return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
   const requiredPermission = requiredPermissionByView[view]
   const hasRequiredPermission = typeof requiredPermission === 'string'
@@ -170,6 +187,16 @@ function App() {
 
   if (view === 'attendance') {
     return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'attendance-recalculation') {
+    return (
+      <AttendanceRecalculation
+        employeeName={employeeName}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
   }
 
   if (view === 'companies') {
@@ -197,6 +224,14 @@ function App() {
       return <LeaveManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
     return <EmployeeEntitlements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'calendar') {
+    return <Calendar employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'announcements') {
+    return <Announcements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'payroll-groups') {

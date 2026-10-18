@@ -7,7 +7,7 @@ import type { DefaultValues, FieldValues, Resolver, UseFormReturn } from 'react-
 
 interface FormModalProps<T extends FieldValues> {
   isOpen: boolean
-  title: string
+  title: ReactNode
   description?: string
   defaultValues: DefaultValues<T>
   resetKey: string

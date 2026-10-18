@@ -119,13 +119,17 @@ function formatWorkedTime(attendance: LastAttendance, now: number) {
     [attendance.second_break_out_at, attendance.second_break_in_at],
     [attendance.ot_break_out_at, attendance.ot_break_in_at],
   ]
-  const slots = ['FIRST_BREAK', 'MEAL_BREAK', 'SECOND_BREAK']
+  const slots = ['FIRST_BREAK', 'MEAL_BREAK', 'SECOND_BREAK', 'OT_BREAK']
   const breakMilliseconds = breaks.reduce((total, [breakStart, breakEnd], index) => {
     if (!breakStart) return total
     const start = parseAttendanceTime(breakStart)
     const end = breakEnd ? parseAttendanceTime(breakEnd) : now
     const rule = attendance.break_rules?.find((item) => item.break_slot === slots[index])
-    const paidAllowance = rule?.segment_type === 'PAID_BREAK' ? rule.break_minutes * 60_000 : 0
+    const isPaidBreak = rule && (
+      ['FIRST_BREAK', 'SECOND_BREAK', 'OT_BREAK'].includes(rule.break_slot)
+      || rule.segment_type === 'PAID_BREAK'
+    )
+    const paidAllowance = isPaidBreak ? rule.break_minutes * 60_000 : 0
     return Number.isFinite(start) && Number.isFinite(end)
       ? total + Math.max(0, end - start - paidAllowance) : total
   }, 0)
@@ -174,6 +178,8 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   const webcam = useWebcamCapture()
   const [employeePhotoUrl, setEmployeePhotoUrl] = useState<string | null>(null)
   const [isAutoCapturePending, setIsAutoCapturePending] = useState(false)
+  const [isWaitingForBlink, setIsWaitingForBlink] = useState(false)
+  const [blinkStatus, setBlinkStatus] = useState('')
   const [currentTime, setCurrentTime] = useState(() => Date.now())
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null)
   const [attendanceSuccess, setAttendanceSuccess] = useState<ClockResult | null>(null)
@@ -319,6 +325,13 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
       if (!cameraStarted) return
 
       await new Promise((resolve) => window.setTimeout(resolve, CAMERA_SETTLE_DELAY_MS))
+      const video = webcam.videoRef.current
+      if (!video) throw new Error('The camera is not ready yet. Please try again.')
+      setIsWaitingForBlink(true)
+      const { waitForEyeBlink } = await import('../lib/faceBlinkDetection')
+      await waitForEyeBlink(video, setBlinkStatus)
+      setIsWaitingForBlink(false)
+      setBlinkStatus('')
       const image = await webcam.capture()
       if (!image) return
 
@@ -336,6 +349,8 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     } catch (captureError) {
       reportError(captureError instanceof Error ? captureError.message : 'Face capture failed. Please try again.')
     } finally {
+      setIsWaitingForBlink(false)
+      setBlinkStatus('')
       webcam.stop()
       setIsAutoCapturePending(false)
     }
@@ -375,6 +390,15 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   const completedAction = result?.action ?? breakResult?.action_recorded
   const currentStep = completedResult ? 2 : verifiedUser ? 1 : 0
   const showBreakActions = Boolean(lastAttendance?.clock_in_at && !lastAttendance.clock_out_at)
+  const captureButtonLabel = isSubmitting
+    ? 'Matching face…'
+    : isWaitingForBlink
+      ? 'Blink once to continue…'
+      : isAutoCapturePending
+        ? 'Preparing camera…'
+        : showBreakActions
+          ? 'Clock Out'
+          : 'Clock In'
   const expectedClockOut = lastAttendance?.expected_clock_out_at
     ? parseAttendanceTime(lastAttendance.expected_clock_out_at)
     : Number.NaN
@@ -401,17 +425,20 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     if (lastAttendance.ot_break_out_at && !lastAttendance.ot_break_in_at) return ['END OT BREAK']
 
     if (isOvertimeBreakAvailable) {
-      return lastAttendance.ot_break_out_at ? [] : ['START OT BREAK']
+      const hasOvertimeBreakRule = breakRules.some((rule) => rule.break_slot === 'OT_BREAK')
+      return lastAttendance.ot_break_out_at || !hasOvertimeBreakRule ? [] : ['START OT BREAK']
     }
     const fields = {
       FIRST_BREAK: 'first_break_out_at',
       MEAL_BREAK: 'meal_break_out_at',
       SECOND_BREAK: 'second_break_out_at',
+      OT_BREAK: 'ot_break_out_at',
     } as const
     const labels = {
       FIRST_BREAK: 'START FIRST BREAK',
       MEAL_BREAK: 'START MEAL BREAK',
       SECOND_BREAK: 'START SECOND BREAK',
+      OT_BREAK: 'START OT BREAK',
     }
     const hasMealRule = breakRules.some((rule) => rule.break_slot === 'MEAL_BREAK')
     const hasFirstRule = breakRules.some((rule) => rule.break_slot === 'FIRST_BREAK')
@@ -627,6 +654,12 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                   )}
                   </div>
 
+                  {isWaitingForBlink && (
+                    <p role="status" className="text-center text-sm font-medium text-indigo-700">
+                      {blinkStatus}
+                    </p>
+                  )}
+
                   <div className="flex w-full shrink-0 flex-wrap justify-center gap-3">
                     {webcam.isActive ? (
                       <button
@@ -635,11 +668,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                         disabled={isSubmitting || isAutoCapturePending}
                         className="flex-1 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
                       >
-                        {isSubmitting
-                          ? 'Matching face…'
-                          : isAutoCapturePending
-                            ? 'Matching face…'
-                            : showBreakActions ? 'Clock Out' : 'Clock In'}
+                        {captureButtonLabel}
                       </button>
                     ) : (
                       <button
@@ -653,13 +682,9 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                         }
                         className="w-full rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
                       >
-                        {isSubmitting
-                          ? 'Matching face…'
-                          : isAutoCapturePending
-                          ? 'Matching face…'
-                          : webcam.isCameraApiAvailable
-                            ? showBreakActions ? 'Clock Out' : 'Clock In'
-                            : 'Camera requires HTTPS'}
+                        {webcam.isCameraApiAvailable
+                          ? captureButtonLabel
+                          : 'Camera requires HTTPS'}
                       </button>
                     )}
                   </div>

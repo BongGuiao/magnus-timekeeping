@@ -37,6 +37,7 @@ export interface AttendanceLogEntry {
   minutesWorked?: number | null
   lateMinutes?: number
   undertimeMinutes?: number
+  excessMinutesBreak?: number
   calculatedOtMinutes?: number
   overtimeHours?: number
   regularOvertimeMinutes?: number
@@ -83,12 +84,14 @@ export interface LeaveRequest {
 export interface Holiday {
   date: string
   name: string
+  id?: string
 }
 
 export interface Announcement {
   id: string
   title: string
   postedAt: string
+  body?: string
 }
 
 export interface EmployeeDashboardData {

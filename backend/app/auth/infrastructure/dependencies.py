@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 
@@ -18,6 +18,11 @@ from app.auth.infrastructure.user_account_repository import SqlAlchemyUserAccoun
 from app.core import security as security_service
 from app.core.config import settings
 from app.auth.domain.entities.user import Role
+from app.attendance.infrastructure.clock_policy import (
+    AttendanceClockPolicy,
+    optional_bearer_scheme,
+    resolve_attendance_clock_policy,
+)
 
 bearer_scheme = HTTPBearer()
 
@@ -75,6 +80,32 @@ def require_permission(permission_code: str):
     return permission_checker
 
 
+def require_any_permission(*permission_codes: str):
+    if not permission_codes:
+        raise ValueError("At least one permission code must be provided.")
+
+    async def permission_checker(
+        claims: dict = Depends(get_current_user_claims),
+        use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+    ) -> dict:
+        try:
+            user_id = UUID(str(claims["sub"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user identity in authentication token.",
+            ) from error
+        authorization = await use_case.execute(user_id)
+        if not set(permission_codes).intersection(authorization.permission_codes):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permission denied.",
+            )
+        return claims
+
+    return permission_checker
+
+
 def get_current_user_claims(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
     try:
         return security_service.decode_access_token(credentials.credentials)
@@ -99,3 +130,21 @@ def require_role(allowed_roles: list[Role]):
             )
         return claims
     return role_checker
+
+
+def require_admin_or_kiosk_employee(
+    request: Request,
+    claims: dict = Depends(get_current_user_claims),
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer_scheme),
+) -> dict:
+    if claims.get("role") == Role.ADMIN.value:
+        return claims
+
+    policy: AttendanceClockPolicy = resolve_attendance_clock_policy(request, credentials)
+    if claims.get("role") == Role.USER.value and policy.channel == "kiosk":
+        return claims
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Permission denied",
+    )

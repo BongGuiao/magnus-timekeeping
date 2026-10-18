@@ -1,8 +1,10 @@
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from app.auth.application.accounts import DEFAULT_EMPLOYEE_PASSWORD
 from app.auth.application.use_case import LoginInputDTO, LoginUseCase
 from app.auth.domain.entities.user import Role, UserEntity
 
@@ -84,6 +86,51 @@ class LoginAuditTests(unittest.IsolatedAsyncioTestCase):
             after={"outcome": "success"},
         )
         self.assertNotIn("secret", repr(audit.record.await_args))
+
+    async def test_login_requires_password_change_when_default_password_is_used(self):
+        user = self.make_user(password_changed_at=None)
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user),
+            FakeSecurityService(password_matches=True),
+            AsyncMock(),
+        )
+        with patch(
+            "app.auth.application.use_case.get_app_role",
+            new=AsyncMock(return_value=(Role.USER, ["EMPLOYEE"])),
+        ):
+            result = await use_case.execute(LoginInputDTO("employee-1", DEFAULT_EMPLOYEE_PASSWORD))
+
+        self.assertTrue(result.must_change_password)
+
+    async def test_login_does_not_require_password_change_when_different_password_is_used(self):
+        user = self.make_user(password_changed_at=None)
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user),
+            FakeSecurityService(password_matches=True),
+            AsyncMock(),
+        )
+        with patch(
+            "app.auth.application.use_case.get_app_role",
+            new=AsyncMock(return_value=(Role.USER, ["EMPLOYEE"])),
+        ):
+            result = await use_case.execute(LoginInputDTO("employee-1", "employee-chosen-password"))
+
+        self.assertFalse(result.must_change_password)
+
+    async def test_login_requires_password_change_if_default_password_is_used_again(self):
+        user = self.make_user(password_changed_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user),
+            FakeSecurityService(password_matches=True),
+            AsyncMock(),
+        )
+        with patch(
+            "app.auth.application.use_case.get_app_role",
+            new=AsyncMock(return_value=(Role.USER, ["EMPLOYEE"])),
+        ):
+            result = await use_case.execute(LoginInputDTO("employee-1", DEFAULT_EMPLOYEE_PASSWORD))
+
+        self.assertTrue(result.must_change_password)
 
     async def test_failed_unknown_user_login_is_audited_without_identifier(self):
         audit = AsyncMock()

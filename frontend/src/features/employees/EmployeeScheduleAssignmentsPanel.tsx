@@ -11,7 +11,12 @@ import type {
   EmployeeScheduleAssignment,
   EmployeeScheduleAssignmentPayload,
 } from '../../lib/employeeScheduleAssignmentApi'
-import { fetchCurrentEmploymentAssignment, getManilaDate } from '../../lib/employeeRelatedApi'
+import {
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
+  fetchEmploymentAssignments,
+  getManilaDate,
+  isCurrentEmploymentAssignment,
+} from '../../lib/employeeRelatedApi'
 import { fetchRestDayPatterns } from '../../lib/restDayPatternApi'
 import type { RestDayPattern } from '../../lib/restDayPatternApi'
 import { fetchScheduleTemplates } from '../../lib/scheduleTemplateApi'
@@ -47,6 +52,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
   const [assignments, setAssignments] = useState<EmployeeScheduleAssignment[]>([])
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([])
   const [patterns, setPatterns] = useState<RestDayPattern[]>([])
+  const [hasCurrentEmploymentAssignment, setHasCurrentEmploymentAssignment] = useState(false)
   const [form, setForm] = useState<AssignmentForm>(emptyAssignment)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(employeeId))
@@ -60,18 +66,22 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
       setAssignments([])
       setTemplates([])
       setPatterns([])
+      setHasCurrentEmploymentAssignment(false)
       setIsLoading(false)
       return
     }
     let current = true
     setIsLoading(true)
     setErrorMessage('')
-    fetchCurrentEmploymentAssignment(employeeId)
-      .then(async (employmentAssignment) => {
+    const refreshPanel = async () => {
+      setIsLoading(true)
+      try {
+        const employmentAssignments = await fetchEmploymentAssignments(employeeId)
+        const currentAssignment = employmentAssignments.find((assignment) => isCurrentEmploymentAssignment(assignment)) ?? null
         const [nextAssignments, nextTemplates, nextPatterns] = await Promise.all([
           fetchEmployeeScheduleAssignments(employeeId),
-          employmentAssignment
-            ? fetchScheduleTemplates({ companyId: employmentAssignment.company_id })
+          currentAssignment
+            ? fetchScheduleTemplates({ companyId: currentAssignment.company_id })
             : Promise.resolve([]),
           fetchRestDayPatterns(),
         ])
@@ -86,23 +96,42 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
           throw new Error('Rest-day patterns response was not a list.')
         }
         setAssignments(nextAssignments)
+        setHasCurrentEmploymentAssignment(Boolean(currentAssignment))
         const assignedTemplateIds = new Set(nextAssignments.map((assignment) => assignment.schedule_template_id))
-        setTemplates(nextTemplates.filter((template) =>
-          (template.is_active && template.status === 'ACTIVE') || assignedTemplateIds.has(template.id),
+        const companyTemplates = nextTemplates.filter((template) =>
+          currentAssignment
+          && template.company_id === currentAssignment.company_id
+          && ((template.is_active && template.status === 'ACTIVE') || assignedTemplateIds.has(template.id)),
+        )
+        const companyTemplateIds = new Set(companyTemplates.map((template) => template.id))
+        const assignedPatternIds = new Set(
+          nextAssignments.flatMap((assignment) => assignment.rest_day_pattern_id ? [assignment.rest_day_pattern_id] : []),
+        )
+        setTemplates(companyTemplates)
+        setPatterns(nextPatterns.filter((pattern) =>
+          assignedPatternIds.has(pattern.id)
+          || pattern.days.every((day) => !day.schedule_template_id || companyTemplateIds.has(day.schedule_template_id)),
         ))
-        setPatterns(nextPatterns)
-        if (!employmentAssignment) {
-          setErrorMessage('No active employment assignment found. Add one before assigning a schedule.')
+        if (!currentAssignment) {
+          setErrorMessage('No active employment assignment was found. Add or update one before assigning a schedule.')
+        } else {
+          setErrorMessage('')
         }
-      })
-      .catch((error: unknown) => {
-        if (current) setErrorMessage(errorText(error))
-      })
-      .finally(() => {
+      } catch (error: unknown) {
+        if (current) {
+          setHasCurrentEmploymentAssignment(false)
+          setTemplates([])
+          setErrorMessage(errorText(error))
+        }
+      } finally {
         if (current) setIsLoading(false)
-      })
+      }
+    }
+    void refreshPanel()
+    window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     return () => {
       current = false
+      window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     }
   }, [employeeId])
 
@@ -223,6 +252,9 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
       <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Employee schedule assignments</h3>
       {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
       {successMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
+      <p className="text-xs text-slate-500">
+        Schedule templates and linked rest-day patterns are limited to the company on the employee&apos;s most recent employment assignment.
+      </p>
 
       <div className="overflow-x-auto rounded-lg border border-slate-200">
         <table className="min-w-full text-left text-xs">
@@ -303,7 +335,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
           </label>
           <div className="flex justify-end gap-2 sm:col-span-2 lg:col-span-3">
             <button type="button" onClick={resetForm} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Clear</button>
-            <button type="button" onClick={() => void saveAssignment()} disabled={isSaving || isLoading || !templates.length} className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60">
+            <button type="button" onClick={() => void saveAssignment()} disabled={isSaving || isLoading || !hasCurrentEmploymentAssignment || !templates.length} className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60">
               <Plus className="h-3.5 w-3.5" />{isSaving ? 'Saving…' : editingId ? 'Save changes' : 'Add assignment'}
             </button>
           </div>

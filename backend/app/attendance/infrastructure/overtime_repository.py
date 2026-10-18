@@ -1,6 +1,6 @@
 from dataclasses import fields
 from datetime import date
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -20,8 +20,22 @@ from app.attendance.infrastructure.entity_mapping import to_attendance_employee 
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
+from app.filemaintenance.schedule.infrastructure.db_model import ScheduleSegmentModel
 
 _ATTENDANCE_OVERTIME_FIELDS = (
+    "calculated_ot_minutes",
+    "overtime_hours",
+    "regular_overtime_minutes",
+    "regular_overtime_hours",
+    "night_differential_overtime_minutes",
+    "night_differential_overtime_hours",
+    "expected_clock_in_at",
+    "expected_clock_out_at",
+    "late_minutes",
+    "undertime_minutes",
+    "night_differential_minutes",
+    "night_differential_hours",
+    "punch_metadata",
     "overtime_request_status",
     "requested_regular_overtime_minutes",
     "requested_night_differential_overtime_minutes",
@@ -57,6 +71,7 @@ def current_overtime_cutoff_statement(employee_id: UUID, today: date):
             EmploymentAssignmentModel.status == "ACTIVE",
             EmploymentAssignmentModel.effective_from <= today,
             or_(EmploymentAssignmentModel.effective_to.is_(None), EmploymentAssignmentModel.effective_to >= today),
+            or_(EmploymentAssignmentModel.separation_date.is_(None), EmploymentAssignmentModel.separation_date >= today),
             PayrollCutoffModel.is_active.is_(True),
             PayrollCutoffModel.period_start <= today,
             PayrollCutoffModel.period_end >= today,
@@ -115,6 +130,16 @@ class SqlAlchemyOvertimeRepository:
         cutoff = await self._session.scalar(current_overtime_cutoff_statement(employee_id, today))
         return _copy_fields(cutoff, OvertimeCutoff) if cutoff is not None else None
 
+    async def get_cutoff_for_employee_on_date(
+        self,
+        employee_id: UUID,
+        work_date: date,
+    ) -> Optional[OvertimeCutoff]:
+        cutoff = await self._session.scalar(
+            current_overtime_cutoff_statement(employee_id, work_date)
+        )
+        return _copy_fields(cutoff, OvertimeCutoff) if cutoff is not None else None
+
     async def list_completed_attendance_in_period(
         self, user_id: UUID, period_start: date, period_end: date
     ) -> list[OvertimeAttendance]:
@@ -134,6 +159,57 @@ class SqlAlchemyOvertimeRepository:
             )
         ).scalars().all()
         return [_copy_fields(row, OvertimeAttendance) for row in rows]
+
+    async def list_employee_attendance_in_range(
+        self,
+        employee_id: UUID,
+        from_date: date,
+        to_date: date,
+        *,
+        lock_for_update: bool = False,
+    ) -> list[OvertimeAttendance]:
+        statement = (
+            select(AttendanceModel)
+            .join(UserModel, UserModel.id == AttendanceModel.user_id)
+            .where(
+                UserModel.employee_id == employee_id,
+                AttendanceModel.work_date >= from_date,
+                AttendanceModel.work_date <= to_date,
+                AttendanceModel.record_status == "VALID",
+            )
+            .order_by(AttendanceModel.work_date, AttendanceModel.created_at, AttendanceModel.id)
+        )
+        if lock_for_update:
+            statement = statement.with_for_update(of=AttendanceModel)
+        rows = (
+            await self._session.execute(
+                statement
+            )
+        ).scalars().all()
+        return [_copy_fields(row, OvertimeAttendance) for row in rows]
+
+    async def list_break_rules_for_template(
+        self, schedule_template_id: UUID
+    ) -> list[dict[str, Any]]:
+        segments = (
+            await self._session.scalars(
+                select(ScheduleSegmentModel)
+                .where(
+                    ScheduleSegmentModel.schedule_template_id == schedule_template_id,
+                    ScheduleSegmentModel.break_slot.is_not(None),
+                )
+                .order_by(ScheduleSegmentModel.segment_sequence)
+            )
+        ).all()
+        return [
+            {
+                "break_slot": segment.break_slot,
+                "segment_type": segment.segment_type,
+                "break_minutes": segment.break_minutes,
+                "auto_deduct": segment.auto_deduct,
+            }
+            for segment in segments
+        ]
 
     async def lock_completed_attendance(
         self, attendance_id: UUID, user_id: UUID
@@ -162,7 +238,12 @@ class SqlAlchemyOvertimeRepository:
         attendance, employee = row
         return _copy_fields(attendance, OvertimeAttendance), _employee(employee)
 
-    async def has_open_application(self, attendance_id: UUID, overtime_type: Optional[str] = None) -> bool:
+    async def has_open_application(
+        self,
+        attendance_id: UUID,
+        overtime_type: Optional[str] = None,
+        exclude_application_id: Optional[UUID] = None,
+    ) -> bool:
         statement = select(OvertimeApplicationModel.id).where(
             OvertimeApplicationModel.attendance_record_id == attendance_id,
             OvertimeApplicationModel.is_active.is_(True),
@@ -170,6 +251,8 @@ class SqlAlchemyOvertimeRepository:
         )
         if overtime_type is not None:
             statement = statement.where(OvertimeApplicationModel.overtime_type == overtime_type)
+        if exclude_application_id is not None:
+            statement = statement.where(OvertimeApplicationModel.id != exclude_application_id)
         return await self._session.scalar(statement.limit(1)) is not None
 
     async def add_application(self, application: OvertimeApplication) -> OvertimeApplication:
@@ -184,7 +267,20 @@ class SqlAlchemyOvertimeRepository:
 
     async def save_application(self, application: OvertimeApplication) -> None:
         model = await self._session.get(OvertimeApplicationModel, application.id)
-        for name in _APPLICATION_DECISION_FIELDS:
+        for name in (
+            "requested_start_at",
+            "requested_end_at",
+            "potential_ot_minutes",
+            "requested_minutes",
+            "system_validated_minutes",
+            "supervisor_approved_minutes",
+            "final_payable_minutes",
+            "overtime_type",
+            "reason",
+            "work_accomplished",
+            "validation_status",
+            *_APPLICATION_DECISION_FIELDS,
+        ):
             setattr(model, name, getattr(application, name))
         await self._session.flush()
 
@@ -202,7 +298,7 @@ class SqlAlchemyOvertimeRepository:
                     OvertimeApplicationModel.attendance_record_id == attendance_id,
                     OvertimeApplicationModel.is_active.is_(True),
                 )
-                .order_by(OvertimeApplicationModel.created_at.desc(), OvertimeApplicationModel.id.desc())
+                .order_by(OvertimeApplicationModel.updated_at.desc(), OvertimeApplicationModel.id.desc())
             )
         ).all()
         return [_copy_fields(row, OvertimeApplication) for row in rows]
@@ -256,5 +352,23 @@ class SqlAlchemyOvertimeRepository:
         )
         if supervisor_employee_id is not None:
             statement = _supervised_by(statement, supervisor_employee_id)
+        row = (await self._session.execute(statement)).first()
+        return _record(row) if row is not None else None
+
+    async def lock_owned_application(
+        self, application_id: UUID, user_id: UUID
+    ) -> Optional[OvertimeApplicationRecord]:
+        statement = (
+            select(OvertimeApplicationModel, AttendanceModel, EmployeeModel)
+            .with_for_update(of=(OvertimeApplicationModel, AttendanceModel))
+            .join(AttendanceModel, AttendanceModel.id == OvertimeApplicationModel.attendance_record_id)
+            .join(EmployeeModel, EmployeeModel.id == OvertimeApplicationModel.employee_id)
+            .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+            .where(
+                OvertimeApplicationModel.id == application_id,
+                OvertimeApplicationModel.is_active.is_(True),
+                UserModel.id == user_id,
+            )
+        )
         row = (await self._session.execute(statement)).first()
         return _record(row) if row is not None else None

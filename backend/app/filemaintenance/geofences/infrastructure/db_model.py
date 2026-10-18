@@ -8,6 +8,7 @@ class Geofence(Base):
     __tablename__ = 'geofences'
     __table_args__ = (
         UniqueConstraint('company_id', 'geofence_code', name='uq_company_geofence_code'),
+        UniqueConstraint('company_id', 'id', name='uq_geofences_company_id_id'),
         CheckConstraint('radius_meters IS NULL OR radius_meters > 0', name='chk_radius_meters'),
         CheckConstraint('center_point IS NOT NULL OR boundary_polygon IS NOT NULL', name='chk_geometry_present'),
         CheckConstraint('effective_to IS NULL OR effective_to > effective_from', name='chk_effective_dates'),

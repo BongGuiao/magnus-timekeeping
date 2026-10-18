@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { mockDashboardData } from '../data/mockDashboard'
 import { useLogout } from '../hooks/useLogout'
 import {
@@ -15,6 +16,7 @@ import {
   type SupervisorInvalidAttendance,
 } from '../lib/attendanceApi'
 import { fetchPendingDeviceSnapshot, type DeviceRecord, updateDeviceRegistration } from '../lib/deviceApi'
+import { fetchAnnouncements, fetchUpcomingHolidays } from '../lib/dashboardContentApi'
 import {
   decideSupervisorPendingLeave,
   fetchLeaveDashboardSnapshot,
@@ -32,6 +34,7 @@ import WorkHoursCard from '../components/dashboard/WorkHoursCard'
 import RecentAttendanceTable from '../components/dashboard/RecentAttendanceTable'
 import OvertimeApprovalsPanel from '../components/dashboard/OvertimeApprovalsPanel'
 import OfficialBusinessApprovalsPanel from '../components/dashboard/OfficialBusinessApprovalsPanel'
+import SupervisorAttendanceLocationsPanel from '../features/attendance/SupervisorAttendanceLocationsPanel'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -39,6 +42,7 @@ import {
   SupervisorPendingLeavesCard,
 } from '../components/dashboard/SideCards'
 import {
+  getAvailableRoleCodes,
   getSelectedDashboardRole,
   hasAnyPermission,
   hasPermission,
@@ -46,7 +50,9 @@ import {
   type DashboardRole,
 } from '../types/role'
 import type {
+  Announcement,
   AttendanceLogEntry,
+  Holiday,
   LeaveBalance,
   LeaveRequest,
 } from '../types/dashboard'
@@ -92,6 +98,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const data = mockDashboardData
   const { logout } = useLogout({ onLoggedOut })
   const [role, setRole] = useState<DashboardRole>(getSelectedDashboardRole)
+  const hasSupervisorRoleCode = getAvailableRoleCodes().some(
+    (roleCode) => roleCode.trim().toUpperCase() === 'SUPERVISOR',
+  )
   const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
   const canReviewTeamLeave = hasPermission('leave.approve_team')
   const canReviewTeamAttendance = hasPermission('attendance.read_team')
@@ -112,6 +121,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [teamDashboardSnapshot, setTeamDashboardSnapshot] = useState<AdminDashboardSnapshot | null>(null)
   const [isLoadingTeamDashboard, setIsLoadingTeamDashboard] = useState(false)
   const [teamDashboardError, setTeamDashboardError] = useState<string | null>(null)
+  const [isTeamHoursOpen, setIsTeamHoursOpen] = useState(false)
   const [teamAttendancePanel, setTeamAttendancePanel] = useState<TeamAttendancePanel | null>(null)
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
@@ -125,6 +135,12 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isLoadingLeaveDashboard, setIsLoadingLeaveDashboard] = useState(false)
   const [leaveDashboardError, setLeaveDashboardError] = useState<string | null>(null)
   const [leaveDashboardRefreshedAt, setLeaveDashboardRefreshedAt] = useState<string | null>(null)
+  const [upcomingHolidays, setUpcomingHolidays] = useState<Holiday[]>([])
+  const [isLoadingUpcomingHolidays, setIsLoadingUpcomingHolidays] = useState(false)
+  const [upcomingHolidaysError, setUpcomingHolidaysError] = useState<string | null>(null)
+  const [announcements, setAnnouncements] = useState<Announcement[]>([])
+  const [isLoadingAnnouncements, setIsLoadingAnnouncements] = useState(false)
+  const [announcementsError, setAnnouncementsError] = useState<string | null>(null)
   const [supervisorPendingLeaves, setSupervisorPendingLeaves] = useState<SupervisorPendingLeave[]>([])
   const [supervisorPendingLeaveCount, setSupervisorPendingLeaveCount] = useState<number | null>(null)
   const [isLoadingSupervisorLeaveCount, setIsLoadingSupervisorLeaveCount] = useState(false)
@@ -231,6 +247,65 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       void refreshLeaveDashboard(false)
     }, 30 * 1000)
     const handleFocus = () => void refreshLeaveDashboard(false)
+    window.addEventListener('focus', handleFocus)
+
+    return () => {
+      isCurrent = false
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [role])
+
+  useEffect(() => {
+    if (role !== 'employee') return
+
+    let isCurrent = true
+    const refreshDashboardContent = async (showLoading: boolean) => {
+      if (showLoading) {
+        setIsLoadingUpcomingHolidays(true)
+        setIsLoadingAnnouncements(true)
+      }
+      try {
+        const [holidayResult, announcementResult] = await Promise.allSettled([
+          fetchUpcomingHolidays(),
+          fetchAnnouncements(),
+        ])
+        if (!isCurrent) return
+
+        if (holidayResult.status === 'fulfilled') {
+          setUpcomingHolidays(holidayResult.value)
+          setUpcomingHolidaysError(null)
+        } else {
+          setUpcomingHolidaysError(
+            holidayResult.reason instanceof Error
+              ? holidayResult.reason.message
+              : 'Could not load upcoming holidays.',
+          )
+        }
+
+        if (announcementResult.status === 'fulfilled') {
+          setAnnouncements(announcementResult.value)
+          setAnnouncementsError(null)
+        } else {
+          setAnnouncementsError(
+            announcementResult.reason instanceof Error
+              ? announcementResult.reason.message
+              : 'Could not load announcements.',
+          )
+        }
+      } finally {
+        if (isCurrent && showLoading) {
+          setIsLoadingUpcomingHolidays(false)
+          setIsLoadingAnnouncements(false)
+        }
+      }
+    }
+
+    void refreshDashboardContent(true)
+    const refreshTimer = window.setInterval(() => {
+      void refreshDashboardContent(false)
+    }, 5 * 60 * 1000)
+    const handleFocus = () => void refreshDashboardContent(false)
     window.addEventListener('focus', handleFocus)
 
     return () => {
@@ -748,7 +823,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="mx-auto w-[95%] pt-6">
-        <HeroBanner employeeFirstName={employeeName.split(' ')[0]} role={role} />
+        <HeroBanner employeeName={employeeName} role={role} />
         <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
             <div>
@@ -1550,24 +1625,16 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         )}
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="space-y-6 lg:col-span-2">
+          <div className="space-y-4 lg:col-span-2">
             {role === 'employee' ? (
               <>
-                <div className={hasPermission('payroll.read_own') ? 'grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3' : ''}>
-                  <div className={hasPermission('payroll.read_own') ? 'lg:col-span-1' : ''}>
-                    <LeaveBalanceGrid
-                      balances={dashboardLeaveBalances}
-                      isLoading={isLoadingLeaveDashboard}
-                      error={leaveDashboardError}
-                      refreshedAt={leaveDashboardRefreshedAt}
-                    />
-                  </div>
+                <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {hasPermission('payroll.read_own') && (
                     <button
                       type="button"
                       onClick={() => onNavigate?.('payroll-review')}
                       aria-label="Open Payroll Review"
-                      className="rounded-xl text-left transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 lg:col-span-2"
+                      className="h-full rounded-xl text-left transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
                     >
                       <StatCard
                         label="Payroll Review"
@@ -1578,6 +1645,21 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                         compact
                       />
                     </button>
+                  )}
+                  <LeaveBalanceGrid
+                    balances={dashboardLeaveBalances}
+                    isLoading={isLoadingLeaveDashboard}
+                    error={leaveDashboardError}
+                    refreshedAt={leaveDashboardRefreshedAt}
+                  />
+                  {hasPermission('overtime.submit_own') && (
+                    <section className="flex h-full flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                      <h2 className="text-sm font-semibold text-slate-500">My Overtime Applications</h2>
+                      <p className="mt-2 text-xs leading-5 text-slate-500">Apply using completed attendance and track your approval status.</p>
+                      <button type="button" onClick={() => onNavigate?.('overtime-application')} className="mt-auto w-full rounded-lg border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50">
+                        Apply for Overtime
+                      </button>
+                    </section>
                   )}
                 </div>
                 <WorkHoursCard
@@ -1593,44 +1675,62 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 />
               </>
             ) : role === 'supervisor' || role === 'manager' ? (
-              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-lg font-extrabold text-slate-900">Team hours this week</h2>
-                <p className="mt-1 text-sm text-slate-500">Recorded hours for your currently assigned direct reports.</p>
-                {teamDashboardError && (
-                  <p role="alert" className="mt-4 text-sm text-rose-700">{teamDashboardError}</p>
-                )}
-                {isLoadingTeamDashboard && !teamDashboardSnapshot ? (
-                  <p className="mt-5 text-sm text-slate-500">Loading team hours…</p>
-                ) : teamDashboardSnapshot?.weekly_hours.length ? (
-                  <div className="mt-4 overflow-x-auto">
-                    <table className="w-full min-w-[520px] text-left text-sm">
-                      <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
-                        <tr>
-                          <th className="px-3 py-3">Employee</th>
-                          <th className="px-3 py-3 text-right">Hours recorded</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {teamDashboardSnapshot.weekly_hours.map((employee) => (
-                          <tr key={employee.employee_id}>
-                            <td className="px-3 py-3">
-                              <p className="font-semibold text-slate-900">{employee.employee_name}</p>
-                              <p className="text-xs text-slate-500">{employee.employee_code}</p>
-                            </td>
-                            <td className="px-3 py-3 text-right text-slate-700">
-                              {formatWeeklyHours(employee.minutes_worked / 60)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <>
+                <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setIsTeamHoursOpen((open) => !open)}
+                    aria-expanded={isTeamHoursOpen}
+                    aria-controls="team-hours-this-week"
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                  >
+                    <span>
+                      <span className="block text-lg font-extrabold text-slate-900">Team hours this week</span>
+                      <span className="mt-1 block text-sm text-slate-500">Recorded hours for your currently assigned direct reports.</span>
+                    </span>
+                    <ChevronDown className={`h-5 w-5 shrink-0 text-slate-500 transition-transform ${isTeamHoursOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {teamDashboardError && (
+                    <p role="alert" className="mt-4 text-sm text-rose-700">{teamDashboardError}</p>
+                  )}
+                  <div id="team-hours-this-week" hidden={!isTeamHoursOpen}>
+                    {isLoadingTeamDashboard && !teamDashboardSnapshot ? (
+                        <p role="status" className="mt-5 text-sm text-slate-500">Loading team hours…</p>
+                      ) : teamDashboardSnapshot?.weekly_hours.length ? (
+                        <div className="mt-4 overflow-x-auto">
+                          <table className="w-full min-w-[520px] text-left text-sm">
+                            <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                              <tr>
+                                <th className="px-3 py-3">Employee</th>
+                                <th className="px-3 py-3 text-right">Hours recorded</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {teamDashboardSnapshot.weekly_hours.map((employee) => (
+                                <tr key={employee.employee_id}>
+                                  <td className="px-3 py-3">
+                                    <p className="font-semibold text-slate-900">{employee.employee_name}</p>
+                                    <p className="text-xs text-slate-500">{employee.employee_code}</p>
+                                  </td>
+                                  <td className="px-3 py-3 text-right text-slate-700">
+                                    {formatWeeklyHours(employee.minutes_worked / 60)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : !teamDashboardError ? (
+                        <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                          No team hours have been recorded this week.
+                        </p>
+                      ) : null}
                   </div>
-                ) : !teamDashboardError ? (
-                  <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                    No team hours have been recorded this week.
-                  </p>
-                ) : null}
-              </section>
+                </section>
+                {role === 'supervisor' && hasSupervisorRoleCode && canReviewTeamAttendance && (
+                  <SupervisorAttendanceLocationsPanel />
+                )}
+              </>
             ) : (
               <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-500">Role preview</h2>
@@ -1643,15 +1743,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </div>
 
           <div className="space-y-6">
-            {role === 'employee' && hasPermission('overtime.submit_own') && (
-              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-semibold text-slate-500">My Overtime Applications</h2>
-                <p className="mt-2 text-xs leading-5 text-slate-500">Apply using completed attendance and track your approval status.</p>
-                <button type="button" onClick={() => onNavigate?.('overtime-application')} className="mt-4 w-full rounded-lg border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50">
-                  Apply for Overtime
-                </button>
-              </section>
-            )}
             {role === 'employee' && hasPermission('official_business.submit_own') && (
               <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-slate-500">My Official Business</h2>
@@ -1675,8 +1766,16 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             ) : null}
             {role === 'employee' && (
               <>
-                <HolidaysCard holidays={data.upcomingHolidays} />
-                <AnnouncementsCard announcements={data.announcements} />
+                <HolidaysCard
+                  holidays={upcomingHolidays}
+                  isLoading={isLoadingUpcomingHolidays}
+                  error={upcomingHolidaysError}
+                />
+                <AnnouncementsCard
+                  announcements={announcements}
+                  isLoading={isLoadingAnnouncements}
+                  error={announcementsError}
+                />
               </>
             )}
           </div>

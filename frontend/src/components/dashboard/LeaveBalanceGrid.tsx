@@ -10,7 +10,7 @@ interface Props {
 
 export default function LeaveBalanceGrid({ balances, isLoading = false, error, refreshedAt }: Props) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-500">Leave Balances</h2>
         {refreshedAt && <span className="text-[11px] text-slate-400">Updated {new Date(refreshedAt).toLocaleTimeString()}</span>}
@@ -37,7 +37,7 @@ export default function LeaveBalanceGrid({ balances, isLoading = false, error, r
           return (
             <div key={leave.type} className="rounded-lg border border-slate-100 bg-slate-50 p-2 text-center">
               <p className="text-xs font-medium text-slate-500">{leave.label}</p>
-              <p className="mt-1 text-lg font-bold text-slate-900">{format(remaining)}</p>
+              <p className="mt-1 text-xl font-bold text-slate-900">{format(remaining)}</p>
               <p className="text-[11px] text-slate-400">available · {format(leave.allotted)} total</p>
             </div>
           )

@@ -8,7 +8,12 @@ import {
   updateUserRoleAssignment,
 } from '../../lib/userRoleApi'
 import type { AvailableRole, CreateUserRolePayload, UserRoleAssignment } from '../../lib/userRoleApi'
-import { getManilaDate } from '../../lib/employeeRelatedApi'
+import {
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
+  fetchEmploymentAssignments,
+  getManilaDate,
+  isCurrentEmploymentAssignment,
+} from '../../lib/employeeRelatedApi'
 import type { ApiErrorEnvelope } from '../../types/auth'
 import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
@@ -75,19 +80,39 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
       return
     }
     let current = true
-    Promise.all([fetchAvailableRoles(), fetchUserRoleAssignments(employeeId)])
-      .then(([availableRoles, userRoles]) => {
+    const loadRoleData = async () => {
+      setIsLoading(true)
+      try {
+        const [availableRoles, userRoles, employmentAssignments] = await Promise.all([
+          fetchAvailableRoles(),
+          fetchUserRoleAssignments(employeeId),
+          fetchEmploymentAssignments(employeeId),
+        ])
         if (!current) return
         setRoles(availableRoles)
         setAssignments(userRoles)
-      })
-      .catch((cause: unknown) => {
-        if (current) setError(errorText(cause))
-      })
-      .finally(() => {
+        const currentAssignment = employmentAssignments.find((assignment) =>
+          isCurrentEmploymentAssignment(assignment),
+        )
+        setCompanyId(currentAssignment?.company_id ?? '')
+        setOrgUnitId('')
+        setError('')
+      } catch (cause: unknown) {
+        if (current) {
+          setCompanyId('')
+          setOrgUnitId('')
+          setError(errorText(cause))
+        }
+      } finally {
         if (current) setIsLoading(false)
-      })
-    return () => { current = false }
+      }
+    }
+    void loadRoleData()
+    window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, loadRoleData)
+    return () => {
+      current = false
+      window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, loadRoleData)
+    }
   }, [employeeId])
 
   async function refreshAssignments() {
@@ -96,7 +121,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   }
 
   async function assignRole() {
-    if (!employeeId || !roleId || !effectiveFrom || isSaving) return
+    if (!employeeId || !roleId || !companyId || !effectiveFrom || isSaving) return
     const hasOverlappingRole = assignments.some((assignment) =>
       assignment.role_id === roleId
       && assignment.company_id === (companyId || null)
@@ -110,7 +135,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
     const payload: CreateUserRolePayload = {
       user_id: employeeId,
       role_id: roleId,
-      company_id: companyId || null,
+      company_id: companyId,
       org_unit_id: orgUnitId || null,
       effective_from: effectiveFrom,
       effective_to: null,
@@ -161,7 +186,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   const orgUnitsById = new Map(orgUnits.map((orgUnit) => [orgUnit.id, orgUnit]))
   const activeAssignmentCount = assignments.filter((assignment) => assignmentIsCurrent(assignment, today)).length
   const scopedOrgUnits = orgUnits.filter((orgUnit) =>
-    (!companyId || orgUnit.company_id === companyId)
+    orgUnit.company_id === companyId
     && orgUnit.is_active
     && orgUnit.status === 'ACTIVE',
   )
@@ -199,15 +224,16 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
                 {roles.map((role) => <option key={role.id} value={role.id}>{role.role_name} ({role.role_code})</option>)}
               </select>
             </label>
-            <label className={labelClassName}>Company scope
-              <select value={companyId} onChange={(event) => {
-                setCompanyId(event.target.value)
-                setOrgUnitId('')
-              }} className={inputClassName}>
-                <option value="">All companies</option>
-                {companies.filter((company) => company.is_active && company.status === 'ACTIVE').map((company) => (
-                  <option key={company.id} value={company.id}>{company.trade_name || company.legal_name}</option>
-                ))}
+            <label className={labelClassName}>Employment assignment company
+              <select value={companyId} disabled className={inputClassName}>
+                <option value="">{isLoading ? 'Loading assignment company…' : 'No employment assignment company'}</option>
+                {companyId && (
+                  <option value={companyId}>
+                    {companies.find((company) => company.id === companyId)?.trade_name
+                      ?? companies.find((company) => company.id === companyId)?.legal_name
+                      ?? 'Assigned company'}
+                  </option>
+                )}
               </select>
             </label>
             <label className={labelClassName}>Org unit scope
@@ -219,12 +245,17 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
             <label className={labelClassName}>Effective from <span className="font-normal text-slate-400">(required)</span>
               <input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className={inputClassName} />
             </label>
-            <button type="button" onClick={() => void assignRole()} disabled={!roleId || !effectiveFrom || isLoading || isSaving} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={() => void assignRole()} disabled={!roleId || !companyId || !effectiveFrom || isLoading || isSaving} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
               {isSaving ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
               {isSaving ? 'Assigning...' : 'Assign role'}
             </button>
           </div>
-          <p className="px-5 pb-5 text-[11px] leading-5 text-slate-500">Leave both scopes blank to assign the role globally. An org unit can only be selected after choosing its company.</p>
+          <p className="px-5 pb-5 text-[11px] leading-5 text-slate-500">
+            Role assignments are scoped to the company on the employee&apos;s most recent employment assignment. An org unit can be selected within that company.
+          </p>
+          {!isLoading && !companyId && (
+            <p className="px-5 pb-5 text-xs text-amber-800">Add an employment assignment before assigning a company-scoped role.</p>
+          )}
         </section>
 
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">

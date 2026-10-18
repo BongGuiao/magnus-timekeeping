@@ -8,6 +8,16 @@ import type {
   EmploymentAssignmentWritePayload,
 } from '../types/employeeRelated'
 
+export const EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT = 'employment-assignment-changed'
+
+export function isCurrentEmploymentAssignment(assignment: EmploymentAssignment, today = getManilaDate()): boolean {
+  return assignment.is_active
+    && assignment.status === 'ACTIVE'
+    && assignment.effective_from <= today
+    && (!assignment.effective_to || assignment.effective_to >= today)
+    && (!assignment.separation_date || assignment.separation_date >= today)
+}
+
 function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
     const body = error.response?.data as ApiErrorEnvelope | undefined
@@ -41,14 +51,7 @@ export async function fetchCurrentEmploymentAssignmentWithPrimaryLocation(
 
 export async function fetchCurrentEmploymentAssignments(employeeId: string): Promise<EmploymentAssignment[]> {
   const assignments = await fetchEmploymentAssignments(employeeId)
-  const today = getManilaDate()
-  return assignments.filter((assignment) =>
-    assignment.is_active
-    && assignment.status === 'ACTIVE'
-    && assignment.effective_from <= today
-    && (!assignment.effective_to || assignment.effective_to >= today)
-    && (!assignment.separation_date || assignment.separation_date >= today),
-  )
+  return assignments.filter((assignment) => isCurrentEmploymentAssignment(assignment))
 }
 
 export function getManilaDate(asOf = new Date()): string {

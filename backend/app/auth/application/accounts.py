@@ -20,6 +20,7 @@ from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
+DEFAULT_EMPLOYEE_PASSWORD = "Default123!"
 
 
 def employee_display_name(employee: EmployeeEntity | None) -> str:

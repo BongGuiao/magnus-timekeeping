@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
-import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../../lib/employeeRelatedApi'
+import {
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
+  fetchEmploymentAssignments,
+  getCompletedServiceMonths,
+  getManilaDate,
+  isCurrentEmploymentAssignment,
+} from '../../lib/employeeRelatedApi'
 import {
   calculateAvailableMinutes,
   createEmployeeEntitlement,
@@ -13,6 +19,7 @@ import {
 } from '../../lib/leaveApi'
 import type { EmployeeEntitlement, EmployeeEntitlementPayload, LeaveType, LeaveUnitType } from '../../lib/leaveApi'
 import type { Employee } from '../../types/employee'
+import type { EmploymentAssignment } from '../../types/employeeRelated'
 
 interface Props {
   employee: Employee | null
@@ -51,7 +58,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [entitlements, setEntitlements] = useState<EmployeeEntitlement[]>([])
   const [form, setForm] = useState<EmployeeEntitlementPayload>(() => emptyEntitlement(employee?.id ?? ''))
-  const [assignment, setAssignment] = useState<Awaited<ReturnType<typeof fetchCurrentEmploymentAssignmentWithPrimaryLocation>>>(null)
+  const [assignment, setAssignment] = useState<EmploymentAssignment | null>(null)
   const [editing, setEditing] = useState<EmployeeEntitlement | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(employee))
   const [isSaving, setIsSaving] = useState(false)
@@ -76,44 +83,44 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
     setForm(emptyEntitlement(employeeId))
     setErrorMessage('')
     setSuccessMessage('')
-    const refreshEntitlements = async () => {
+    const refreshPanel = async () => {
+      setIsLoading(true)
+      setErrorMessage('')
       try {
-        const rows = await fetchEmployeeEntitlements(employeeId)
-        if (isCurrent) setEntitlements(rows)
-      } catch (error) {
-        if (isCurrent) setErrorMessage(errorText(error))
-      }
-    }
-    Promise.all([fetchCurrentEmploymentAssignmentWithPrimaryLocation(employeeId), fetchEmployeeEntitlements(employeeId)])
-      .then(async ([currentAssignment, rows]) => {
+        const [assignments, rows] = await Promise.all([
+          fetchEmploymentAssignments(employeeId),
+          fetchEmployeeEntitlements(employeeId),
+        ])
         if (!isCurrent) return
+
+        const currentAssignment = assignments.find((item) => isCurrentEmploymentAssignment(item)) ?? null
         setAssignment(currentAssignment)
         setEntitlements(rows)
+        setForm((current) => ({ ...current, employee_id: employeeId }))
+
         if (!currentAssignment) {
-          setErrorMessage('This employee has no active employment assignment.')
+          setLeaveTypes([])
           return
         }
+
         const types = await fetchLeaveTypes({ companyId: currentAssignment.company_id })
         if (!isCurrent) return
         setLeaveTypes(types.filter((type) => type.is_active && type.status === 'ACTIVE'))
-        setEntitlements(rows)
-        setForm((current) => ({
-          ...current,
-          employee_id: employeeId,
-        }))
-      })
-      .catch((error: unknown) => {
+      } catch (error) {
         if (isCurrent) setErrorMessage(errorText(error))
-      })
-      .finally(() => {
+      } finally {
         if (isCurrent) setIsLoading(false)
-      })
-    const refreshTimer = window.setInterval(() => void refreshEntitlements(), 30 * 1000)
-    window.addEventListener('focus', refreshEntitlements)
+      }
+    }
+    void refreshPanel()
+    const refreshTimer = window.setInterval(() => void refreshPanel(), 30 * 1000)
+    window.addEventListener('focus', refreshPanel)
+    window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     return () => {
       isCurrent = false
       window.clearInterval(refreshTimer)
-      window.removeEventListener('focus', refreshEntitlements)
+      window.removeEventListener('focus', refreshPanel)
+      window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     }
   }, [employeeId])
 
@@ -280,7 +287,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
               {availableLeaveTypes.map((type) => <option key={type.id} value={type.id}>{type.leave_code} — {type.leave_name}</option>)}
             </select>
             {isLoading && <p className="mt-1 font-normal text-slate-500">Loading employee assignment…</p>}
-            {!isLoading && !assignment && <p className="mt-1 font-normal text-rose-700">No active employment assignment found for this employee.</p>}
+            {!isLoading && !assignment && <p className="mt-1 font-normal text-amber-700">Add an active employment assignment before selecting a leave type.</p>}
           </label>
           <label className={labelClassName}>Entitlement year
             <input className={inputClassName} type="number" min={1900} max={2200} required value={form.entitlement_year} onChange={(event) => setField('entitlement_year', Number(event.target.value))} />

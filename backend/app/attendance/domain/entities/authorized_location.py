@@ -9,6 +9,7 @@ class AssignedLocation:
     company_id: UUID
     location_code: str
     location_name: str
+    authorized_geofence_ids: list[UUID] = field(default_factory=list)
 
 
 @dataclass

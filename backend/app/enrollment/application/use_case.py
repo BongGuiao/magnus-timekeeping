@@ -15,6 +15,7 @@ from app.enrollment.infrastructure.image_storage import (
 )
 
 MAX_SAMPLES_PER_EMPLOYEE = 5
+MAX_FACE_COMPARISON_CANDIDATES = 10000
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
 
                 if len(existing) >= MAX_SAMPLES_PER_EMPLOYEE:
                     raise ValueError(f"This employee already has the maximum of {MAX_SAMPLES_PER_EMPLOYEE} face samples.")
+
+                await self._ensure_face_belongs_to_employee(uow, repo, input_dto.employee_id, encoding)
 
                 image_path.parent.mkdir(parents=True, exist_ok=True)
                 with image_path.open("xb") as image_file:
@@ -104,3 +107,32 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             if image_saved:
                 image_path.unlink(missing_ok=True)
             raise
+
+    async def _ensure_face_belongs_to_employee(self, uow, repo, employee_id: UUID, encoding: list[float]) -> None:
+        """Rejects a sample that differs from the employee's enrolled face or matches another employee."""
+        threshold = self.face_encoding_service.match_threshold()
+        enrolled = await repo.find_all(
+            FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
+            limit=MAX_FACE_COMPARISON_CANDIDATES,
+        )
+        own = [item.face_encoding for item in enrolled if item.employee_id == employee_id and item.face_encoding]
+        others = [item for item in enrolled if item.employee_id != employee_id and item.face_encoding]
+
+        if own:
+            own_distances = self.face_encoding_service.face_distances(encoding, own)
+            if max(own_distances) > threshold:
+                raise ValueError(
+                    "This face does not match the employee's existing enrolled samples. "
+                    "Use a photo of the same person, or remove the existing samples before re-enrolling."
+                )
+
+        if others:
+            other_distances = self.face_encoding_service.face_distances(
+                encoding, [item.face_encoding for item in others]
+            )
+            closest_index = min(range(len(other_distances)), key=other_distances.__getitem__)
+            if other_distances[closest_index] <= threshold:
+                employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
+                other_employee = await employee_repo.find_one(EmployeeModel.id == others[closest_index].employee_id)
+                label = other_employee.employee_no if other_employee else "another employee"
+                raise ValueError(f"This face is already enrolled for another employee ({label}).")

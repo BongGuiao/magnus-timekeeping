@@ -21,6 +21,10 @@ class SessionUnitOfWork:
 class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_draft_moves_application_to_pending(self):
         application = SimpleNamespace(
+            employee_id=uuid4(),
+            leave_type_id=uuid4(),
+            start_at=datetime(2026, 10, 12, 9, tzinfo=timezone.utc),
+            end_at=datetime(2026, 10, 12, 10, tzinfo=timezone.utc),
             status="DRAFT",
             is_active=True,
             submitted_at=None,
@@ -29,7 +33,10 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
             row_version=2,
         )
         session = SimpleNamespace(
-            execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: application)),
+            execute=AsyncMock(return_value=SimpleNamespace(
+                scalar_one_or_none=lambda: application,
+                all=lambda: [],
+            )),
             flush=AsyncMock(),
             refresh=AsyncMock(),
         )
@@ -39,6 +46,9 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "app.filemaintenance.leaves.application.leave_records_use_case._to_entity",
             side_effect=lambda model, entity_type: model,
+        ), patch(
+            "app.filemaintenance.leaves.application.leave_records_use_case._validate_leave_type_company",
+            new=AsyncMock(),
         ):
             result = await use_case.submit_draft_for_approval(uuid4(), actor_id)
 

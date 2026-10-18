@@ -19,7 +19,7 @@ export default function StatCard({ label, value, hint, icon, accent = 'indigo', 
 
   return (
     <div
-      className={`relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 ${styles.bar}`}
+      className={`relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 ${compact ? 'h-full' : ''} ${styles.bar}`}
     >
       <div className="flex items-start justify-between">
         <p className={compact

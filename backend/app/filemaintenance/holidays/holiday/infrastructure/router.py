@@ -1,14 +1,22 @@
+from datetime import date, datetime, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from elasticsearch import AsyncElasticsearch
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.core.database import get_db
+from app.core.employee_company_scope import get_active_employee_company_ids
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
 from app.filemaintenance.holidays.holiday.application.use_case import (
     CreateHolidayUseCase,
     GetHolidayUseCase,
@@ -16,6 +24,7 @@ from app.filemaintenance.holidays.holiday.application.use_case import (
     UpdateHolidayUseCase,
 )
 from app.filemaintenance.holidays.holiday.domain.entities.holiday import HolidayEntity
+from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
 from app.filemaintenance.holidays.holiday.infrastructure.dependencies import (
     get_create_holiday_use_case,
     get_holiday_use_case,
@@ -24,6 +33,12 @@ from app.filemaintenance.holidays.holiday.infrastructure.dependencies import (
 )
 
 router = APIRouter(prefix="/holidays", tags=["Holidays"])
+PH_TIMEZONE = ZoneInfo("Asia/Manila")
+
+
+class UpcomingHolidaySchema(BaseModel):
+    date: date
+    name: str
 
 
 def _require_email(claims: dict[str, Any]) -> None:
@@ -43,6 +58,52 @@ def _get_user_id(claims: dict[str, Any]) -> UUID:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User id claim missing or invalid in authentication token.",
         ) from error
+
+
+@router.get(
+    "/upcoming",
+    response_model=ResponseEnvelope[list[UpcomingHolidaySchema]],
+    status_code=status.HTTP_200_OK,
+)
+async def list_upcoming_holidays(
+    days: int = Query(default=90, ge=1, le=366),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    session: AsyncSession = Depends(get_db),
+):
+    user_id = _get_user_id(claims)
+    today = datetime.now(PH_TIMEZONE).date()
+    company_ids = await get_active_employee_company_ids(session, user_id, today)
+    if not company_ids:
+        return ResponseEnvelope(status="success", data=[])
+
+    holidays = await session.execute(
+        select(HolidayModel.holiday_date, HolidayModel.holiday_name)
+        .distinct()
+        .select_from(HolidayModel)
+        .join(
+            HolidayCalendarModel,
+            HolidayCalendarModel.id == HolidayModel.holiday_calendar_id,
+        )
+        .where(
+            HolidayCalendarModel.company_id.in_(company_ids),
+            HolidayCalendarModel.effective_year >= today.year,
+            HolidayCalendarModel.status == "PUBLISHED",
+            HolidayCalendarModel.is_active.is_(True),
+            HolidayModel.holiday_date >= today,
+            HolidayModel.holiday_date <= today + timedelta(days=days),
+            HolidayModel.status == "ACTIVE",
+            HolidayModel.is_active.is_(True),
+        )
+        .order_by(HolidayModel.holiday_date, HolidayModel.holiday_name)
+        .limit(100)
+    )
+    return ResponseEnvelope(
+        status="success",
+        data=[
+            UpcomingHolidaySchema(date=holiday_date, name=holiday_name)
+            for holiday_date, holiday_name in holidays
+        ],
+    )
 
 
 @router.post(

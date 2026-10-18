@@ -133,6 +133,18 @@ class ScheduleSegmentSchemaTests(unittest.TestCase):
         self.assertFalse(payload.auto_deduct)
         self.assertEqual(payload.flex_start_minutes, 0)
 
+    def test_create_schema_accepts_paid_overtime_break_slot(self) -> None:
+        payload = CreateScheduleSegmentSchema(
+            segment_sequence=2,
+            segment_type="PAID_BREAK",
+            start_time="17:00",
+            end_time="21:00",
+            break_slot="OT_BREAK",
+            work_segment_sequence=1,
+            break_minutes=15,
+        )
+        self.assertEqual(payload.break_slot, "OT_BREAK")
+
     def test_segment_schema_rejects_invalid_values(self) -> None:
         with self.assertRaises(ValidationError):
             CreateScheduleSegmentSchema(

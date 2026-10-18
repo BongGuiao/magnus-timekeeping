@@ -7,6 +7,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     Float,
     String,
@@ -109,6 +110,7 @@ class EmploymentAssignmentModel(Base):
             "effective_to IS NULL OR effective_to >= effective_from",
             name="ck_employment_assignments_effective_dates",
         ),
+        UniqueConstraint("id", "company_id", name="uq_employment_assignments_id_company"),
         {"schema": "hr"},
     )
 
@@ -154,6 +156,61 @@ class EmploymentAssignmentModel(Base):
     updated_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+
+
+class EmploymentAssignmentGeofenceModel(Base):
+    __tablename__ = "employment_assignment_geofences"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["assignment_id", "company_id"],
+            ["hr.employment_assignments.id", "hr.employment_assignments.company_id"],
+            ondelete="CASCADE",
+            name="fk_assignment_geofences_assignment_company",
+        ),
+        ForeignKeyConstraint(
+            ["company_id", "geofence_id"],
+            ["location.geofences.company_id", "location.geofences.id"],
+            ondelete="CASCADE",
+            name="fk_assignment_geofences_company_geofence",
+        ),
+        {"schema": "hr"},
+    )
+
+    assignment_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    geofence_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+    )
+
+
+class EmploymentAssignmentLocationModel(Base):
+    __tablename__ = "employment_assignment_locations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["assignment_id", "company_id"],
+            ["hr.employment_assignments.id", "hr.employment_assignments.company_id"],
+            ondelete="CASCADE",
+            name="fk_assignment_locations_assignment_company",
+        ),
+        ForeignKeyConstraint(
+            ["company_id", "location_id"],
+            ["core.locations.company_id", "core.locations.id"],
+            ondelete="CASCADE",
+            name="fk_assignment_locations_company_location",
+        ),
+        {"schema": "hr"},
+    )
+
+    assignment_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    company_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    location_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
 
 
 class EmployeeSkillModel(Base):

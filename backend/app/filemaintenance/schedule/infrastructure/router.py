@@ -66,7 +66,7 @@ class CreateScheduleSegmentSchema(BaseModel):
     punch_required: bool = False
     auto_deduct: bool = False
     flex_start_minutes: int = Field(default=0, ge=0)
-    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK"] | None = None
+    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK", "OT_BREAK"] | None = None
     work_segment_sequence: int | None = Field(default=None, ge=1, le=32767)
     break_minutes: int = Field(default=0, ge=0)
 
@@ -83,7 +83,7 @@ class UpdateScheduleSegmentSchema(BaseModel):
     punch_required: bool | None = None
     auto_deduct: bool | None = None
     flex_start_minutes: int | None = Field(default=None, ge=0)
-    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK"] | None = None
+    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK", "OT_BREAK"] | None = None
     work_segment_sequence: int | None = Field(default=None, ge=1, le=32767)
     break_minutes: int | None = Field(default=None, ge=0)
 

@@ -80,7 +80,11 @@ class WfhGeofenceTests(unittest.IsolatedAsyncioTestCase):
         self.session = SimpleNamespace(
             scalar=AsyncMock(return_value=self.employee),
             scalars=AsyncMock(side_effect=[
-                SimpleNamespace(all=lambda: [SimpleNamespace(primary_location_id=self.fence.location_id, company_id=self.fence.company_id)]),
+                SimpleNamespace(all=lambda: [SimpleNamespace(
+                    primary_location_id=self.fence.location_id,
+                    company_id=self.fence.company_id,
+                    authorized_geofence_ids=[self.fence.id],
+                )]),
                 SimpleNamespace(all=lambda: [self.location]),
                 SimpleNamespace(all=lambda: [self.fence]),
             ]),

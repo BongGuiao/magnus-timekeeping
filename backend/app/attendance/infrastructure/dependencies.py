@@ -15,12 +15,18 @@ from app.attendance.application.punch_use_cases import (
     SubmitClockPunchUseCase,
 )
 from app.attendance.application.recent_attendance_use_cases import GetRecentAttendanceSnapshotUseCase
+from app.attendance.application.supervisor_attendance_location_use_cases import (
+    ListSupervisorAttendanceLocationsUseCase,
+    ListSupervisorTeamEmployeesUseCase,
+)
 from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationUseCase,
     GetOvertimeAttendanceOptionsUseCase,
     ListMyOvertimeApplicationsUseCase,
     ListPendingOvertimeApplicationsUseCase,
+    RecalculateAttendanceRangeUseCase,
     SubmitOvertimeApplicationUseCase,
+    UpdateOvertimeApplicationUseCase,
 )
 from app.attendance.application.use_case import (
     ClockAttendanceUseCase, 
@@ -83,8 +89,20 @@ def get_attendance_unit_of_work(uow: GenUnitOfWork = Depends(get_unit_of_work)) 
 
 def get_overtime_attendance_options_use_case(
     uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ) -> GetOvertimeAttendanceOptionsUseCase:
-    return GetOvertimeAttendanceOptionsUseCase(uow)
+    return GetOvertimeAttendanceOptionsUseCase(
+        uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client),
+    )
+
+
+def get_recalculate_attendance_range_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+) -> RecalculateAttendanceRangeUseCase:
+    return RecalculateAttendanceRangeUseCase(
+        uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client),
+    )
 
 
 def get_submit_overtime_application_use_case(
@@ -92,6 +110,13 @@ def get_submit_overtime_application_use_case(
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ) -> SubmitOvertimeApplicationUseCase:
     return SubmitOvertimeApplicationUseCase(uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client))
+
+
+def get_update_overtime_application_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+) -> UpdateOvertimeApplicationUseCase:
+    return UpdateOvertimeApplicationUseCase(uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client))
 
 
 def get_list_my_overtime_applications_use_case(
@@ -142,3 +167,15 @@ def get_admin_dashboard_use_case(
     uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
 ) -> GetAdminDashboardUseCase:
     return GetAdminDashboardUseCase(uow)
+
+
+def get_supervisor_attendance_locations_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> ListSupervisorAttendanceLocationsUseCase:
+    return ListSupervisorAttendanceLocationsUseCase(uow)
+
+
+def get_supervisor_team_employees_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> ListSupervisorTeamEmployeesUseCase:
+    return ListSupervisorTeamEmployeesUseCase(uow)

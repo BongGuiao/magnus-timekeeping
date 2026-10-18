@@ -6,17 +6,17 @@ export function LeaveRequestsCard({ requests, onApply }: { requests: LeaveReques
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-sm font-semibold text-slate-500">My Leave Requests</h2>
-      <ul className="mt-3 space-y-2">
+      <ul className="mt-3 space-y-1.5">
         {requests.length === 0 && <p className="text-sm text-slate-400">No leave requests yet.</p>}
         {requests.map((req) => (
-          <li key={req.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2">
+          <li key={req.id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-1.5">
             <div>
-              <p className="text-sm font-medium text-slate-800">{req.type}</p>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs font-medium text-slate-800">{req.type}</p>
+              <p className="text-xs text-slate-500">
                 {req.startDate} to {req.endDate}
               </p>
             </div>
-            <span className={`rounded-full px-2 py-1 text-xs font-medium capitalize ${
+            <span className={`rounded-full px-2 py-1 text-[11px] font-medium capitalize ${
               ['APPROVED'].includes(req.status.toUpperCase())
                 ? 'bg-emerald-50 text-emerald-700'
                 : ['REJECTED', 'CANCELLED', 'CANCELED'].includes(req.status.toUpperCase())
@@ -93,34 +93,85 @@ export function SupervisorPendingLeavesCard({
   )
 }
 
-export function HolidaysCard({ holidays }: { holidays: Holiday[] }) {
+export function HolidaysCard({
+  holidays,
+  isLoading = false,
+  error,
+}: {
+  holidays: Holiday[]
+  isLoading?: boolean
+  error?: string | null
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-sm font-semibold text-slate-500">Upcoming Holidays</h2>
-      <ul className="mt-3 space-y-2">
-        {holidays.map((holiday) => (
-          <li key={holiday.date} className="flex items-center justify-between text-sm">
-            <span className="text-slate-700">{holiday.name}</span>
-            <span className="text-xs text-slate-400">{holiday.date}</span>
-          </li>
-        ))}
-      </ul>
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>
+      ) : isLoading ? (
+        <p className="mt-3 text-sm text-slate-500">Loading upcoming holidays…</p>
+      ) : !Array.isArray(holidays) || holidays.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-500">No upcoming holidays.</p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {holidays.map((holiday) => {
+            const date = new Date(`${holiday.date}T00:00:00+08:00`)
+            const formattedDate = Number.isNaN(date.getTime())
+              ? holiday.date
+              : date.toLocaleDateString('en-PH', {
+                timeZone: 'Asia/Manila',
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+              })
+            return (
+              <li key={`${holiday.date}-${holiday.name}`} className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-slate-700">{holiday.name}</span>
+                <span className="shrink-0 text-xs text-slate-400">{formattedDate}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }
 
-export function AnnouncementsCard({ announcements }: { announcements: Announcement[] }) {
+export function AnnouncementsCard({
+  announcements,
+  isLoading = false,
+  error,
+}: {
+  announcements: Announcement[]
+  isLoading?: boolean
+  error?: string | null
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-sm font-semibold text-slate-500">Announcements</h2>
-      <ul className="mt-3 space-y-3">
-        {announcements.map((a) => (
-          <li key={a.id}>
-            <p className="text-sm font-medium text-slate-800">{a.title}</p>
-            <p className="text-xs text-slate-400">{a.postedAt}</p>
-          </li>
-        ))}
-      </ul>
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>
+      ) : isLoading ? (
+        <p className="mt-3 text-sm text-slate-500">Loading announcements…</p>
+      ) : !Array.isArray(announcements) || announcements.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-500">No announcements.</p>
+      ) : (
+        <ul className="mt-3 space-y-3">
+          {announcements.map((announcement) => (
+            <li key={announcement.id}>
+              <p className="text-sm font-medium text-slate-800">{announcement.title}</p>
+              {announcement.body && <p className="mt-1 whitespace-pre-line text-xs leading-5 text-slate-600">{announcement.body}</p>}
+              <p className="text-xs text-slate-400">
+                {new Date(announcement.postedAt).toLocaleDateString('en-PH', {
+                  timeZone: 'Asia/Manila',
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric',
+                })}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

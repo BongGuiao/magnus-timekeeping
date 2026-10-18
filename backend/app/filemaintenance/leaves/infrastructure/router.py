@@ -8,7 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
+from app.auth.infrastructure.dependencies import (
+    get_current_user_claims,
+    require_any_permission,
+    require_permission,
+)
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.leaves.application.use_case import (
@@ -28,7 +32,6 @@ from app.filemaintenance.leaves.infrastructure.dependencies import (
 router = APIRouter(
     prefix="/leave-types",
     tags=["Leave Types"],
-    dependencies=[Depends(require_permission("leave.manage"))],
 )
 
 
@@ -135,7 +138,7 @@ def _require_admin(claims: dict[str, Any]) -> None:
 )
 async def create_leave_type(
     payload: CreateLeaveTypeSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: CreateLeaveTypeUseCase = Depends(get_create_leave_type_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -161,7 +164,7 @@ async def create_leave_type(
 )
 async def update_leave_type(
     payload: UpdateLeaveTypeSchema,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: UpdateLeaveTypeUseCase = Depends(get_update_leave_type_use_case),
     get_use_case: GetLeaveTypeUseCase = Depends(get_get_leave_type_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
@@ -201,7 +204,7 @@ async def list_leave_types(
     leave_status: str | None = None,
     is_active: bool | None = None,
     leave_code: str | None = None,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_any_permission("leave.manage", "leave.submit")),
     use_case: ListLeaveTypesUseCase = Depends(get_list_leave_types_use_case),
 ):
     _actor_id(claims)
@@ -215,7 +218,7 @@ async def list_leave_types(
 )
 async def get_leave_type(
     leave_type_id: UUID,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
     use_case: GetLeaveTypeUseCase = Depends(get_get_leave_type_use_case),
 ):
     _actor_id(claims)

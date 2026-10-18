@@ -22,7 +22,12 @@ from app.auth.infrastructure.db_model import UserModel
 from app.enrollment.domain.entities.enrollment import EnrollmentStatus, FaceEnrollmentEntity
 from app.enrollment.infrastructure.db_model import FaceEnrollmentModel
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
-from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel, EmployeeWfhLocationModel
+from app.filemaintenance.employees.infrastructure.db_model import (
+    EmployeeModel,
+    EmploymentAssignmentGeofenceModel,
+    EmploymentAssignmentModel,
+    EmployeeWfhLocationModel,
+)
 from app.filemaintenance.geofences.infrastructure.db_model import Geofence
 from app.filemaintenance.location.infrastructure.db_model import Location as LocationModel
 from app.filemaintenance.schedule.infrastructure.db_model import (
@@ -52,6 +57,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPECTED_CLOCK_IN = time(9, 0)
 DEFAULT_EXPECTED_CLOCK_OUT = time(18, 0)
 MAX_OPEN_ATTENDANCE_AGE = timedelta(hours=24)
+MAX_FACE_MATCH_CANDIDATES = 10000
 
 
 def circle_contains_gps(
@@ -108,12 +114,12 @@ BREAK_PAIRS: tuple[tuple[str, str, str], ...] = (
 )
 UNPAID_BREAK_PAIRS = (
     ("meal_break_out_at", "meal_break_in_at"),
-    ("ot_break_out_at", "ot_break_in_at"),
 )
 BREAK_SLOT_FIELDS = {
     "FIRST_BREAK": ("first_break_out_at", "first_break_in_at"),
     "MEAL_BREAK": ("meal_break_out_at", "meal_break_in_at"),
     "SECOND_BREAK": ("second_break_out_at", "second_break_in_at"),
+    "OT_BREAK": ("ot_break_out_at", "ot_break_in_at"),
 }
 PUNCH_FIELDS: tuple[str, ...] = ("clock_in_at", "clock_out_at") + tuple(
     field for start, end, _ in BREAK_PAIRS for field in (start, end)
@@ -146,25 +152,38 @@ def calculate_break_policy(
     unpaid_minutes = 0
     deducted_intervals: list[tuple[datetime | None, datetime | None]] = []
     configured_starts = set()
+    if (
+        (record.ot_break_out_at is not None or record.ot_break_in_at is not None)
+        and not any(rule.get("break_slot") == "OT_BREAK" for rule in rules)
+    ):
+        raise ValueError("Configure a paid OT_BREAK allowance in the employee's schedule template.")
     for rule in rules:
-        start_field, end_field = BREAK_SLOT_FIELDS[rule["break_slot"]]
+        break_slot = rule["break_slot"]
+        start_field, end_field = BREAK_SLOT_FIELDS[break_slot]
         configured_starts.add(start_field)
         start = getattr(record, start_field)
         end = getattr(record, end_field)
         allowance = rule["break_minutes"]
+        is_paid_break = (
+            break_slot in ("FIRST_BREAK", "SECOND_BREAK", "OT_BREAK")
+            or rule["segment_type"] == "PAID_BREAK"
+        )
         if start is None and end is None:
-            if rule["segment_type"] == "UNPAID_BREAK":
+            if not is_paid_break:
                 if rule["auto_deduct"]:
                     unpaid_minutes += allowance
-                elif require_complete:
+                elif require_complete and break_slot != "FIRST_BREAK":
                     raise ValueError(f"Complete the required {rule['break_slot'].lower().replace('_', ' ')} punches before clocking out.")
             continue
         if start is None or end is None or to_utc(end) <= to_utc(start):
             raise ValueError("Break punches must form a valid completed interval.")
         duration = int((to_utc(end) - to_utc(start)).total_seconds() // 60)
         excess_minutes += max(0, duration - allowance)
-        if rule["segment_type"] == "UNPAID_BREAK":
-            unpaid_minutes += duration
+        if not is_paid_break:
+            unpaid_minutes += max(
+                duration,
+                allowance if break_slot == "MEAL_BREAK" else 0,
+            )
             deducted_intervals.append((start, end))
         else:
             excess_start = to_utc(start) + timedelta(minutes=allowance)
@@ -172,8 +191,69 @@ def calculate_break_policy(
                 deducted_intervals.append((excess_start, end))
     for start_field, end_field in UNPAID_BREAK_PAIRS:
         if start_field not in configured_starts:
-            deducted_intervals.append((getattr(record, start_field), getattr(record, end_field)))
+            start = getattr(record, start_field)
+            end = getattr(record, end_field)
+            if start is None and end is None:
+                continue
+            if start is None or end is None or to_utc(end) <= to_utc(start):
+                raise ValueError("Break punches must form a valid completed interval.")
+            unpaid_minutes += int((to_utc(end) - to_utc(start)).total_seconds() // 60)
+            deducted_intervals.append((start, end))
     return excess_minutes, unpaid_minutes, tuple(deducted_intervals)
+
+
+def calculate_net_nonpayable_break_minutes(
+    record: Any,
+    rules: list[dict[str, Any]],
+    break_intervals: tuple[tuple[datetime | None, datetime | None], ...],
+    actual_clock_in_at: datetime | None,
+    actual_clock_out_at: datetime | None,
+) -> int:
+    if (
+        actual_clock_in_at is None
+        or actual_clock_out_at is None
+        or to_utc(actual_clock_out_at) <= to_utc(actual_clock_in_at)
+    ):
+        return 0
+
+    start_at = to_utc(actual_clock_in_at)
+    end_at = to_utc(actual_clock_out_at)
+    gross_seconds = (end_at - start_at).total_seconds()
+    deducted_seconds = gross_seconds - _net_interval_seconds(
+        start_at,
+        end_at,
+        break_intervals,
+    )
+    meal_break_deduction_top_up = 0
+    for rule in rules:
+        if rule["break_slot"] != "MEAL_BREAK" or rule["segment_type"] != "UNPAID_BREAK":
+            continue
+        start_field, end_field = BREAK_SLOT_FIELDS["MEAL_BREAK"]
+        meal_start = getattr(record, start_field)
+        meal_end = getattr(record, end_field)
+        if meal_start is None or meal_end is None:
+            continue
+        meal_duration = int(
+            (to_utc(meal_end) - to_utc(meal_start)).total_seconds() // 60
+        )
+        meal_break_deduction_top_up += max(
+            0,
+            int(rule["break_minutes"]) - meal_duration,
+        )
+    auto_deduct_minutes = sum(
+        int(rule["break_minutes"])
+        for rule in rules
+        if rule["break_slot"] == "MEAL_BREAK"
+        and rule["segment_type"] == "UNPAID_BREAK"
+        and rule["auto_deduct"]
+        and getattr(record, BREAK_SLOT_FIELDS[rule["break_slot"]][0]) is None
+    )
+    return min(
+        int(gross_seconds // 60),
+        int(deducted_seconds // 60)
+        + meal_break_deduction_top_up
+        + auto_deduct_minutes,
+    )
 
 
 async def resolve_record_break_rules(
@@ -348,7 +428,7 @@ def _night_overlap_seconds(
     break_intervals: tuple[tuple[datetime | None, datetime | None], ...],
 ) -> float:
     local_timezone = ZoneInfo("Asia/Manila")
-    first_date = start_at.astimezone(local_timezone).date()
+    first_date = start_at.astimezone(local_timezone).date() - timedelta(days=1)
     last_date = end_at.astimezone(local_timezone).date()
     night_seconds = 0.0
     current_date = first_date
@@ -561,8 +641,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         if employee is None:
             raise ValueError("No active employee record is linked to this account.")
 
-        # An employee may hold several concurrent assignments (different companies/sites);
-        # each active assignment's primary location is an authorized attendance site.
+        # Each active assignment grants only the geofences explicitly linked to it.
         assignments = list(
             (
                 await uow.session.scalars(
@@ -570,7 +649,6 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                         EmploymentAssignmentModel.employee_id == employee.id,
                         EmploymentAssignmentModel.is_active.is_(True),
                         EmploymentAssignmentModel.status == "ACTIVE",
-                        EmploymentAssignmentModel.primary_location_id.is_not(None),
                         EmploymentAssignmentModel.effective_from <= today,
                         or_(
                             EmploymentAssignmentModel.effective_to.is_(None),
@@ -585,24 +663,34 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             ).all()
         )
         if not assignments:
-            raise ValueError("No active primary location is assigned to this employee.")
+            raise ValueError("No active authorized geofence location is assigned to this employee.")
 
         locations = list(
             (
                 await uow.session.scalars(
-                    select(LocationModel).where(
-                        or_(
-                            *(
-                                and_(
-                                    LocationModel.id == item.primary_location_id,
-                                    LocationModel.company_id == item.company_id,
-                                )
-                                for item in assignments
-                            )
+                    select(LocationModel)
+                    .join(Geofence, Geofence.location_id == LocationModel.id)
+                    .join(
+                        EmploymentAssignmentGeofenceModel,
+                        and_(
+                            EmploymentAssignmentGeofenceModel.geofence_id == Geofence.id,
+                            EmploymentAssignmentGeofenceModel.company_id == Geofence.company_id,
                         ),
+                    )
+                    .join(
+                        EmploymentAssignmentModel,
+                        and_(
+                            EmploymentAssignmentModel.id == EmploymentAssignmentGeofenceModel.assignment_id,
+                            EmploymentAssignmentModel.company_id == EmploymentAssignmentGeofenceModel.company_id,
+                        ),
+                    )
+                    .where(
+                        EmploymentAssignmentModel.id.in_([item.id for item in assignments]),
+                        LocationModel.company_id == Geofence.company_id,
                         LocationModel.is_active.is_(True),
                         LocationModel.status == "ACTIVE",
                     )
+                    .distinct()
                 )
             ).all()
         )
@@ -613,16 +701,40 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         geofences = list(
             (
                 await uow.session.scalars(
-                    select(Geofence).where(
-                        or_(
-                            *(
-                                and_(
-                                    Geofence.company_id == location.company_id,
-                                    Geofence.location_id == location.id,
-                                )
-                                for location in locations
-                            )
+                    select(Geofence)
+                    .join(
+                        EmploymentAssignmentGeofenceModel,
+                        EmploymentAssignmentGeofenceModel.geofence_id == Geofence.id,
+                    )
+                    .join(
+                        EmploymentAssignmentModel,
+                        and_(
+                            EmploymentAssignmentModel.id == EmploymentAssignmentGeofenceModel.assignment_id,
+                            EmploymentAssignmentModel.company_id == EmploymentAssignmentGeofenceModel.company_id,
                         ),
+                    )
+                    .join(
+                        LocationModel,
+                        and_(
+                            LocationModel.id == Geofence.location_id,
+                            LocationModel.company_id == Geofence.company_id,
+                        ),
+                    )
+                    .where(
+                        EmploymentAssignmentModel.employee_id == employee.id,
+                        EmploymentAssignmentModel.is_active.is_(True),
+                        EmploymentAssignmentModel.status == "ACTIVE",
+                        EmploymentAssignmentModel.effective_from <= today,
+                        or_(
+                            EmploymentAssignmentModel.effective_to.is_(None),
+                            EmploymentAssignmentModel.effective_to >= today,
+                        ),
+                        or_(
+                            EmploymentAssignmentModel.separation_date.is_(None),
+                            EmploymentAssignmentModel.separation_date >= today,
+                        ),
+                        LocationModel.is_active.is_(True),
+                        LocationModel.status == "ACTIVE",
                         Geofence.is_active.is_(True),
                         Geofence.status == "ACTIVE",
                         Geofence.effective_from <= now_utc,
@@ -632,7 +744,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             ).all()
         )
         if not geofences:
-            raise ValueError("No active geofence is configured for the employee's assigned locations.")
+            raise ValueError("No active assigned geofence is configured for this employee.")
 
         wfh = await uow.session.get(EmployeeWfhLocationModel, employee.id) if allow_wfh else None
         wfh_fence = next(
@@ -824,14 +936,34 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             ),
         ]
         if location_id is not None:
-            assignment_filters.append(EmploymentAssignmentModel.primary_location_id == location_id)
+            assignment_filters.append(
+                EmploymentAssignmentModel.id.in_(
+                    select(EmploymentAssignmentGeofenceModel.assignment_id)
+                    .join(
+                        Geofence,
+                        and_(
+                            Geofence.id == EmploymentAssignmentGeofenceModel.geofence_id,
+                            Geofence.company_id == EmploymentAssignmentGeofenceModel.company_id,
+                        ),
+                    )
+                    .where(
+                        EmploymentAssignmentGeofenceModel.assignment_id == EmploymentAssignmentModel.id,
+                        EmploymentAssignmentGeofenceModel.company_id == EmploymentAssignmentModel.company_id,
+                        Geofence.location_id == location_id,
+                    )
+                )
+            )
 
         row = (
             await uow.session.execute(
                 select(EmploymentAssignmentModel.company_id, LocationModel.province, LocationModel.city)
                 .outerjoin(
                     LocationModel,
-                    LocationModel.id == EmploymentAssignmentModel.primary_location_id,
+                    LocationModel.id == (
+                        location_id
+                        if location_id is not None
+                        else EmploymentAssignmentModel.primary_location_id
+                    ),
                 )
                 .where(*assignment_filters)
                 .order_by(EmploymentAssignmentModel.effective_from.desc())
@@ -1075,15 +1207,14 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 raise ValueError("No active employee profile is linked to this account.")
 
             enrollment_repo = uow.get_repo(FaceEnrollmentEntity, FaceEnrollmentModel)
+            # Load every employee's enrolled samples so a face closer to someone else is rejected (1:N check).
             enrollments = await enrollment_repo.find_all(
-                FaceEnrollmentModel.employee_id == employee.id,
                 FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
-                limit=20,
+                limit=MAX_FACE_MATCH_CANDIDATES,
             )
-            if not enrollments:
-                raise ValueError("This employee has no active face enrollment.")
-
             known_encodings = [(e.employee_id, e.face_encoding) for e in enrollments if e.face_encoding]
+            if not any(employee_id == employee.id for employee_id, _ in known_encodings):
+                raise ValueError("This employee has no active face enrollment.")
 
             match = self.face_recognition_service.find_best_match(candidate_encoding, known_encodings)
             if not match:
@@ -1353,7 +1484,6 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     break_intervals=break_intervals,
                 )
                 existing.late_minutes = late_minutes
-                undertime_minutes += break_excess_minutes
                 existing.undertime_minutes = undertime_minutes
                 existing.calculated_ot_minutes = calculated_ot_minutes
                 existing.overtime_hours = Decimal(calculated_ot_minutes) / Decimal(60)
@@ -1370,24 +1500,20 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
 
                 # Merge the new metadata cleanly
                 current_meta = existing.punch_metadata or {}
+                net_nonpayable_minutes = calculate_net_nonpayable_break_minutes(
+                    existing,
+                    break_rules,
+                    break_intervals,
+                    actual_clock_in,
+                    now_utc,
+                )
                 current_meta["break_calculation"] = {
                     "excess_undertime_minutes": break_excess_minutes,
+                    "excess_minutes_break": break_excess_minutes,
                     "unpaid_break_minutes": unpaid_break_minutes,
+                    "net_nonpayable_minutes": net_nonpayable_minutes,
+                    "undertime_excludes_break_excess": True,
                 }
-                if break_rules and actual_clock_in is not None:
-                    gross_seconds = (now_utc - to_utc(actual_clock_in)).total_seconds()
-                    deducted_seconds = gross_seconds - _net_interval_seconds(
-                        to_utc(actual_clock_in), now_utc, break_intervals,
-                    )
-                    auto_deduct_minutes = sum(
-                        rule["break_minutes"] for rule in break_rules
-                        if rule["segment_type"] == "UNPAID_BREAK" and rule["auto_deduct"]
-                        and getattr(existing, BREAK_SLOT_FIELDS[rule["break_slot"]][0]) is None
-                    )
-                    current_meta["break_calculation"]["net_nonpayable_minutes"] = min(
-                        int(gross_seconds // 60),
-                        int(deducted_seconds // 60) + auto_deduct_minutes,
-                    )
                 clock_out_meta = dict(input_dto.punch_metadata or {})
                 if clock_out_geofence is not None:
                     clock_out_meta["geofence_validation"] = clock_out_geofence
@@ -1474,11 +1600,12 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
 
             enrollment_repo = uow.get_repo(FaceEnrollmentEntity, FaceEnrollmentModel)
             enrollments = await enrollment_repo.find_all(
-                FaceEnrollmentModel.employee_id == employee.id,
                 FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
-                limit=20,
+                limit=MAX_FACE_MATCH_CANDIDATES,
             )
             known_encodings = [(item.employee_id, item.face_encoding) for item in enrollments if item.face_encoding]
+            if not any(employee_id == employee.id for employee_id, _ in known_encodings):
+                raise ValueError("This employee has no active face enrollment.")
             match = self.face_recognition_service.find_best_match(candidate_encoding, known_encodings)
             if not match or match[0] != employee.id:
                 raise ValueError("Face not recognized for this employee. Please enroll or try again.")
@@ -1529,6 +1656,8 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
                 raise ValueError("Invalid break type.")
             if break_rules and rule is None and target_field in break_pairs and not target_field.startswith("ot_"):
                 raise ValueError("This attendance break has no configured schedule segment.")
+            if target_field == "ot_break_out_at" and rule is None:
+                raise ValueError("Configure an OT_BREAK paid allowance in the schedule template first.")
             if getattr(existing, target_field) is not None:
                 raise ValueError("This break action has already been recorded.")
 
@@ -1562,7 +1691,10 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
             if rule is not None and target_field in break_pairs:
                 window_start = to_utc(datetime.fromisoformat(rule["start_at"]))
                 window_end = to_utc(datetime.fromisoformat(rule["end_at"]))
-                if not window_start <= now_utc < window_end:
+                if (
+                    target_field != "ot_break_out_at"
+                    and not window_start <= now_utc < window_end
+                ):
                     raise ValueError("This break must start within its linked WORK segment's time range.")
 
             # 6. Assign the timestamp to the target field dynamically
@@ -1570,11 +1702,16 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
             if rule is not None and target_field in break_ends:
                 excess, unpaid, _ = calculate_break_policy(existing, break_rules, require_complete=False)
                 metadata = dict(existing.punch_metadata or {})
-                previous = metadata.get("break_calculation", {}).get("excess_undertime_minutes", 0)
-                existing.undertime_minutes = existing.undertime_minutes - previous + excess
+                break_calculation = dict(metadata.get("break_calculation") or {})
+                previous = int(break_calculation.get("excess_undertime_minutes", 0))
+                if not break_calculation.get("undertime_excludes_break_excess", False):
+                    existing.undertime_minutes = max(existing.undertime_minutes - previous, 0)
                 metadata["break_calculation"] = {
+                    **break_calculation,
                     "excess_undertime_minutes": excess,
+                    "excess_minutes_break": excess,
                     "unpaid_break_minutes": unpaid,
+                    "undertime_excludes_break_excess": True,
                 }
                 existing.punch_metadata = metadata
             if input_dto.device_proof or input_dto.punch_metadata:

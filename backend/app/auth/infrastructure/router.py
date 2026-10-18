@@ -28,6 +28,7 @@ from app.auth.infrastructure.dependencies import (
     get_login_use_case,
     get_signup_use_case,
     get_search_user_by_employee_code_use_case,
+    require_admin_or_kiosk_employee,
     require_role,
 )
 from app.auth.domain.entities.user import DEFAULT_SIGNUP_ROLE_CODE, Role
@@ -57,6 +58,7 @@ class TokenResponseSchema(BaseModel):
     expires_in_hours: int
     token_type: str
     employee_name: str
+    must_change_password: bool = False
 
 class UserResponseSchema(BaseModel):
     id: Optional[UUID] = None
@@ -116,7 +118,8 @@ async def login(
             expires_in_hours=result.expires_in_hours,
             role=result.role,
             role_code=result.role_code,
-            employee_name=result.employee_name
+            employee_name=result.employee_name,
+            must_change_password=result.must_change_password,
         )
     )
 
@@ -165,13 +168,14 @@ async def signup(
         expires_in_hours=result.expires_in_hours,
         role=result.role,
         role_code=result.role_code,
-        employee_name=result.employee_name
+        employee_name=result.employee_name,
+        must_change_password=False,
     )
 
 @router.get("/users/search", response_model=ResponseEnvelope[UserResponseSchema])
 async def search_user_by_employee_code(
     employee_code: str,
-    claims: dict = Depends(require_role([Role.ADMIN])),
+    claims: dict = Depends(require_admin_or_kiosk_employee),
     use_case: SearchUserByEmployeeCodeUseCase = Depends(get_search_user_by_employee_code_use_case),
 ):
     input_dto = SearchUserByEmployeeCodeInputDTO(employee_code=employee_code.strip())

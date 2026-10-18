@@ -11,8 +11,12 @@ from app.attendance.application.overtime_use_cases import (
     ListMyOvertimeApplicationsUseCase,
     ListPendingOvertimeApplicationsInput,
     ListPendingOvertimeApplicationsUseCase,
+    RecalculateAttendanceRangeInput,
+    RecalculateAttendanceRangeUseCase,
     SubmitOvertimeApplicationInput,
     SubmitOvertimeApplicationUseCase,
+    UpdateOvertimeApplicationInput,
+    UpdateOvertimeApplicationUseCase,
 )
 from app.attendance.application.recent_attendance_snapshot import RecentAttendanceItem
 from app.attendance.domain.entities.overtime import OvertimeApplicationRecord, OvertimeAttendance
@@ -21,7 +25,9 @@ from app.attendance.infrastructure.dependencies import (
     get_list_my_overtime_applications_use_case,
     get_list_pending_overtime_applications_use_case,
     get_overtime_attendance_options_use_case,
+    get_recalculate_attendance_range_use_case,
     get_submit_overtime_application_use_case,
+    get_update_overtime_application_use_case,
 )
 from app.attendance.infrastructure.http_errors import http_errors as _http_errors
 from app.attendance.infrastructure.overtime_schemas import (
@@ -30,9 +36,11 @@ from app.attendance.infrastructure.overtime_schemas import (
     OvertimeApplicationSchema,
     OvertimeAttendanceOptionsSchema,
     OvertimeCutoffSchema,
+    AttendanceRangeRecalculationInputSchema,
+    AttendanceRangeRecalculationSchema,
 )
 from app.auth.domain.entities.user import Role
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_permission, require_role
 from app.core.generics.mapper import ResponseEnvelope
 
 router = APIRouter()
@@ -110,6 +118,34 @@ async def get_overtime_attendance_options(
 
 
 @router.post(
+    "/recalculate-range",
+    response_model=ResponseEnvelope[AttendanceRangeRecalculationSchema],
+    summary="Preview or recalculate an employee's attendance range",
+)
+async def recalculate_attendance_range(
+    payload: AttendanceRangeRecalculationInputSchema,
+    claims: dict = Depends(require_role([Role.ADMIN])),
+    use_case: RecalculateAttendanceRangeUseCase = Depends(
+        get_recalculate_attendance_range_use_case
+    ),
+):
+    with _http_errors():
+        result = await use_case.execute(
+            RecalculateAttendanceRangeInput(
+                actor_user_id=_user_id(claims),
+                employee_id=payload.employee_id,
+                from_date=payload.from_date,
+                to_date=payload.to_date,
+                dry_run=payload.dry_run,
+            )
+        )
+    return ResponseEnvelope(
+        status="success",
+        data=AttendanceRangeRecalculationSchema.model_validate(result),
+    )
+
+
+@router.post(
     "/overtime-applications/{attendance_id}",
     response_model=ResponseEnvelope[OvertimeApplicationSchema],
     status_code=status.HTTP_201_CREATED,
@@ -125,6 +161,32 @@ async def submit_overtime_application(
             SubmitOvertimeApplicationInput(
                 user_id=_user_id(claims),
                 attendance_id=attendance_id,
+                overtime_type=payload.overtime_type,
+                requested_minutes=payload.requested_minutes,
+                reason=payload.reason,
+                work_accomplished=payload.work_accomplished,
+                requested_start_at=payload.requested_start_at,
+                requested_end_at=payload.requested_end_at,
+            )
+        )
+    return ResponseEnvelope(status="success", data=_application_schema(record))
+
+
+@router.put(
+    "/overtime-applications/{application_id}",
+    response_model=ResponseEnvelope[OvertimeApplicationSchema],
+)
+async def update_overtime_application(
+    application_id: UUID,
+    payload: OvertimeApplicationInputSchema,
+    claims: dict = Depends(require_permission("overtime.submit_own")),
+    use_case: UpdateOvertimeApplicationUseCase = Depends(get_update_overtime_application_use_case),
+):
+    with _http_errors():
+        record = await use_case.execute(
+            UpdateOvertimeApplicationInput(
+                user_id=_user_id(claims),
+                application_id=application_id,
                 overtime_type=payload.overtime_type,
                 requested_minutes=payload.requested_minutes,
                 reason=payload.reason,

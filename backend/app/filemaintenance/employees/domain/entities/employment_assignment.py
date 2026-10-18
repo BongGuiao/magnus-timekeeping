@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
 
@@ -17,6 +17,8 @@ class EmploymentAssignmentEntity:
     operational_group: str | None = None
     payroll_group_id: UUID | None = None
     primary_location_id: UUID | None = None
+    location_ids: list[UUID] = field(default_factory=list)
+    authorized_geofence_ids: list[UUID] = field(default_factory=list)
     effective_to: date | None = None
     separation_date: date | None = None
     status: str = "ACTIVE"

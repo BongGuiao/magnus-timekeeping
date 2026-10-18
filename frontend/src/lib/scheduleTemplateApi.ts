@@ -48,7 +48,7 @@ export type ScheduleTemplatePayload = Omit<
 >
 
 export type ScheduleSegmentType = 'WORK' | 'PAID_BREAK' | 'UNPAID_BREAK'
-export type BreakSlot = 'FIRST_BREAK' | 'MEAL_BREAK' | 'SECOND_BREAK'
+export type BreakSlot = 'FIRST_BREAK' | 'MEAL_BREAK' | 'SECOND_BREAK' | 'OT_BREAK'
 
 export interface ScheduleSegment {
   id: string

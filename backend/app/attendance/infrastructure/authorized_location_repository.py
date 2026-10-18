@@ -13,6 +13,7 @@ from app.attendance.domain.entities.authorized_location import (
 )
 from app.filemaintenance.employees.infrastructure.db_model import (
     EmploymentAssignmentModel,
+    EmploymentAssignmentGeofenceModel,
     EmployeeWfhLocationModel,
 )
 from app.filemaintenance.geofences.infrastructure.db_model import Geofence
@@ -30,12 +31,26 @@ class SqlAlchemyAuthorizedLocationRepository:
     async def list_assigned_locations(self, employee_id: UUID, today: date) -> list[AssignedLocation]:
         rows = (
             await self._session.execute(
-                select(LocationModel)
+                select(LocationModel, EmploymentAssignmentGeofenceModel.geofence_id)
+                .join(
+                    Geofence,
+                    and_(
+                        Geofence.location_id == LocationModel.id,
+                        Geofence.company_id == LocationModel.company_id,
+                    ),
+                )
+                .join(
+                    EmploymentAssignmentGeofenceModel,
+                    and_(
+                        EmploymentAssignmentGeofenceModel.geofence_id == Geofence.id,
+                        EmploymentAssignmentGeofenceModel.company_id == Geofence.company_id,
+                    ),
+                )
                 .join(
                     EmploymentAssignmentModel,
                     and_(
-                        EmploymentAssignmentModel.primary_location_id == LocationModel.id,
-                        EmploymentAssignmentModel.company_id == LocationModel.company_id,
+                        EmploymentAssignmentGeofenceModel.assignment_id == EmploymentAssignmentModel.id,
+                        EmploymentAssignmentGeofenceModel.company_id == EmploymentAssignmentModel.company_id,
                     ),
                 )
                 .where(
@@ -54,19 +69,23 @@ class SqlAlchemyAuthorizedLocationRepository:
                     LocationModel.is_active.is_(True),
                     LocationModel.status == "ACTIVE",
                 )
-                .distinct()
                 .order_by(LocationModel.location_name)
             )
-        ).scalars().all()
-        return [
-            AssignedLocation(
-                id=row.id,
-                company_id=row.company_id,
-                location_code=row.location_code,
-                location_name=row.location_name,
+        ).all()
+        locations_by_id: dict[UUID, AssignedLocation] = {}
+        for row, geofence_id in rows:
+            location = locations_by_id.setdefault(
+                row.id,
+                AssignedLocation(
+                    id=row.id,
+                    company_id=row.company_id,
+                    location_code=row.location_code,
+                    location_name=row.location_name,
+                ),
             )
-            for row in rows
-        ]
+            if geofence_id not in location.authorized_geofence_ids:
+                location.authorized_geofence_ids.append(geofence_id)
+        return list(locations_by_id.values())
 
     async def list_active_geofences(
         self, locations: Sequence[AssignedLocation], now: datetime
@@ -85,6 +104,7 @@ class SqlAlchemyAuthorizedLocationRepository:
                     or_(
                         *(
                             and_(
+                                Geofence.id.in_(location.authorized_geofence_ids),
                                 Geofence.company_id == location.company_id,
                                 Geofence.location_id == location.id,
                             )

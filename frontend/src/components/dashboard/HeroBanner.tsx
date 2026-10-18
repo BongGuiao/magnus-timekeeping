@@ -1,7 +1,7 @@
 import type { DashboardRole } from '../../types/role'
 
 interface Props {
-  employeeFirstName: string
+  employeeName: string
   role: DashboardRole
 }
 
@@ -12,28 +12,44 @@ const roleDescriptions: Record<DashboardRole, string> = {
   employee: 'Review your attendance, leave balances, and time records.',
 }
 
-export default function HeroBanner({ employeeFirstName, role }: Props) {
-  return (
-    <div className="flex flex-col justify-between gap-3 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 p-5 sm:flex-row sm:items-center">
-      <div>
-        <span className="inline-block rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-indigo-300">
-          {role} dashboard
-        </span>
-        <h1 className="mt-3 text-2xl font-extrabold text-white">
-          Welcome back, {employeeFirstName}! <span aria-hidden>👋</span>
-        </h1>
-        <p className="mt-1 max-w-xl text-sm text-slate-300">
-          {roleDescriptions[role]}
-        </p>
-      </div>
+export default function HeroBanner({ employeeName, role }: Props) {
+  const now = new Date()
+  const greeting = now.getHours() < 12
+    ? 'Good morning'
+    : now.getHours() < 18
+      ? 'Good afternoon'
+      : 'Good evening'
+  const today = new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(now)
 
-      <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">System Status</p>
-          <p className="text-sm font-semibold text-white">Clocked In &amp; Syncing</p>
+  return (
+    <section className="relative isolate overflow-hidden rounded-2xl border border-indigo-300/20 bg-gradient-to-br from-slate-950 via-indigo-950 to-violet-900 px-5 py-4 shadow-lg shadow-indigo-950/10 sm:px-7 sm:py-5">
+      <div className="pointer-events-none absolute -right-16 -top-28 h-56 w-56 rounded-full bg-indigo-400/20 blur-3xl" aria-hidden="true" />
+      <div className="pointer-events-none absolute -bottom-40 right-1/3 h-48 w-48 rounded-full bg-violet-400/10 blur-3xl" aria-hidden="true" />
+      <div className="relative flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div className="max-w-2xl">
+          <span className="inline-flex rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-indigo-100 shadow-sm backdrop-blur">
+            {role} dashboard
+          </span>
+          <h1 className="mt-2.5 text-2xl font-extrabold tracking-tight text-white sm:text-3xl">
+            {greeting} {employeeName}!
+          </h1>
+          <p className="mt-1 max-w-xl text-sm leading-5 text-indigo-100/80">
+            {roleDescriptions[role]}
+          </p>
+        </div>
+
+        <div className="shrink-0 rounded-xl border border-white/15 bg-white/10 px-4 py-3 shadow-md shadow-slate-950/10 backdrop-blur-md sm:min-w-56">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-200/75">Today</p>
+            <p className="mt-0.5 text-sm font-semibold leading-5 text-white">{today}</p>
+          </div>
         </div>
       </div>
-    </div>
+    </section>
   )
 }

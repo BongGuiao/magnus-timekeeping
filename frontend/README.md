@@ -24,6 +24,24 @@ through face verification and the existing server validations. Other clock and
 break confirmations are unchanged. The comparison includes the scheduled date
 for overnight shifts and uses Philippine time for timestamps without an offset.
 
+Before a browser attendance or break punch captures and submits its face image,
+the employee must look toward the camera and blink once. Blink detection runs
+locally in the browser; the image is still sent to the backend for the existing
+face match and punch validation. The vision runtime and model are downloaded
+from the pinned MediaPipe CDN and Google model host when first needed, so a
+connection to those hosts is required for browser punches. This client-side
+check is a liveness prompt, not server-verified anti-spoof protection. The
+mobile app does not use this blink gate.
+
+Both browser face-enrollment screens also require a live-camera blink before
+capturing a photo. Uploaded images are not offered as an enrollment alternative.
+Starting another capture clears the previous photo; cancelling, switching
+employees, or leaving the screen cancels an in-progress blink check. The admin
+must still verify the employee in person. This is a client-side prompt only:
+the enrollment API does not independently verify the blink, and recorded video
+or a modified client can bypass it. Enrollment requires HTTPS (or localhost)
+camera access and connectivity to the model hosts above.
+
 ## Dashboard worked hours
 
 Administrator weekly totals, employee weekly summaries, and Recent Attendance
@@ -44,6 +62,17 @@ valid records in the current payroll cutoff; it is not the complete weekly list.
 Employee dashboard refreshes load a live snapshot. Deploy backend and frontend
 together and restart the Celery worker; versioned attendance cache keys prevent
 older snapshots from serving inconsistent hours. No database migration is needed.
+
+## Supervisor punch locations
+
+Supervisors with `attendance.read_team` can search the dashboard by employee code
+and work date to view the employee's recorded clock-in and clock-out GPS points.
+The backend derives the supervisor identity from the authenticated token and
+resolves the employee's active company assignment; it returns locations only for
+an active direct report. The form does not accept supervisor or company IDs.
+Map pins use OpenStreetMap tiles; each pin can open its coordinates in Google
+Street View when coverage is available. GPS coordinates are reported evidence,
+not proof of the employee's physical location. No database migration is needed.
 
 ## Overtime application periods
 

@@ -30,7 +30,7 @@ export interface LastAttendance {
   expected_clock_in_at: string | null
   expected_clock_out_at: string | null
   break_rules?: {
-    break_slot: 'FIRST_BREAK' | 'MEAL_BREAK' | 'SECOND_BREAK'
+    break_slot: 'FIRST_BREAK' | 'MEAL_BREAK' | 'SECOND_BREAK' | 'OT_BREAK'
     segment_type: 'PAID_BREAK' | 'UNPAID_BREAK'
     break_minutes: number
     auto_deduct: boolean

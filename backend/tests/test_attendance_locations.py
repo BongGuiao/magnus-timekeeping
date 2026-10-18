@@ -24,9 +24,16 @@ NOW = datetime(2026, 10, 12, 17, tzinfo=timezone.utc)
 
 def make_site():
     company_id = uuid4()
-    location = AssignedLocation(id=uuid4(), company_id=company_id, location_code="HQ", location_name="Head office")
+    location_id, geofence_id = uuid4(), uuid4()
+    location = AssignedLocation(
+        id=location_id,
+        company_id=company_id,
+        location_code="HQ",
+        location_name="Head office",
+        authorized_geofence_ids=[geofence_id],
+    )
     fence = SiteGeofence(
-        id=uuid4(), company_id=company_id, location_id=location.id, geofence_name="Office policy",
+        id=geofence_id, company_id=company_id, location_id=location_id, geofence_name="Office policy",
         shape="CIRCLE", latitude=14.5, longitude=121.0, radius_meters=100.0, maximum_gps_accuracy_meters=20,
     )
     return location, fence
@@ -76,6 +83,27 @@ class BuildAuthorizedSitesTests(unittest.TestCase):
     def test_location_without_geofences_is_still_listed(self):
         sites = build_authorized_sites(self.employee_id, [self.location], [], None)
         self.assertEqual(sites[0].geofences, [])
+
+    def test_only_the_geofence_linked_to_the_assignment_is_authorized(self):
+        unassigned = SiteGeofence(**{**self.fence.__dict__, "id": uuid4(), "geofence_name": "Other policy"})
+        sites = build_authorized_sites(self.employee_id, [self.location], [self.fence, unassigned], None)
+        self.assertEqual([fence.geofence_id for fence in sites[0].geofences], [self.fence.id])
+
+    def test_multiple_geofences_can_be_authorized_for_one_company_location(self):
+        second_fence = SiteGeofence(**{**self.fence.__dict__, "id": uuid4(), "geofence_name": "Business center"})
+        self.location.authorized_geofence_ids.append(second_fence.id)
+
+        sites = build_authorized_sites(
+            self.employee_id,
+            [self.location],
+            [self.fence, second_fence],
+            None,
+        )
+
+        self.assertEqual(
+            {fence.geofence_id for fence in sites[0].geofences},
+            {self.fence.id, second_fence.id},
+        )
 
     def test_registered_home_is_added_as_a_circle_around_the_employees_own_coordinates(self):
         sites = build_authorized_sites(self.employee_id, [self.location], [self.fence], self.home)

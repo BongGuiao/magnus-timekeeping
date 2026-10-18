@@ -81,8 +81,13 @@ class GenericMapper:
                     except ValueError:
                         pass
 
-                # Strip timezone if column expects naive datetime
-                if isinstance(v, datetime) and v.tzinfo is not None:
+                # Strip timezone only when the database column is timezone-naive.
+                if (
+                    isinstance(v, datetime)
+                    and v.tzinfo is not None
+                    and isinstance(col_type, DateTime)
+                    and not col_type.timezone
+                ):
                     v = v.replace(tzinfo=None)
 
                 model_data[k] = v

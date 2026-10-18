@@ -9,7 +9,7 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { apiClient } from '../lib/apiClient'
-import { createEmployee, fetchEmployee, fetchEmployees, updateEmployee } from '../lib/employeeApi'
+import { createEmployee, EMPLOYEE_CREATED_EVENT, fetchEmployee, fetchEmployees, updateEmployee } from '../lib/employeeApi'
 import type { EmployeeWritePayload } from '../lib/employeeApi'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchOrgUnits } from '../lib/orgUnitApi'
@@ -29,7 +29,7 @@ interface Props {
   onLoggedOut?: () => void
 }
 
-type EmployeeTab = 'details' | 'assignments' | 'skills' | 'entitlements' | 'schedule' | 'face' | 'wfh' | 'role'
+type EmployeeTab = 'details' | 'assignments' | 'entitlements' | 'skills' | 'schedule' | 'face' | 'wfh' | 'role'
 
 const employeeTabs: { id: EmployeeTab; label: string }[] = [
   { id: 'details', label: 'Employee Details' },
@@ -252,6 +252,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       const savedEmployee = editingEmployee
         ? await updateEmployee(editingEmployee.id, payload)
         : await createEmployee(payload)
+      if (!isUpdating) window.dispatchEvent(new Event(EMPLOYEE_CREATED_EVENT))
       setEmployees((current) => isUpdating
         ? current.map((employee) => employee.id === savedEmployee.id ? savedEmployee : employee)
         : [savedEmployee, ...current])
@@ -272,6 +273,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
           <EmployeePhoto
             photoReference={employee.photo_reference}
             employeeName={`${employee.first_name} ${employee.last_name}`}
+            shape="square"
           />
           <div>
             <p className="font-bold text-slate-900">{employee.employee_no}</p>
@@ -350,7 +352,20 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
 
       <FormModal<EmployeeFormValues>
         isOpen={isFormOpen}
-        title={editingEmployee ? 'Edit employee' : 'Create employee'}
+        title={editingEmployee ? (
+          <span className="flex items-center gap-3">
+            <EmployeePhoto
+              photoReference={editingEmployee.photo_reference}
+              employeeName={`${editingEmployee.first_name} ${editingEmployee.last_name}`}
+              size="h-12 w-12"
+              shape="square"
+            />
+            <span className="min-w-0">
+              <span className="block truncate text-base font-bold text-slate-900">{editingEmployee.first_name} {editingEmployee.last_name}</span>
+              <span className="mt-0.5 block text-xs font-medium text-slate-500">{editingEmployee.employee_no}</span>
+            </span>
+          </span>
+        ) : 'Create employee'}
         description="Maintain the employee record."
         defaultValues={defaultValues}
         resetKey={editingEmployee?.id ?? 'new'}
@@ -363,7 +378,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         {({ register, setValue, formState: { errors } }) => (
           <div className="space-y-4">
             {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
-            <div role="tablist" aria-label="Employee information"             className="flex overflow-x-auto border-b-2 border-indigo-200 pb-1">
+            <div role="tablist" aria-label="Employee information" className="flex flex-wrap border-b-2 border-indigo-200 pb-1">
                           {visibleEmployeeTabs.map((tab, tabIndex) => (
                 <button
                   key={tab.id}
@@ -372,7 +387,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                                   tabIndex === 0
                                     ? 'polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%)'
                                     : 'polygon(0 0, calc(100% - 14px) 0, 100% 50%, calc(100% - 14px) 100%, 0 100%, 14px 50%)',
-                                marginLeft: tabIndex === 0 ? 0 : -8,
+                                marginLeft: 0,
                               }}
                   type="button"
                   role="tab"
@@ -394,7 +409,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                     setActiveTab(nextTab)
                     document.getElementById(`${tabId}-${nextTab}-tab`)?.focus()
                   }}
-                  className={                  `shrink-0 py-2 pl-7 pr-8 text-xs font-semibold transition first:pl-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+                  className={`min-w-[7rem] flex-1 whitespace-nowrap py-2 pl-7 pr-8 text-xs font-semibold transition first:pl-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                     activeTab === tab.id
                                         ? 'bg-indigo-600 text-white'
                                         : 'bg-slate-100 text-slate-600 hover:bg-indigo-100 hover:text-indigo-700'
@@ -407,22 +422,6 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             <div className="grid">
             <div role="tabpanel" id={`${tabId}-details-panel`} aria-labelledby={`${tabId}-details-tab`} tabIndex={activeTab === 'details' ? 0 : -1} className={`space-y-4 [grid-area:1/1] ${activeTab === 'details' ? '' : 'invisible'}`}>
               <input type="hidden" {...register('photo_reference')} />
-              <div className="flex items-center gap-3">
-                <EmployeePhoto
-                  photoReference={editingEmployee?.photo_reference ?? null}
-                  employeeName={editingEmployee ? `${editingEmployee.first_name} ${editingEmployee.last_name}` : 'Employee'}
-                  size="h-12 w-12"
-                  shape="square"
-                />
-                <div>
-                  <p className="text-xs font-bold text-slate-900">
-                    {editingEmployee ? `${editingEmployee.first_name} ${editingEmployee.last_name}` : 'New employee'}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-slate-500">
-                    {editingEmployee ? editingEmployee.employee_no : 'Employee photo'}
-                  </p>
-                </div>
-              </div>
               <section>
               <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Identity</h3>
               <div className="mt-2 grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">

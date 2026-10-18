@@ -17,7 +17,7 @@ class ListMyAttendanceLocationsInput:
 
 
 class ListMyAttendanceLocationsUseCase(BaseUseCase[list[AuthorizedLocation]]):
-    """Sites where an employee may punch. Informational; the clock use case re-validates GPS."""
+    """Assigned geofence sites where an employee may punch; GPS is revalidated when punching."""
 
     def __init__(self, uow: AuthorizedLocationUnitOfWork, clock: Callable[[], datetime] = utc_now):
         self._uow = uow

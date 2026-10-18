@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { Camera, CheckCircle2, ImagePlus, ShieldAlert, UserRound } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Camera, CheckCircle2 } from 'lucide-react'
 import { enrollFace } from '../../lib/enrollmentApi'
 import type { Employee } from '../../types/employee'
 import type { EnrollmentResult } from '../../types/enrollment'
-import { useWebcamCapture } from '../../hooks/useWebcamCapture'
+import { useBlinkWebcamCapture } from '../../hooks/useBlinkWebcamCapture'
 
 interface Props {
   employee: Employee | null
@@ -17,8 +17,8 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   const [result, setResult] = useState<EnrollmentResult | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState('')
-  const webcam = useWebcamCapture()
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const webcam = useBlinkWebcamCapture()
+  const stopCamera = webcam.stop
 
   useEffect(() => {
     setFile(null)
@@ -37,8 +37,8 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   }, [previewUrl])
 
   useEffect(() => {
-    if (!isActive) webcam.stop()
-  }, [isActive, webcam.stop])
+    stopCamera()
+  }, [employee?.id, isActive, stopCamera])
 
   function selectFile(nextFile: File | null) {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -62,7 +62,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
       return
     }
     if (!file) {
-      setError('Choose or capture a face photo first.')
+      setError('Capture a face photo after blinking first.')
       return
     }
 
@@ -95,40 +95,17 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   }
 
   return (
-    <section className="space-y-5">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600"><Camera className="h-5 w-5" /></div>
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">Face enrollment</h3>
-            <p className="mt-0.5 text-xs text-slate-500">Add a face sample to this employee's profile.</p>
-          </div>
-        </div>
-        <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600">
-          <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
-          {employee.employee_no}
-        </div>
-      </header>
-
-      <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
-        <p className="text-xs leading-5 text-amber-900">
-          <span className="font-bold">Admin enrollment:</span> verify the employee in person before adding a face sample. Attendance matches the camera image against the enrolled face; it does not perform liveness or anti-spoof verification.
-        </p>
-      </div>
-
-      {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
-      {result && (
+    <section className="flex flex-col gap-4">
+      {result && !isActive && (
         <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
           Face sample enrolled. {result.sample_count} sample{result.sample_count === 1 ? '' : 's'} on file.
         </p>
       )}
-      {webcam.error && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{webcam.error}</p>}
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(17rem,0.9fr)]">
-        <div className="space-y-2">
-          <div className="relative flex aspect-[4/3] min-h-52 items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(17rem,0.9fr)]">
+        <div className="flex flex-col gap-2">
+          <div className={`relative flex aspect-[5/3] w-full items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 ${isActive ? 'min-h-[16rem] max-h-[75svh]' : 'min-h-52'}`}>
             <video
               ref={webcam.videoRef}
               muted
@@ -151,38 +128,39 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
               <div className="flex flex-col items-center gap-2 px-5 text-center">
                 <div className="rounded-full bg-white/10 p-3 text-slate-300"><Camera className="h-6 w-6" /></div>
                 <p className="text-sm font-semibold text-white">No image selected</p>
-                <p className="text-xs text-slate-400">Start the camera or choose an image to preview it here.</p>
+                <p className="text-xs text-slate-400">Start the camera and blink before capturing the face.</p>
               </div>
             )}
           </div>
           {file && !webcam.isActive && (
             <p className="truncate text-xs text-slate-500" title={file.name}>Selected: {file.name}</p>
           )}
+          {webcam.blinkStatus && <p role="status" className="text-sm text-indigo-700">{webcam.blinkStatus}</p>}
         </div>
 
         <div className="flex flex-col justify-center gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+          {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+          {webcam.error && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{webcam.error}</p>}
+          {result && isActive && (
+            <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+              <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+              Face sample enrolled. {result.sample_count} sample{result.sample_count === 1 ? '' : 's'} on file.
+            </p>
+          )}
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Before you capture</p>
             <ul className="mt-2 space-y-1.5 text-sm leading-5 text-slate-600">
               <li>• Use one face, looking toward the camera.</li>
               <li>• Keep the face clear and evenly lit.</li>
+              <li>• Blink once when prompted, then reopen both eyes.</li>
               <li>• Avoid sunglasses, masks, and strong backlighting.</li>
             </ul>
           </div>
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            capture="user"
-            className="hidden"
-            onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
-          />
-
           {webcam.isActive ? (
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => void capturePhoto()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
-                <Camera className="h-4 w-4" aria-hidden="true" /> Capture photo
+              <button type="button" disabled={webcam.isCheckingBlink || isSubmitting} onClick={() => void capturePhoto()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
+                <Camera className="h-4 w-4" aria-hidden="true" /> {webcam.isCheckingBlink ? 'Waiting for blink...' : 'Blink and capture'}
               </button>
               <button type="button" onClick={webcam.stop} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
                 Cancel camera
@@ -190,11 +168,8 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => void webcam.start()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700">
+              <button type="button" disabled={isSubmitting} onClick={() => { selectFile(null); void webcam.start() }} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50">
                 <Camera className="h-4 w-4" aria-hidden="true" /> Use webcam
-              </button>
-              <button type="button" onClick={() => fileInputRef.current?.click()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
-                <ImagePlus className="h-4 w-4" aria-hidden="true" /> Choose image
               </button>
             </div>
           )}
@@ -205,7 +180,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
             onClick={() => void submitEnrollment()}
             className="w-full rounded-lg border border-indigo-700 bg-white px-4 py-2.5 text-sm font-bold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
           >
-            {isSubmitting ? 'Enrolling face…' : result ? 'Enrolled' : 'Save face sample'}
+            {isSubmitting ? 'Enrolling face…' : result ? 'Enrolled' : 'Save Face Captured'}
           </button>
           <p className="text-center text-[11px] leading-4 text-slate-500">
             {employee.is_active && employee.record_status === 'ACTIVE'

@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     ATTENDANCE_KIOSK_ALLOWED_IPS: str = ""
     ATTENDANCE_KIOSK_REQUIRED_ROLES: str = "admin"
 
+    # Face recognition: maximum embedding distance accepted as the same person (lower is stricter)
+    FACE_MATCH_THRESHOLD: float = 0.5
+
     # Login lockout (identity.users.failed_login_count / locked_until)
     AUTH_MAX_FAILED_LOGIN_ATTEMPTS: int = 5
     AUTH_LOCKOUT_MINUTES: int = 15

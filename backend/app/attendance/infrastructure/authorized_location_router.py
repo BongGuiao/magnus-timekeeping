@@ -64,7 +64,7 @@ async def get_my_attendance_locations(
     policy: AttendanceClockPolicy = Depends(resolve_attendance_clock_policy),
     use_case: ListMyAttendanceLocationsUseCase = Depends(get_list_my_attendance_locations_use_case),
 ):
-    """Sites where the signed-in employee may punch: every active assignment's primary location.
+    """Sites where the signed-in employee may punch under their active geofence assignments.
 
     Informational only; the clock endpoint re-validates the GPS point server-side.
     """

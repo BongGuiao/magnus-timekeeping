@@ -24,6 +24,9 @@ from app.filemaintenance.leaves.infrastructure.leave_records_db_model import (
 )
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    require_employee_phase_open,
+)
 
 EntityT = TypeVar("EntityT")
 ModelT = TypeVar("ModelT")
@@ -410,6 +413,14 @@ class LeaveApplicationUseCase:
                 return None
             if model.status != "DRAFT":
                 raise ValueError("Only draft leave applications can be submitted for approval.")
+            await require_employee_phase_open(
+                active_uow.session,
+                model.employee_id,
+                model.start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+                model.end_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+                "EMPLOYEE",
+                datetime.now(timezone.utc),
+            )
             await _validate_leave_type_company(
                 active_uow.session,
                 model.employee_id,
@@ -593,6 +604,14 @@ class LeaveApplicationUseCase:
             model = result.scalars().first()
             if model is None:
                 return None
+            await require_employee_phase_open(
+                active_uow.session,
+                model.employee_id,
+                model.start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+                model.end_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+                "SUPERVISOR",
+                datetime.now(timezone.utc),
+            )
             now = datetime.now(timezone.utc)
             if decision == "APPROVED":
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)

@@ -63,6 +63,20 @@ class EarlyClockInValidationTests(unittest.TestCase):
             actual_clock_out_at=end, ot_eligible=True, pre_shift_ot_allowed=False,
         ), (0, 0, 0))
 
+    def test_manila_lateness_is_elapsed_time_after_grace(self):
+        expected = datetime(2026, 10, 14, 16, 0, tzinfo=ZoneInfo("Asia/Manila"))
+        actual = datetime(2026, 10, 14, 18, 24, 31, 486000, tzinfo=ZoneInfo("Asia/Manila"))
+
+        late, _, _ = calculate_attendance_metrics(
+            expected_clock_in_at=expected,
+            expected_clock_out_at=None,
+            actual_clock_in_at=actual,
+            actual_clock_out_at=None,
+            grace_minutes=15,
+        )
+
+        self.assertEqual(late, 129)
+
 
 class ClockUow:
     def __init__(self, repos):

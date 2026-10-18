@@ -19,6 +19,8 @@ def build_authorized_sites(
     """Office sites for each assigned location, plus the registered home site when usable."""
     fences_by_location: dict[UUID, list[AuthorizedGeofence]] = {}
     for fence in geofences:
+        if not any(fence.id in location.authorized_geofence_ids for location in locations):
+            continue
         fences_by_location.setdefault(fence.location_id, []).append(
             AuthorizedGeofence(
                 geofence_id=fence.id,

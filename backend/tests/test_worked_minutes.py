@@ -2,7 +2,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from app.attendance.application.use_case import calculate_break_policy, _net_interval_seconds
+from app.attendance.application.use_case import (
+    calculate_break_policy,
+    calculate_net_nonpayable_break_minutes,
+)
 from app.attendance.application.worked_minutes import net_worked_minutes
 from app.attendance.domain.entities.attendance import AttendanceEntity
 
@@ -17,6 +20,7 @@ class WorkedMinutesTests(unittest.TestCase):
             ("UNPAID_BREAK", 60, 75, False, 465),
             ("UNPAID_BREAK", 60, None, True, 480),
             ("UNPAID_BREAK", 60, 70, True, 470),
+            ("UNPAID_BREAK", 60, 30, False, 480),
         ]:
             with self.subTest(segment_type=segment_type, duration=duration, auto_deduct=auto_deduct):
                 record = AttendanceEntity(user_id=uuid4(), work_date=start.date())
@@ -30,10 +34,13 @@ class WorkedMinutesTests(unittest.TestCase):
                     record.meal_break_out_at = start + timedelta(hours=4)
                     record.meal_break_in_at = record.meal_break_out_at + timedelta(minutes=duration)
                 _, _, intervals = calculate_break_policy(record, [rule])
-                gross_seconds = (end - start).total_seconds()
-                deducted_seconds = gross_seconds - _net_interval_seconds(start, end, intervals)
-                auto_minutes = allowance if segment_type == "UNPAID_BREAK" and auto_deduct and duration is None else 0
-                saved_deduction = min(int(gross_seconds // 60), int(deducted_seconds // 60) + auto_minutes)
+                saved_deduction = calculate_net_nonpayable_break_minutes(
+                    record,
+                    [rule],
+                    intervals,
+                    start,
+                    end,
+                )
                 self.assertEqual(
                     net_worked_minutes(start, end, {
                         "break_calculation": {"net_nonpayable_minutes": saved_deduction},

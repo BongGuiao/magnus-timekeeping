@@ -23,6 +23,8 @@ export interface EmploymentAssignment extends AuditFields {
   operational_group: OperationalGroup | null
   payroll_group_id: string | null
   primary_location_id: string | null
+  location_ids: string[]
+  authorized_geofence_ids: string[]
   hire_date: string
   effective_from: string
   effective_to: string | null

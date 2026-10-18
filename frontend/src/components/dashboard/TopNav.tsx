@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, MoreVertical } from 'lucide-react'
 import { fetchCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
@@ -16,6 +16,7 @@ export type NavView =
   | 'dashboard'
   | 'enrollment'
   | 'attendance'
+  | 'attendance-recalculation'
   | 'companies'
   | 'org-units'
   | 'locations'
@@ -27,6 +28,8 @@ export type NavView =
   | 'schedule-templates'
   | 'rest-day-patterns'
   | 'leave-management'
+  | 'calendar'
+  | 'announcements'
   | 'employee-entitlements'
   | 'leave-application'
   | 'overtime-application'
@@ -43,12 +46,15 @@ const companySetupViews: NavView[] = [
   'schedule-templates',
   'rest-day-patterns',
   'leave-management',
+  'calendar',
+  'announcements',
 ]
 
 interface NavLink {
   label: string
   view?: NavView
   permission?: string | string[]
+  adminOnly?: boolean
   hasDropdown?: boolean
   children?: NavLink[]
 }
@@ -62,6 +68,11 @@ const navLinks: NavLink[] = [
         label: 'Attendance',
         view: 'attendance',
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      },
+      {
+        label: 'Attendance Recalculation',
+        view: 'attendance-recalculation',
+        adminOnly: true,
       },
     ],
   },
@@ -101,6 +112,8 @@ const navLinks: NavLink[] = [
               { label: 'Schedule Templates', view: 'schedule-templates', permission: 'schedule.manage' },
               { label: 'Rest Day Patterns', view: 'rest-day-patterns', permission: 'schedule.manage' },
               { label: 'Leave Management', view: 'leave-management', permission: 'leave.manage' },
+              { label: 'Calendar', view: 'calendar', permission: 'leave.manage' },
+              { label: 'Announcements', view: 'announcements', permission: 'system.manage' },
             ],
           },
         ],
@@ -148,9 +161,11 @@ function DashboardRoleSelect({
   )
 }
 
-export default function TopNav({ employeeName, activeView, onNavigate, onSignOut }: Props) {
+export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
+  const [navHeight, setNavHeight] = useState(0)
+  const navRef = useRef<HTMLElement>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const mobileAccountMenuRef = useRef<HTMLDivElement>(null)
   const [companies, setCompanies] = useState<Company[]>([])
@@ -162,9 +177,11 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
     roleCodes.map((availableRoleCode) => normalizeDashboardRole(availableRoleCode)),
   ).size > 1
   const showDashboardRoleSelect = canPreviewRoles || hasMultipleAssignedDashboardRoles
+  const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
   const { companyId, selectCompany } = useCompanySetupSelection()
   const isCompanySetupView = companySetupViews.includes(activeView)
   const filterByPermission = (link: NavLink): NavLink | null => {
+    if (link.adminOnly && !isAdmin) return null
     if (typeof link.permission === 'string' && !hasPermission(link.permission)) return null
     if (Array.isArray(link.permission) && !hasAnyPermission(link.permission)) return null
     const children = link.children?.map(filterByPermission).filter((child): child is NavLink => child !== null)
@@ -194,6 +211,17 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
     ?.children?.find((link) => link.label === 'Company Setup')
     ?.children ?? []
   const companySetupTabs = companySetupSections.flatMap((section) => section.children ?? [])
+
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+
+    const updateNavHeight = () => setNavHeight(nav.getBoundingClientRect().height)
+    updateNavHeight()
+    const observer = new ResizeObserver(updateNavHeight)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     if (!isCompanySetupView) return
@@ -258,22 +286,13 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
   }
 
   return (
-    <header className="border-b border-slate-200 bg-white">
+    <>
+    <header ref={navRef} className="fixed inset-x-0 top-0 z-50 border-b border-slate-200 bg-white">
       <div className="mx-auto flex w-[95%] items-center justify-between py-3">
-        <div className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
-            MT
-          </div>
-          <div className="leading-tight">
-            <p className="text-base font-extrabold tracking-tight text-slate-900">
-              MAGNUS<span className="text-indigo-600">TIME</span>
-            </p>
-            <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Timekeeping Center</p>
-          </div>
-        </div>
+        <img src="/TimeLogo.jpg" alt="Magnus Business Solutions Inc." className="h-16 w-52 object-contain" />
 
-        <div className="flex items-center gap-6">
-          <nav className="hidden items-center gap-6 xl:flex">
+        <div className="flex min-w-0 items-center gap-4 xl:gap-6">
+          <nav className="hidden items-center gap-5 xl:flex 2xl:gap-6">
             {visibleNavLinks.map((link) => link.children ? (
               <div key={link.label} className="group relative">
                 <button
@@ -345,20 +364,19 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
           </nav>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <div className="hidden text-right leading-tight sm:block">
-              <p className="text-sm font-semibold text-slate-900">{employeeName}</p>
-              {showDashboardRoleSelect && (
+            {showDashboardRoleSelect && (
+              <div className="hidden text-right leading-tight xl:block">
                 <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
-              )}
-            </div>
+              </div>
+            )}
             <button
               type="button"
               onClick={signOut}
-              className="hidden rounded-lg border border-rose-200 px-3 py-1.5 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 sm:block"
+              className="hidden rounded-lg border border-rose-200 px-3 py-1.5 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 xl:block"
             >
               Sign Out
             </button>
-            <div ref={accountMenuRef} className="relative hidden sm:block">
+            <div ref={accountMenuRef} className="relative hidden xl:block">
               <button
                 type="button"
                 aria-label="More account options"
@@ -393,7 +411,7 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
               aria-expanded={isMobileMenuOpen}
               aria-controls="mobile-navigation"
               onClick={() => setIsMobileMenuOpen((isOpen) => !isOpen)}
-              className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-2xl leading-none text-slate-700 transition hover:bg-slate-50 xl:hidden"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-2xl leading-none text-slate-700 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 xl:hidden"
             >
               {isMobileMenuOpen ? '×' : '≡'}
             </button>
@@ -402,16 +420,13 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
       </div>
 
       {isMobileMenuOpen && (
-        <nav id="mobile-navigation" className="border-t border-slate-100 bg-white px-[2.5%] py-3 xl:hidden">
-          <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-3 sm:hidden">
-            <div className="leading-tight">
-              <p className="text-sm font-semibold text-slate-900">{employeeName}</p>
-              {showDashboardRoleSelect && (
-                <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
-              )}
-            </div>
-            <div className="flex items-center gap-4">
-              <button type="button" onClick={signOut} className="text-sm font-semibold text-rose-600">
+        <nav id="mobile-navigation" className="absolute left-0 top-full z-40 w-full border-t border-slate-100 bg-white px-[2.5%] py-3 shadow-lg xl:hidden">
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+            {showDashboardRoleSelect && (
+              <DashboardRoleSelect roleCode={roleCode} roleCodes={roleCodes} onChange={changeDashboardRole} />
+            )}
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" onClick={signOut} className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50">
                 Sign Out
               </button>
               <div ref={mobileAccountMenuRef} className="relative">
@@ -573,5 +588,7 @@ export default function TopNav({ employeeName, activeView, onNavigate, onSignOut
       )}
 
     </header>
+    <div aria-hidden="true" style={{ height: `${navHeight}px` }} />
+    </>
   )
 }

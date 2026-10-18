@@ -114,6 +114,13 @@ async def _normalize_break_segment(
         raise ScheduleSegmentConflictError("Each attendance break slot can have only one segment.")
     if payload["segment_type"] == "PAID_BREAK" and payload.get("auto_deduct"):
         raise ScheduleSegmentReferenceError("Auto deduct applies only to unpaid breaks.")
+    if (
+        payload["break_slot"] in ("FIRST_BREAK", "SECOND_BREAK", "OT_BREAK")
+        and payload["segment_type"] != "PAID_BREAK"
+    ):
+        raise ScheduleSegmentReferenceError(
+            f"{payload['break_slot']} must be configured as a paid break."
+        )
     return {
         **payload,
         "start_time": work.start_time,

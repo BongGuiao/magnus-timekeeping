@@ -25,6 +25,7 @@ def init_db_models():
         HolidayCalendarModel,
     )
     from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel  # noqa: F401
+    from app.filemaintenance.announcements.infrastructure.db_model import AnnouncementModel  # noqa: F401
     from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel  # noqa: F401
     from app.filemaintenance.leaves.infrastructure.leave_records_db_model import (  # noqa: F401
         EmployeeEntitlementModel,

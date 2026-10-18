@@ -28,6 +28,7 @@ class RecentAttendanceItem(BaseModel):
     minutes_worked: int | None = Field(default=None, ge=0)
     late_minutes: int = 0
     undertime_minutes: int = 0
+    excess_minutes_break: int = 0
     calculated_ot_minutes: int = 0
     overtime_hours: float = 0
     regular_overtime_minutes: int = 0

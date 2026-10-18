@@ -3,6 +3,8 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import delete, select
+
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.companies.domain.entities.company import CompanyEntity
@@ -15,7 +17,10 @@ from app.filemaintenance.employees.infrastructure.db_model import (
     EmployeeModel,
     EmployeeSkillModel,
     EmploymentAssignmentModel,
+    EmploymentAssignmentGeofenceModel,
+    EmploymentAssignmentLocationModel,
 )
+from app.filemaintenance.geofences.infrastructure.db_model import Geofence
 from app.filemaintenance.org_unit.domain.entities.org_unit import OrgUnitEntity
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
 from app.filemaintenance.location.domain.entities.location import LocationEntity
@@ -75,12 +80,180 @@ def _apply_changes(existing: Any, payload: dict[str, Any]) -> Any:
     return replace(existing, **changes, row_version=(existing.row_version or 0) + 1)
 
 
+def _normalize_assignment(payload: dict[str, Any]) -> dict[str, Any]:
+    values = _normalize(payload, ASSIGNMENT_DATE_FIELDS, ASSIGNMENT_UUID_FIELDS)
+    if "location_ids" in values:
+        try:
+            values["location_ids"] = [UUID(str(item)) for item in (values["location_ids"] or [])]
+        except (TypeError, ValueError) as error:
+            raise ValueError("location_ids must contain valid UUIDs.") from error
+    if "authorized_geofence_ids" in values:
+        try:
+            values["authorized_geofence_ids"] = [
+                UUID(str(item)) for item in (values["authorized_geofence_ids"] or [])
+            ]
+        except (TypeError, ValueError) as error:
+            raise ValueError("authorized_geofence_ids must contain valid UUIDs.") from error
+    return values
+
+
+async def _get_assignment_geofence_ids(uow: GenUnitOfWork, assignment_id: UUID) -> list[UUID]:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    return list((await uow.session.scalars(
+        select(EmploymentAssignmentGeofenceModel.geofence_id)
+        .where(EmploymentAssignmentGeofenceModel.assignment_id == assignment_id)
+        .order_by(EmploymentAssignmentGeofenceModel.geofence_id)
+    )).all())
+
+
+async def _get_assignment_location_ids(uow: GenUnitOfWork, assignment_id: UUID) -> list[UUID]:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    return list((await uow.session.scalars(
+        select(EmploymentAssignmentLocationModel.location_id)
+        .where(EmploymentAssignmentLocationModel.assignment_id == assignment_id)
+        .order_by(EmploymentAssignmentLocationModel.location_id)
+    )).all())
+
+
+async def _get_assignment_geofence_ids_by_assignment(
+    uow: GenUnitOfWork,
+    assignment_ids: list[UUID],
+) -> dict[UUID, list[UUID]]:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    if not assignment_ids:
+        return {}
+    rows = (await uow.session.execute(
+        select(
+            EmploymentAssignmentGeofenceModel.assignment_id,
+            EmploymentAssignmentGeofenceModel.geofence_id,
+        )
+        .where(EmploymentAssignmentGeofenceModel.assignment_id.in_(assignment_ids))
+        .order_by(EmploymentAssignmentGeofenceModel.geofence_id)
+    )).all()
+    result: dict[UUID, list[UUID]] = {}
+    for assignment_id, geofence_id in rows:
+        result.setdefault(assignment_id, []).append(geofence_id)
+    return result
+
+
+async def _get_assignment_location_ids_by_assignment(
+    uow: GenUnitOfWork,
+    assignment_ids: list[UUID],
+) -> dict[UUID, list[UUID]]:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    if not assignment_ids:
+        return {}
+    rows = (await uow.session.execute(
+        select(
+            EmploymentAssignmentLocationModel.assignment_id,
+            EmploymentAssignmentLocationModel.location_id,
+        )
+        .where(EmploymentAssignmentLocationModel.assignment_id.in_(assignment_ids))
+        .order_by(EmploymentAssignmentLocationModel.location_id)
+    )).all()
+    result: dict[UUID, list[UUID]] = {}
+    for assignment_id, location_id in rows:
+        result.setdefault(assignment_id, []).append(location_id)
+    return result
+
+
+async def _replace_assignment_geofences(
+    uow: GenUnitOfWork,
+    assignment_id: UUID | None,
+    company_id: UUID,
+    geofence_ids: list[UUID],
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    if assignment_id is None:
+        raise RuntimeError("Created employment assignment has no id.")
+    await uow.session.execute(
+        delete(EmploymentAssignmentGeofenceModel).where(
+            EmploymentAssignmentGeofenceModel.assignment_id == assignment_id
+        )
+    )
+    uow.session.add_all(
+        EmploymentAssignmentGeofenceModel(
+            assignment_id=assignment_id,
+            company_id=company_id,
+            geofence_id=geofence_id,
+        )
+        for geofence_id in geofence_ids
+    )
+
+
+async def _replace_assignment_locations(
+    uow: GenUnitOfWork,
+    assignment_id: UUID | None,
+    company_id: UUID,
+    location_ids: list[UUID],
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    if assignment_id is None:
+        raise RuntimeError("Created employment assignment has no id.")
+    await uow.session.execute(
+        delete(EmploymentAssignmentLocationModel).where(
+            EmploymentAssignmentLocationModel.assignment_id == assignment_id
+        )
+    )
+    uow.session.add_all(
+        EmploymentAssignmentLocationModel(
+            assignment_id=assignment_id,
+            company_id=company_id,
+            location_id=location_id,
+        )
+        for location_id in location_ids
+    )
+
+
 async def _ensure_employee(uow: GenUnitOfWork, employee_id: UUID | None, label: str) -> None:
     if employee_id is None:
         return
     repo = uow.get_repo(EmployeeEntity, EmployeeModel)
     if await repo.find_one(EmployeeModel.id == employee_id) is None:
         raise ValueError(f"{label} not found.")
+
+
+async def _lock_employee_assignment_scope(uow: GenUnitOfWork, employee_id: UUID) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    await uow.session.execute(
+        select(EmployeeModel.id)
+        .where(EmployeeModel.id == employee_id)
+        .with_for_update()
+    )
+
+
+async def _ensure_single_active_assignment(
+    uow: GenUnitOfWork,
+    values: dict[str, Any],
+    assignment_id: UUID | None = None,
+) -> None:
+    if values.get("status") != "ACTIVE" or not values.get("is_active", True):
+        return
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+
+    criteria = [
+        EmploymentAssignmentModel.employee_id == values["employee_id"],
+        EmploymentAssignmentModel.status == "ACTIVE",
+        EmploymentAssignmentModel.is_active.is_(True),
+    ]
+    if assignment_id is not None:
+        criteria.append(EmploymentAssignmentModel.id != assignment_id)
+    existing_id = await uow.session.scalar(
+        select(EmploymentAssignmentModel.id).where(*criteria).limit(1)
+    )
+    if existing_id is not None:
+        raise ValueError(
+            "An employee can have only one active employment assignment. "
+            "Deactivate the current assignment first."
+        )
 
 
 async def _validate_assignment(uow: GenUnitOfWork, values: dict[str, Any]) -> None:
@@ -117,13 +290,66 @@ async def _validate_assignment(uow: GenUnitOfWork, values: dict[str, Any]) -> No
         if org_unit.company_id != values["company_id"]:
             raise ValueError("Org unit does not belong to the selected company.")
 
-    primary_location_id = values.get("primary_location_id")
-    if primary_location_id is not None:
+    authorized_geofence_ids = values.get("authorized_geofence_ids")
+    authorized_geofence_ids = list(dict.fromkeys(authorized_geofence_ids or []))
+    geofence_location_ids: set[UUID] = set()
+    if authorized_geofence_ids:
+        if uow.session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        geofences = list((await uow.session.scalars(
+            select(Geofence).where(
+                Geofence.id.in_(authorized_geofence_ids),
+                Geofence.company_id == values["company_id"],
+            )
+        )).all())
+        geofences_by_id = {geofence.id: geofence for geofence in geofences}
+        if (
+            set(geofences_by_id) != set(authorized_geofence_ids)
+            or any(geofence.company_id != values["company_id"] for geofence in geofences)
+        ):
+            raise ValueError("Authorized geofence does not belong to the selected company.")
+        if any(geofence.location_id is None for geofence in geofences):
+            raise ValueError("Every authorized geofence must be linked to a location.")
         location_repo = uow.get_repo(LocationEntity, Location)
-        location = await location_repo.find_one(Location.id == primary_location_id)
-        if location is None or location.company_id != values["company_id"]:
-            raise ValueError("Primary location does not belong to the selected company.")
+        geofence_location_ids = {geofence.location_id for geofence in geofences}
+        locations = await location_repo.find_all(
+            Location.id.in_(geofence_location_ids),
+            Location.company_id == values["company_id"],
+            limit=len(geofence_location_ids),
+        )
+        if (
+            {location.id for location in locations} != geofence_location_ids
+            or any(location.company_id != values["company_id"] for location in locations)
+        ):
+            raise ValueError("Authorized geofence location does not belong to the selected company.")
+    values["authorized_geofence_ids"] = authorized_geofence_ids
 
+    has_location_list = "location_ids" in values
+    location_ids = list(dict.fromkeys(values.get("location_ids") or []))
+    if not has_location_list:
+        if authorized_geofence_ids:
+            values["primary_location_id"] = geofences_by_id[authorized_geofence_ids[0]].location_id
+        primary_location_id = values.get("primary_location_id")
+        location_ids = list(dict.fromkeys(
+            ([primary_location_id] if primary_location_id is not None else [])
+            + list(geofence_location_ids)
+        ))
+    elif not geofence_location_ids.issubset(set(location_ids)):
+        raise ValueError("Every authorized geofence must belong to an assigned location.")
+
+    if location_ids:
+        location_repo = uow.get_repo(LocationEntity, Location)
+        locations = await location_repo.find_all(
+            Location.id.in_(location_ids),
+            Location.company_id == values["company_id"],
+            limit=len(location_ids),
+        )
+        if {location.id for location in locations} != set(location_ids):
+            raise ValueError("Assigned location does not belong to the selected company.")
+    values["location_ids"] = location_ids
+    primary_location_id = values.get("primary_location_id")
+    if primary_location_id not in location_ids:
+        values["primary_location_id"] = location_ids[0] if location_ids else None
     payroll_group_id = values.get("payroll_group_id")
     if payroll_group_id is not None:
         payroll_group_repo = uow.get_repo(PayrollGroupEntity, PayrollGroupModel)
@@ -164,11 +390,23 @@ class CreateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity])
 
     async def _execute(self, payload: dict[str, Any]) -> EmploymentAssignmentEntity:
         async with self.uow as uow:
-            values = _normalize(payload, ASSIGNMENT_DATE_FIELDS, ASSIGNMENT_UUID_FIELDS)
+            values = _normalize_assignment(payload)
             values.pop("id", None)
+            _require(values, ("employee_id",))
+            await _lock_employee_assignment_scope(uow, values["employee_id"])
+            await _ensure_single_active_assignment(uow, values)
             await _validate_assignment(uow, values)
             repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
-            return await repo.add(values)
+            result = await repo.add(values)
+            await _replace_assignment_geofences(
+                uow, result.id, values["company_id"], values.get("authorized_geofence_ids", [])
+            )
+            await _replace_assignment_locations(
+                uow, result.id, values["company_id"], values.get("location_ids", [])
+            )
+            result.authorized_geofence_ids = values.get("authorized_geofence_ids", [])
+            result.location_ids = values.get("location_ids", [])
+            return result
 
 
 class UpdateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity]):
@@ -181,9 +419,40 @@ class UpdateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity])
             existing = await repo.find_one(EmploymentAssignmentModel.id == assignment_id)
             if existing is None:
                 raise ValueError("Employment assignment not found.")
-            updated = _apply_changes(existing, _normalize(payload, ASSIGNMENT_DATE_FIELDS, ASSIGNMENT_UUID_FIELDS))
-            await _validate_assignment(uow, updated.__dict__)
-            return await repo.update(updated)
+            existing.authorized_geofence_ids = await _get_assignment_geofence_ids(uow, assignment_id)
+            existing.location_ids = await _get_assignment_location_ids(uow, assignment_id)
+            normalized_payload = _normalize_assignment(payload)
+            updated = _apply_changes(existing, normalized_payload)
+            validation_values = updated.__dict__.copy()
+            await _lock_employee_assignment_scope(uow, updated.employee_id)
+            await _ensure_single_active_assignment(uow, validation_values, assignment_id)
+            if "location_ids" not in normalized_payload:
+                validation_values.pop("location_ids", None)
+            await _validate_assignment(uow, validation_values)
+            updated.location_ids = validation_values["location_ids"]
+            updated.primary_location_id = validation_values["primary_location_id"]
+            updated.authorized_geofence_ids = validation_values["authorized_geofence_ids"]
+            result = await repo.update(updated)
+            if "authorized_geofence_ids" in normalized_payload:
+                await _replace_assignment_geofences(
+                    uow,
+                    assignment_id,
+                    updated.company_id,
+                    updated.authorized_geofence_ids or [],
+                )
+            if any(
+                field in normalized_payload
+                for field in ("location_ids", "primary_location_id", "authorized_geofence_ids")
+            ):
+                await _replace_assignment_locations(
+                    uow,
+                    assignment_id,
+                    updated.company_id,
+                    updated.location_ids or [],
+                )
+            result.authorized_geofence_ids = updated.authorized_geofence_ids or []
+            result.location_ids = updated.location_ids or []
+            return result
 
 
 class GetEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity | None]):
@@ -193,7 +462,11 @@ class GetEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity | No
     async def _execute(self, assignment_id: UUID) -> EmploymentAssignmentEntity | None:
         async with self.uow as uow:
             repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
-            return await repo.find_one(EmploymentAssignmentModel.id == assignment_id)
+            result = await repo.find_one(EmploymentAssignmentModel.id == assignment_id)
+            if result is not None:
+                result.authorized_geofence_ids = await _get_assignment_geofence_ids(uow, assignment_id)
+                result.location_ids = await _get_assignment_location_ids(uow, assignment_id)
+            return result
 
 
 class ListEmploymentAssignmentsUseCase(BaseUseCase[list[EmploymentAssignmentEntity]]):
@@ -204,12 +477,22 @@ class ListEmploymentAssignmentsUseCase(BaseUseCase[list[EmploymentAssignmentEnti
         async with self.uow as uow:
             repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
             criteria = [EmploymentAssignmentModel.employee_id == employee_id] if employee_id else []
-            return await repo.find_all(
+            assignments = await repo.find_all(
                 *criteria,
                 order_by=EmploymentAssignmentModel.effective_from.desc(),
                 offset=0,
                 limit=1000,
             )
+            ids_by_assignment = await _get_assignment_geofence_ids_by_assignment(
+                uow, [item.id for item in assignments if item.id is not None]
+            )
+            location_ids_by_assignment = await _get_assignment_location_ids_by_assignment(
+                uow, [item.id for item in assignments if item.id is not None]
+            )
+            for assignment in assignments:
+                assignment.authorized_geofence_ids = ids_by_assignment.get(assignment.id, [])
+                assignment.location_ids = location_ids_by_assignment.get(assignment.id, [])
+            return assignments
 
 
 class CreateEmployeeSkillUseCase(BaseUseCase[EmployeeSkillEntity]):

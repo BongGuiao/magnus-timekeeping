@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { MapPin, Pencil, Plus } from 'lucide-react'
+import { LoaderCircle, MapPin, Pencil, Plus, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
 import FormModal from '../components/common/FormModal'
+import LocationCoordinatePicker from '../components/common/LocationCoordinatePicker'
+import type { Coordinates } from '../components/common/LocationCoordinatePicker'
 import PsgcAddressFields from '../components/common/PsgcAddressFields'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -121,6 +124,12 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isMapVisible, setIsMapVisible] = useState(false)
   const [editingLocation, setEditingLocation] = useState<Location | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
+  const [isCoordinatePickerOpen, setIsCoordinatePickerOpen] = useState(false)
+  const [coordinatePickerCenter, setCoordinatePickerCenter] = useState<Coordinates | null>(null)
+  const [coordinatePickerError, setCoordinatePickerError] = useState('')
+  const [isFindingCurrentLocation, setIsFindingCurrentLocation] = useState(false)
+  const [isLookingUpAddress, setIsLookingUpAddress] = useState(false)
+  const [addressLookupError, setAddressLookupError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
@@ -232,6 +241,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   function openCreate() {
     setErrorMessage('')
     setSuccessMessage('')
+    closeCoordinatePicker()
     setEditingLocation(null)
     setIsFormOpen(true)
   }
@@ -247,6 +257,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
         return
       }
       setEditingLocation(loadedLocation)
+      closeCoordinatePicker()
       setIsFormOpen(true)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Could not load this location.')
@@ -256,9 +267,103 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   }
 
   function closeForm() {
+    closeCoordinatePicker()
     setIsFormOpen(false)
     setEditingLocation(null)
     setErrorMessage('')
+  }
+
+  function closeCoordinatePicker() {
+    setIsCoordinatePickerOpen(false)
+    setCoordinatePickerCenter(null)
+    setCoordinatePickerError('')
+    setIsFindingCurrentLocation(false)
+  }
+
+  function findCurrentLocation() {
+    setCoordinatePickerError('')
+    setCoordinatePickerCenter(null)
+    setIsFindingCurrentLocation(true)
+
+    if (!window.isSecureContext) {
+      setCoordinatePickerError('Browser location requires a secure page (HTTPS or localhost).')
+      setIsFindingCurrentLocation(false)
+      return
+    }
+
+    if (!navigator.geolocation) {
+      setCoordinatePickerError('This browser does not support location access.')
+      setIsFindingCurrentLocation(false)
+      return
+    }
+
+    const handlePosition = (position: GeolocationPosition) => {
+      setCoordinatePickerCenter({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      })
+      setIsFindingCurrentLocation(false)
+    }
+
+    const handleError = (error: GeolocationPositionError, isFallbackAttempt: boolean) => {
+      if (error.code === error.PERMISSION_DENIED) {
+        setCoordinatePickerError('Location access was denied. Allow location access for this site in your browser settings and try again.')
+        setIsFindingCurrentLocation(false)
+        return
+      }
+
+      if (!isFallbackAttempt) {
+        navigator.geolocation.getCurrentPosition(
+          handlePosition,
+          (fallbackError) => handleError(fallbackError, true),
+          { enableHighAccuracy: false, maximumAge: 300_000, timeout: 30_000 },
+        )
+        return
+      }
+
+      const message = error.code === error.POSITION_UNAVAILABLE
+        ? 'Your device or browser could not determine a location. Check device location services and try again.'
+        : 'Could not determine your location in time. Try again or select a point manually on the map.'
+      setCoordinatePickerError(message)
+      setIsFindingCurrentLocation(false)
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      handlePosition,
+      (error) => handleError(error, false),
+      { enableHighAccuracy: true, maximumAge: 60_000, timeout: 15_000 },
+    )
+  }
+
+  function openCoordinatePicker() {
+    setAddressLookupError('')
+    setIsCoordinatePickerOpen(true)
+    findCurrentLocation()
+  }
+
+  async function reverseGeocode(coordinates: Coordinates): Promise<string> {
+    const params = new URLSearchParams({
+      format: 'jsonv2',
+      lat: String(coordinates.latitude),
+      lon: String(coordinates.longitude),
+      addressdetails: '1',
+    })
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params.toString()}`)
+    if (!response.ok) {
+      throw new Error(`Address lookup failed with status ${response.status}.`)
+    }
+
+    const result: unknown = await response.json()
+    if (
+      typeof result !== 'object'
+      || result === null
+      || !('display_name' in result)
+      || typeof result.display_name !== 'string'
+      || !result.display_name.trim()
+    ) {
+      throw new Error('No address was found for the selected coordinates.')
+    }
+    return result.display_name.trim().slice(0, 200)
   }
 
   async function saveLocation(values: LocationFormValues) {
@@ -485,6 +590,9 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
               <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Address and coordinates</h3>
               <div className="mt-2 grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
                 <label className={`${labelClassName} sm:col-span-2 lg:col-span-1`}>Address<input {...register('address_line1')} className={inputClassName} /><FieldError message={errors.address_line1?.message} /></label>
+                {addressLookupError && (
+                  <p role="alert" className="text-xs text-rose-600 sm:col-span-2 lg:col-span-3">{addressLookupError}</p>
+                )}
                 <PsgcAddressFields
                   region={watch('region')}
                   province={watch('province')}
@@ -504,6 +612,17 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
                 <label className={labelClassName}>Postal code<input {...register('postal_code')} className={inputClassName} /><FieldError message={errors.postal_code?.message} /></label>
                 <label className={labelClassName}>Latitude<input type="number" step="any" {...register('latitude', { setValueAs: (value: string) => value === '' ? '' : Number(value) })} className={inputClassName} /><FieldError message={errors.latitude?.message} /></label>
                 <label className={labelClassName}>Longitude<input type="number" step="any" {...register('longitude', { setValueAs: (value: string) => value === '' ? '' : Number(value) })} className={inputClassName} /><FieldError message={errors.longitude?.message} /></label>
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={openCoordinatePicker}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    aria-label="Choose location coordinates on map"
+                  >
+                    <MapPin className="h-4 w-4" aria-hidden="true" />
+                    Pick on map
+                  </button>
+                </div>
               </div>
             </section>
 
@@ -516,6 +635,75 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
               </div>
               <p className="mt-2 text-xs text-slate-500">Coordinates create a PostGIS point in longitude, latitude order (SRID 4326).</p>
             </section>
+            {isCoordinatePickerOpen && createPortal(
+              <div className="fixed inset-0 z-[60] flex h-dvh flex-col bg-white" role="dialog" aria-modal="true" aria-labelledby="coordinate-picker-title">
+                <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
+                  <div>
+                    <h2 id="coordinate-picker-title" className="text-base font-bold text-slate-900">Choose location coordinates</h2>
+                    <p className="mt-1 text-xs text-slate-600">
+                      {isLookingUpAddress
+                        ? 'Looking up the address for the selected point…'
+                        : 'Double-click the map to set the coordinates and address.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeCoordinatePicker}
+                    className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    aria-label="Close map picker"
+                  >
+                    <X className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </header>
+                <div className="relative min-h-0 flex-1">
+                  {isFindingCurrentLocation ? (
+                    <div role="status" className="flex h-full items-center justify-center gap-2 text-sm text-slate-600">
+                      <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Finding your current location…
+                    </div>
+                  ) : coordinatePickerError ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+                      <p role="alert" className="text-sm text-rose-700">{coordinatePickerError}</p>
+                      <button
+                        type="button"
+                        onClick={findCurrentLocation}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Try again
+                      </button>
+                    </div>
+                  ) : coordinatePickerCenter ? (
+                    <LocationCoordinatePicker
+                      center={coordinatePickerCenter}
+                      onSelect={async (coordinates) => {
+                        if (isLookingUpAddress) return
+                        setAddressLookupError('')
+                        setValue('latitude', coordinates.latitude, { shouldDirty: true, shouldValidate: true })
+                        setValue('longitude', coordinates.longitude, { shouldDirty: true, shouldValidate: true })
+                        setIsLookingUpAddress(true)
+                        try {
+                          const address = await reverseGeocode(coordinates)
+                          setValue('address_line1', address, { shouldDirty: true, shouldValidate: true })
+                          closeCoordinatePicker()
+                        } catch {
+                          setAddressLookupError('Coordinates were set, but the address could not be looked up. Enter the address manually.')
+                          closeCoordinatePicker()
+                        } finally {
+                          setIsLookingUpAddress(false)
+                        }
+                      }}
+                    />
+                  ) : null}
+                  {isLookingUpAddress && (
+                    <div role="status" className="absolute inset-0 z-[1000] flex items-center justify-center gap-2 bg-white/75 text-sm text-slate-700">
+                      <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Looking up address…
+                    </div>
+                  )}
+                </div>
+              </div>,
+              document.body,
+            )}
           </div>
         )}
       </FormModal>

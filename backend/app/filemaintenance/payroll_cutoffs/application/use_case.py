@@ -38,6 +38,9 @@ from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result 
 )
 from app.filemaintenance.payroll_cutoffs.domain.entities.payroll_cutoff import PayrollCutoffEntity
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    require_cutoff_phase_open,
+)
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
@@ -80,6 +83,20 @@ def _translate_integrity_error(error: IntegrityError) -> NoReturn:
 def _validate_period(start: date, end: date) -> None:
     if end < start:
         raise ValueError("period_end must be on or after period_start.")
+
+
+def _payroll_undertime_minutes(record: AttendanceModel) -> int:
+    break_calculation = (record.punch_metadata or {}).get("break_calculation") or {}
+    if (
+        isinstance(break_calculation, dict)
+        and break_calculation.get("undertime_excludes_break_excess", False)
+    ):
+        excess = break_calculation.get(
+            "excess_minutes_break",
+            break_calculation.get("excess_undertime_minutes", 0),
+        )
+        return record.undertime_minutes + int(excess or 0)
+    return record.undertime_minutes
 
 
 class CreatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity]):
@@ -352,6 +369,12 @@ class CalculateEmployeeCutoffResultsUseCase:
             if actor_employee_id is not None and actor_employee_id == result.employee_id:
                 if result.employee_confirmation_status != "PENDING":
                     raise ValueError("Employee confirmation has already been recorded.")
+                cutoff = await session.scalar(
+                    select(PayrollCutoffModel).where(PayrollCutoffModel.id == cutoff_id)
+                )
+                if cutoff is None:
+                    raise LookupError("Payroll cutoff not found.")
+                require_cutoff_phase_open(cutoff, "EMPLOYEE")
                 result.employee_confirmation_status = "ACKNOWLEDGED"
             else:
                 cutoff = await session.scalar(
@@ -385,12 +408,14 @@ class CalculateEmployeeCutoffResultsUseCase:
                         raise ValueError("The employee must acknowledge the calculation first.")
                     if result.supervisor_status != "PENDING":
                         raise ValueError("Supervisor acknowledgment has already been recorded.")
+                    require_cutoff_phase_open(cutoff, "SUPERVISOR")
                     result.supervisor_status = "ACKNOWLEDGED"
                 elif can_manage_payroll:
                     if result.supervisor_status != "ACKNOWLEDGED":
                         raise ValueError("The supervisor must acknowledge the calculation first.")
                     if result.hr_status != "PENDING":
                         raise ValueError("HR acknowledgment has already been recorded.")
+                    require_cutoff_phase_open(cutoff, "HR")
                     result.hr_status = "ACKNOWLEDGED"
                 else:
                     raise PermissionError(
@@ -424,6 +449,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                 raise LookupError("Payroll cutoff not found.")
             if cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED":
                 raise ValueError("A locked payroll cutoff cannot be recalculated.")
+            require_cutoff_phase_open(cutoff, "HR")
 
             cutoff_start = datetime.combine(cutoff.period_start, time.min, tzinfo=PH_TIMEZONE)
             cutoff_end = datetime.combine(
@@ -485,7 +511,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                         work_type=record.work_type,
                         day_type=record.day_type,
                         late_minutes=record.late_minutes,
-                        undertime_minutes=record.undertime_minutes,
+                        undertime_minutes=_payroll_undertime_minutes(record),
                     )
                     for record, employee_id, required_minutes in attendance_result.all()
                 ]

@@ -19,7 +19,7 @@ class ScheduleSegmentEntity:
     punch_required: bool = False
     auto_deduct: bool = False
     flex_start_minutes: int = 0
-    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK"] | None = None
+    break_slot: Literal["FIRST_BREAK", "MEAL_BREAK", "SECOND_BREAK", "OT_BREAK"] | None = None
     work_segment_sequence: int | None = None
     break_minutes: int = 0
     id: UUID | None = None

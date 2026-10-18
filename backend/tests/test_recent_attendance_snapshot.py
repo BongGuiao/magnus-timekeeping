@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from redis.exceptions import RedisError
+from sqlalchemy.dialects import postgresql
 
 from app.attendance.application.recent_attendance_ports import SnapshotStoreError
 from app.attendance.application.recent_attendance_snapshot import RecentAttendanceSnapshot
@@ -80,7 +81,10 @@ class EmployeeSnapshotTaskTests(unittest.TestCase):
             clock_out_at=start + timedelta(hours=10),
             expected_clock_in_at=start, expected_clock_out_at=start + timedelta(hours=9),
             is_absent=False, leave_type=None, overtime_request_status=None,
-            punch_metadata={"break_calculation": {"net_nonpayable_minutes": 60}},
+            punch_metadata={"break_calculation": {
+                "net_nonpayable_minutes": 60,
+                "excess_minutes_break": 10,
+            }},
             **dict.fromkeys([
                 "late_minutes", "undertime_minutes", "calculated_ot_minutes", "overtime_hours",
                 "regular_overtime_minutes", "regular_overtime_hours",
@@ -91,6 +95,7 @@ class EmployeeSnapshotTaskTests(unittest.TestCase):
                 "approved_night_differential_overtime_minutes", "approved_night_differential_minutes",
             ], 0),
         )
+        row.undertime_minutes = 10
         session = MagicMock()
         ranked_rows = MagicMock()
         ranked_rows.all.return_value = [row]
@@ -105,6 +110,19 @@ class EmployeeSnapshotTaskTests(unittest.TestCase):
             snapshot = dashboard_tasks.load_recent_attendance_snapshots(str(user_id))[str(user_id)]
         self.assertEqual(snapshot["weekly_minutes_worked"], 481)
         self.assertEqual(snapshot["records"][0]["minutes_worked"], 481)
+        self.assertEqual(snapshot["records"][0]["undertime_minutes"], 0)
+        self.assertEqual(snapshot["records"][0]["excess_minutes_break"], 10)
+        attendance_query = next(
+            call.args[0]
+            for call in session.execute.call_args_list
+            if "record_number" in str(call.args[0])
+        )
+        compiled_query = str(attendance_query.compile(dialect=postgresql.dialect()))
+        self.assertIn("payroll.cutoffs", compiled_query)
+        self.assertIn("attendance.attendance_records.user_id =", compiled_query)
+        self.assertIn("attendance.attendance_records.work_date >=", compiled_query)
+        self.assertIn("period_start", compiled_query)
+        self.assertNotIn("attendance.attendance_records.work_date <=", compiled_query)
 
 
 class GetRecentAttendanceSnapshotTests(unittest.IsolatedAsyncioTestCase):

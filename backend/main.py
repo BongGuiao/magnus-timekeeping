@@ -15,6 +15,7 @@ from app.filemaintenance.companies.infrastructure.router import router as compan
 from app.filemaintenance.org_unit.infrastructure.router import router as org_units_router
 from app.filemaintenance.holidays.calendar.infrastructure.router import router as holiday_calendars_router
 from app.filemaintenance.holidays.holiday.infrastructure.router import router as holidays_router
+from app.filemaintenance.announcements.infrastructure.router import router as announcements_router
 from app.filemaintenance.leaves.infrastructure.router import router as leave_types_router
 from app.filemaintenance.leaves.infrastructure.leave_records_router import (
     applications_router as leave_applications_router,
@@ -115,6 +116,7 @@ app.include_router(companies_router)
 app.include_router(org_units_router)
 app.include_router(holiday_calendars_router)
 app.include_router(holidays_router)
+app.include_router(announcements_router)
 app.include_router(leave_types_router)
 app.include_router(employee_entitlements_router)
 app.include_router(leave_applications_router)

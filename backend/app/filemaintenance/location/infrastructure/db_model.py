@@ -22,6 +22,7 @@ class Location(Base):
     __table_args__ = (
         # Multi-tenancy unique constraint
         UniqueConstraint("company_id", "location_code", name="uq_locations_company_code"),
+        UniqueConstraint("company_id", "id", name="uq_locations_company_id_id"),
         # Latitude validation: -90 to 90
         CheckConstraint(
             "latitude IS NULL OR (latitude >= -90 AND latitude <= 90)",

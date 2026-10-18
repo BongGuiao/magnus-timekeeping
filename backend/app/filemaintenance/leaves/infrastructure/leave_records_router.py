@@ -251,6 +251,7 @@ class LeaveDashboardBalanceSchema(BaseModel):
     allotted_minutes: int
     used_minutes: int
     available_minutes: int
+    pending_minutes: int = 0
     entitlement_year: int
 
 

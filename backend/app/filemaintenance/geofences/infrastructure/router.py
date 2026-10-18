@@ -6,7 +6,11 @@ from elasticsearch import AsyncElasticsearch
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
+from app.auth.infrastructure.dependencies import (
+    get_current_user_claims,
+    require_any_permission,
+    require_permission,
+)
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.geofences.application.use_case import (
@@ -26,7 +30,6 @@ from app.filemaintenance.geofences.infrastructure.dependencies import (
 router = APIRouter(
     prefix="/geofences",
     tags=["Geofences"],
-    dependencies=[Depends(require_permission("company.setup"))],
 )
 
 
@@ -53,6 +56,7 @@ def _get_user_id(claims: dict[str, Any]) -> UUID:
     "/create",
     response_model=ResponseEnvelope[GeofenceEntity],
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("company.setup"))],
 )
 async def create_geofence(
     payload: dict[str, Any],
@@ -77,6 +81,7 @@ async def create_geofence(
     "/update",
     response_model=ResponseEnvelope[GeofenceEntity],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("company.setup"))],
 )
 async def update_geofence(
     payload: dict[str, Any],
@@ -119,6 +124,7 @@ async def update_geofence(
     "/list",
     response_model=ResponseEnvelope[list[GeofenceEntity]],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_any_permission("company.setup", "employees.manage"))],
 )
 async def list_geofences(
     company_id: UUID | None = None,
@@ -134,6 +140,7 @@ async def list_geofences(
     "/{geofence_id}",
     response_model=ResponseEnvelope[GeofenceEntity | None],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_any_permission("company.setup", "employees.manage"))],
 )
 async def get_geofence(
     geofence_id: UUID,

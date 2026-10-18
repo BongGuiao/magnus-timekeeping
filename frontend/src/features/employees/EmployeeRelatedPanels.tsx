@@ -7,16 +7,19 @@ import { z } from 'zod'
 import {
   createEmployeeSkill,
   createEmploymentAssignment,
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
   fetchEmployeeSkills,
   fetchEmploymentAssignments,
   updateEmployeeSkill,
   updateEmploymentAssignment,
 } from '../../lib/employeeRelatedApi'
+import { fetchGeofences } from '../../lib/geofenceApi'
 import { fetchLocations } from '../../lib/locationApi'
 import { fetchPayrollGroups } from '../../lib/payrollGroupApi'
 import type { PayrollGroup } from '../../lib/payrollGroupApi'
 import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
+import type { Geofence } from '../../types/geofence'
 import type { Location } from '../../types/location'
 import { OPERATIONAL_GROUPS } from '../../types/employeeRelated'
 import type {
@@ -109,7 +112,7 @@ function SaveEmployeeFirst({ label }: { label: string }) {
 
 function EditorActions({ isEditing, isSubmitting, onSave, onCancel }: { isEditing: boolean; isSubmitting: boolean; onSave: () => void; onCancel: () => void }) {
   return (
-    <div className="flex justify-end gap-2 sm:col-span-2 lg:col-span-3">
+    <div className="col-span-full flex justify-end gap-2">
       {isEditing && (
         <button type="button" onClick={onCancel} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
           New instead
@@ -142,6 +145,8 @@ const assignmentSchema = z.object({
   operational_group: z.union([z.literal(''), z.enum(OPERATIONAL_GROUPS)]),
   payroll_group_id: optionalUuid,
   primary_location_id: optionalUuid,
+  location_ids: z.array(z.uuid()),
+  authorized_geofence_ids: z.array(z.uuid()),
   hire_date: z.iso.date('Hire date is required.'),
   effective_from: z.iso.date('Effective from is required.'),
   effective_to: optionalDate,
@@ -162,7 +167,7 @@ type AssignmentFormValues = z.infer<typeof assignmentSchema>
 const emptyAssignment: AssignmentFormValues = {
   company_id: '', org_unit_id: '', position_id: '', supervisor_employee_id: '',
   employment_type: '', employee_category: '', operational_group: '',
-  payroll_group_id: '', primary_location_id: '', hire_date: '', effective_from: '',
+  payroll_group_id: '', primary_location_id: '', location_ids: [], authorized_geofence_ids: [], hire_date: '', effective_from: '',
   effective_to: '', separation_date: '', status: 'ACTIVE', is_active: true,
 }
 
@@ -177,6 +182,10 @@ function assignmentToForm(assignment: EmploymentAssignment): AssignmentFormValue
     operational_group: assignment.operational_group ?? '',
     payroll_group_id: assignment.payroll_group_id ?? '',
     primary_location_id: assignment.primary_location_id ?? '',
+    location_ids: assignment.location_ids?.length
+      ? assignment.location_ids
+      : assignment.primary_location_id ? [assignment.primary_location_id] : [],
+    authorized_geofence_ids: assignment.authorized_geofence_ids ?? [],
     hire_date: assignment.hire_date,
     effective_from: assignment.effective_from,
     effective_to: assignment.effective_to ?? '',
@@ -203,8 +212,10 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   const selectedCompanyId = watch('company_id')
   const autoLoaded = useRef(false)
   const [locations, setLocations] = useState<Location[]>([])
-  const [isLoadingLocations, setIsLoadingLocations] = useState(true)
   const [locationsError, setLocationsError] = useState('')
+  const [geofences, setGeofences] = useState<Geofence[]>([])
+  const [isLoadingGeofences, setIsLoadingGeofences] = useState(true)
+  const [geofencesError, setGeofencesError] = useState('')
   const [payrollGroups, setPayrollGroups] = useState<PayrollGroup[]>([])
   const [payrollGroupsLoad, setPayrollGroupsLoad] = useState<{
     loaded: boolean
@@ -220,8 +231,20 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
       .catch((error: unknown) => {
         if (isCurrent) setLocationsError(errorText(error, 'Could not load locations.'))
       })
+    return () => { isCurrent = false }
+  }, [])
+
+  useEffect(() => {
+    let isCurrent = true
+    fetchGeofences()
+      .then((items) => {
+        if (isCurrent) setGeofences(items)
+      })
+      .catch((error: unknown) => {
+        if (isCurrent) setGeofencesError(errorText(error, 'Could not load geofences.'))
+      })
       .finally(() => {
-        if (isCurrent) setIsLoadingLocations(false)
+        if (isCurrent) setIsLoadingGeofences(false)
       })
     return () => { isCurrent = false }
   }, [])
@@ -251,13 +274,43 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
     reset(assignmentToForm(related.records[0]))
   }, [related.isLoading, related.records, reset])
   const companyOrgUnits = orgUnits.filter((orgUnit) => orgUnit.company_id === selectedCompanyId)
-  const companyLocations = locations.filter((location) => location.company_id === selectedCompanyId)
   const companyPayrollGroups = payrollGroups.filter((group) => group.company_id === selectedCompanyId)
   const selectedPayrollGroupId = watch('payroll_group_id')
   const selectedPayrollGroup = companyPayrollGroups.find((group) => group.id === selectedPayrollGroupId)
   const isLoadingPayrollGroups = !payrollGroupsLoad.loaded
-  const selectedLocationId = watch('primary_location_id')
-  const selectedLocation = companyLocations.find((location) => location.id === selectedLocationId)
+  const selectedGeofenceIds = watch('authorized_geofence_ids')
+  const selectedLocationIds = watch('location_ids')
+  const companyLocations = locations.filter((location) => location.company_id === selectedCompanyId)
+  const companyGeofences = geofences.filter((geofence) =>
+    geofence.company_id === selectedCompanyId
+    && geofence.location_id !== null
+    && selectedLocationIds.includes(geofence.location_id),
+  )
+  const previousLocationIds = useRef<string[]>([])
+
+  useEffect(() => {
+    if (isLoadingGeofences) return
+
+    const newlySelectedLocationIds = selectedLocationIds.filter(
+      (id) => !previousLocationIds.current.includes(id),
+    )
+    previousLocationIds.current = selectedLocationIds
+    if (newlySelectedLocationIds.length === 0) return
+
+    const linkedGeofenceIds = geofences
+      .filter((geofence) =>
+        geofence.company_id === selectedCompanyId
+        && geofence.location_id !== null
+        && newlySelectedLocationIds.includes(geofence.location_id)
+        && geofence.is_active
+        && geofence.status === 'ACTIVE',
+      )
+      .map((geofence) => geofence.id)
+    const nextGeofenceIds = [...new Set([...selectedGeofenceIds, ...linkedGeofenceIds])]
+    if (nextGeofenceIds.length !== selectedGeofenceIds.length) {
+      setValue('authorized_geofence_ids', nextGeofenceIds, { shouldValidate: true, shouldDirty: true })
+    }
+  }, [geofences, isLoadingGeofences, selectedCompanyId, selectedGeofenceIds, selectedLocationIds, setValue])
 
   if (!employee) {
     return <PanelShell title="Employment assignments" errorMessage="" successMessage=""><SaveEmployeeFirst label="employment assignments" /></PanelShell>
@@ -278,6 +331,15 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   async function save(values: AssignmentFormValues) {
     related.setErrorMessage('')
     related.setSuccessMessage('')
+    const hasOtherActiveAssignment = related.records.some((assignment) =>
+      assignment.id !== editingId
+      && assignment.is_active
+      && assignment.status === 'ACTIVE',
+    )
+    if (values.is_active && values.status === 'ACTIVE' && hasOtherActiveAssignment) {
+      related.setErrorMessage('An employee can have only one active employment assignment. Deactivate the current assignment first.')
+      return
+    }
     const payload: EmploymentAssignmentWritePayload = {
       employee_id: employeeId,
       company_id: values.company_id,
@@ -289,6 +351,8 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
       operational_group: values.operational_group || null,
       payroll_group_id: nullable(values.payroll_group_id),
       primary_location_id: nullable(values.primary_location_id),
+      location_ids: selectedLocationIds,
+      authorized_geofence_ids: selectedGeofenceIds,
       hire_date: values.hire_date,
       effective_from: values.effective_from,
       effective_to: nullable(values.effective_to),
@@ -301,6 +365,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
         ? await updateEmploymentAssignment(editingId, payload)
         : await createEmploymentAssignment(payload)
       related.upsert(saved)
+      window.dispatchEvent(new Event(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT))
       related.setSuccessMessage(`Employment assignment ${editingId ? 'updated' : 'added'} successfully.`)
       cancelEdit()
     } catch (error) {
@@ -311,8 +376,13 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   const companyName = (id: string) => companies.find((company) => company.id === id)?.legal_name ?? '—'
   const orgUnitName = (id: string | null) => orgUnits.find((orgUnit) => orgUnit.id === id)?.org_unit_name ?? '—'
   const locationName = (id: string | null) => {
-    if (!id) return 'No primary location'
+    if (!id) return 'No linked location'
     return locations.find((location) => location.id === id)?.location_name ?? 'Location unavailable'
+  }
+  const assignedLocationNames = (ids: string[], fallbackId: string | null) => {
+    const selectedIds = ids.length ? ids : fallbackId ? [fallbackId] : []
+    if (selectedIds.length === 0) return 'No assigned locations'
+    return selectedIds.map((id) => locations.find((item) => item.id === id)?.location_name ?? 'Location unavailable').join(', ')
   }
 
   return (
@@ -321,7 +391,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
         <table className="min-w-full text-left text-xs">
           <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
             <tr>
-              <th className="px-3 py-2">Company / Org unit / Location</th>
+              <th className="px-3 py-2">Company / Org unit / Assigned locations</th>
               <th className="px-3 py-2">Payroll group</th>
               <th className="px-3 py-2">Type / Category</th>
               <th className="px-3 py-2">Effective</th>
@@ -334,7 +404,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
             {!related.isLoading && related.records.length === 0 && <tr><td colSpan={6} className="px-3 py-3 text-slate-500">No employment assignments yet.</td></tr>}
             {related.records.map((assignment) => (
               <tr key={assignment.id} className={editingId === assignment.id ? 'bg-indigo-50' : ''}>
-                <td className="px-3 py-2"><p className="font-semibold text-slate-900">{companyName(assignment.company_id)}</p><p className="text-slate-500">{orgUnitName(assignment.org_unit_id)} · {locationName(assignment.primary_location_id)}</p></td>
+                <td className="px-3 py-2"><p className="font-semibold text-slate-900">{companyName(assignment.company_id)}</p><p className="text-slate-500">{orgUnitName(assignment.org_unit_id)} · {assignedLocationNames(assignment.location_ids ?? [], assignment.primary_location_id)}</p></td>
                 <td className="px-3 py-2">{payrollGroups.find((group) => group.id === assignment.payroll_group_id)?.payroll_group_name ?? (assignment.payroll_group_id ? 'Group unavailable' : '—')}</td>
                 <td className="px-3 py-2"><p>{assignment.employment_type}</p><p className="text-slate-500">{assignment.employee_category}{assignment.operational_group ? ` · ${assignment.operational_group}` : ''}</p></td>
                 <td className="px-3 py-2">{assignment.effective_from} → {assignment.effective_to ?? 'present'}</td>
@@ -350,12 +420,15 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
 
       <section className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
         <h4 className="text-xs font-bold text-slate-700">{editingId ? 'Edit assignment' : 'Add assignment'}</h4>
-        <div key={editingId ?? 'new'} className="mt-2 grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div key={editingId ?? 'new'} className="mt-2 grid gap-4">
+          <div className="grid min-w-0 gap-x-4 gap-y-3 sm:grid-cols-2">
           <label className={labelClassName}>Company
             <select {...register('company_id', {
               onChange: () => {
                 setValue('org_unit_id', '')
                 setValue('primary_location_id', '')
+                setValue('location_ids', [])
+                setValue('authorized_geofence_ids', [])
                 setValue('payroll_group_id', '')
               },
             })} className={inputClassName}>
@@ -369,33 +442,6 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
               <option value="">None</option>
               {companyOrgUnits.map((orgUnit) => <option key={orgUnit.id} value={orgUnit.id}>{orgUnit.org_unit_code} — {orgUnit.org_unit_name}</option>)}
             </select>
-          </label>
-          <label className={labelClassName}>Primary location
-            <select
-              {...register('primary_location_id')}
-              disabled={!selectedCompanyId || isLoadingLocations}
-              className={inputClassName}
-            >
-              <option value="">{isLoadingLocations ? 'Loading locations…' : 'Not assigned (clock-in disabled)'}</option>
-              {selectedLocationId && !selectedLocation && (
-                <option value={selectedLocationId}>Previously assigned location</option>
-              )}
-              {companyLocations
-                .filter((location) => location.is_active && location.status === 'ACTIVE')
-                .map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.location_code} — {location.location_name}
-                  </option>
-                ))}
-              {selectedLocation && (!selectedLocation.is_active || selectedLocation.status !== 'ACTIVE') && (
-                <option value={selectedLocation.id}>
-                  {selectedLocation.location_code} — {selectedLocation.location_name} (inactive)
-                </option>
-              )}
-            </select>
-            <FieldError message={errors.primary_location_id?.message} />
-            {locationsError && <span className="mt-1 block text-xs font-medium text-rose-600">{locationsError}</span>}
-            <span className="mt-1 block text-[11px] font-normal text-slate-500">Clock-in also requires an active geofence for this location.</span>
           </label>
           <label className={labelClassName}>Supervisor
             <select {...register('supervisor_employee_id')} className={inputClassName}>
@@ -436,6 +482,164 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           </label>
           <label className={labelClassName}>Status<input {...register('status')} className={inputClassName} /><FieldError message={errors.status?.message} /></label>
           <label className="flex items-center gap-3 self-end rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700"><input type="checkbox" {...register('is_active')} className="h-4 w-4 accent-indigo-600" />Enabled for use</label>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <fieldset className="min-w-0">
+              <legend className={labelClassName}>Assigned locations</legend>
+              <div className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-200">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2"><span className="sr-only">Assigned</span></th>
+                      <th className="px-3 py-2">Location</th>
+                      <th className="px-3 py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {companyLocations
+                      .filter((location) =>
+                        (location.is_active && location.status === 'ACTIVE') || selectedLocationIds.includes(location.id),
+                      )
+                      .map((location) => (
+                        <tr key={location.id}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Assign location ${location.location_code}`}
+                              checked={selectedLocationIds.includes(location.id)}
+                              onChange={(event) => {
+                                const nextIds = event.target.checked
+                                  ? [...selectedLocationIds, location.id]
+                                  : selectedLocationIds.filter((id) => id !== location.id)
+                                const nextGeofenceIds = event.target.checked
+                                  ? selectedGeofenceIds
+                                  : selectedGeofenceIds.filter((id) => geofences.find((item) => item.id === id)?.location_id !== location.id)
+                                setValue('location_ids', nextIds, { shouldValidate: true, shouldDirty: true })
+                                setValue('authorized_geofence_ids', nextGeofenceIds, { shouldValidate: true, shouldDirty: true })
+                                if (!nextIds.includes(watch('primary_location_id'))) {
+                                  setValue('primary_location_id', nextIds[0] ?? '')
+                                }
+                              }}
+                              disabled={!selectedCompanyId}
+                              className="h-3.5 w-3.5 accent-indigo-600"
+                            />
+                          </td>
+                          <th scope="row" className="px-3 py-2 font-medium text-slate-700">{location.location_code} — {location.location_name}</th>
+                          <td className="px-3 py-2 text-slate-500">{location.is_active && location.status === 'ACTIVE' ? 'Active' : 'Inactive'}</td>
+                        </tr>
+                      ))}
+                    {selectedLocationIds
+                      .filter((id) => !companyLocations.some((location) => location.id === id))
+                      .map((id) => (
+                        <tr key={id} className="bg-amber-50">
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label="Remove unavailable assigned location"
+                              checked
+                              onChange={() => {
+                                const nextIds = selectedLocationIds.filter((selectedId) => selectedId !== id)
+                                setValue('location_ids', nextIds, { shouldValidate: true, shouldDirty: true })
+                                setValue('authorized_geofence_ids', selectedGeofenceIds.filter(
+                                  (fenceId) => geofences.find((item) => item.id === fenceId)?.location_id !== id,
+                                ), { shouldValidate: true, shouldDirty: true })
+                                if (!nextIds.includes(watch('primary_location_id'))) {
+                                  setValue('primary_location_id', nextIds[0] ?? '')
+                                }
+                              }}
+                              className="h-3.5 w-3.5 accent-indigo-600"
+                            />
+                          </td>
+                          <th scope="row" className="px-3 py-2 font-medium text-amber-800">Previously assigned location unavailable ({id})</th>
+                          <td className="px-3 py-2 text-amber-800">Unavailable</td>
+                        </tr>
+                      ))}
+                    {companyLocations.length === 0 && selectedLocationIds.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-3 text-slate-500">{locationsError || 'No locations are available for this company.'}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <FieldError message={errors.location_ids?.message} />
+              {locationsError && <span className="mt-1 block text-xs font-medium text-rose-600">{locationsError}</span>}
+              <span className="mt-2 block text-[11px] font-normal text-slate-500">Select all company locations assigned to this employee. The primary location is retained for workflows that require one location.</span>
+            </fieldset>
+            <fieldset className="min-w-0">
+              <legend className={labelClassName}>Authorized geofences</legend>
+              <div className="mt-2 max-h-64 overflow-auto rounded-lg border border-slate-200">
+                <table className="min-w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2"><span className="sr-only">Authorized</span></th>
+                      <th className="px-3 py-2">Geofence</th>
+                      <th className="px-3 py-2">Assigned location</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {companyGeofences
+                      .filter((geofence) =>
+                        (geofence.is_active && geofence.status === 'ACTIVE') || selectedGeofenceIds.includes(geofence.id),
+                      )
+                      .map((geofence) => (
+                        <tr key={geofence.id}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Authorize geofence ${geofence.geofence_code}`}
+                              checked={selectedGeofenceIds.includes(geofence.id)}
+                              onChange={(event) => {
+                                const nextIds = event.target.checked
+                                  ? [...selectedGeofenceIds, geofence.id]
+                                  : selectedGeofenceIds.filter((id) => id !== geofence.id)
+                                setValue('authorized_geofence_ids', nextIds, { shouldValidate: true, shouldDirty: true })
+                              }}
+                              disabled={!selectedCompanyId || selectedLocationIds.length === 0 || isLoadingGeofences}
+                              className="h-3.5 w-3.5 accent-indigo-600"
+                            />
+                          </td>
+                          <th scope="row" className="px-3 py-2 font-medium text-slate-700">
+                            {geofence.geofence_code} — {geofence.geofence_name}
+                            {geofence.is_active && geofence.status === 'ACTIVE' ? '' : ' (inactive)'}
+                          </th>
+                          <td className="px-3 py-2 text-slate-500">{locationName(geofence.location_id)}</td>
+                        </tr>
+                      ))}
+                    {selectedGeofenceIds
+                      .filter((id) => !companyGeofences.some((geofence) => geofence.id === id))
+                      .map((id) => (
+                        <tr key={id} className="bg-amber-50">
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              aria-label="Remove unavailable authorized geofence"
+                              checked
+                              onChange={() => setValue(
+                                'authorized_geofence_ids',
+                                selectedGeofenceIds.filter((selectedId) => selectedId !== id),
+                                { shouldValidate: true, shouldDirty: true },
+                              )}
+                              className="h-3.5 w-3.5 accent-indigo-600"
+                            />
+                          </td>
+                          <th scope="row" className="px-3 py-2 font-medium text-amber-800">Previously assigned geofence unavailable ({id})</th>
+                          <td className="px-3 py-2 text-amber-800">Unavailable</td>
+                        </tr>
+                      ))}
+                    {!isLoadingGeofences && selectedLocationIds.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Select one or more locations first.</td></tr>
+                    )}
+                    {!isLoadingGeofences && selectedLocationIds.length > 0 && companyGeofences.length === 0 && selectedGeofenceIds.length === 0 && (
+                      <tr><td colSpan={3} className="px-3 py-3 text-slate-500">No geofences are available for the selected locations.</td></tr>
+                    )}
+                    {isLoadingGeofences && <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Loading geofences…</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <FieldError message={errors.authorized_geofence_ids?.message} />
+              {geofencesError && <span className="mt-1 block text-xs font-medium text-rose-600">{geofencesError}</span>}
+              <span className="mt-2 block text-[11px] font-normal text-slate-500">Linked geofences are automatically selected with their assigned location. You can adjust the authorized geofences here.</span>
+            </fieldset>
+          </div>
           <EditorActions isEditing={Boolean(editingId)} isSubmitting={isSubmitting} onSave={handleSubmit(save)} onCancel={cancelEdit} />
         </div>
       </section>

@@ -47,6 +47,70 @@ export function getAttendanceErrorMessage(error: unknown, fallback: string): str
   return fallback
 }
 
+export interface AttendanceRangeRecalculationRequest {
+  employee_id: string
+  from_date: string
+  to_date: string
+  dry_run?: boolean
+}
+
+export interface AttendanceRangeRecalculationRecord {
+  attendance_id: string
+  work_date: string
+  status: 'PREVIEW' | 'UPDATED' | 'UNCHANGED' | 'SKIPPED'
+  reason: string | null
+  previous_expected_clock_in_at: string | null
+  previous_expected_clock_out_at: string | null
+  actual_clock_in_at: string | null
+  actual_clock_out_at: string | null
+  expected_clock_in_at: string | null
+  expected_clock_out_at: string | null
+  regular_overtime_minutes: number
+  night_differential_overtime_minutes: number
+  calculated_ot_minutes: number
+  night_differential_minutes: number
+  regular_night_differential_minutes: number
+  previous_late_minutes: number
+  late_minutes: number
+  undertime_minutes: number
+  excess_minutes_break: number
+  minutes_worked: number | null
+  break_calculation_details: {
+    break_slot: 'FIRST_BREAK' | 'MEAL_BREAK' | 'SECOND_BREAK' | 'OT_BREAK'
+    punch_out_at: string | null
+    punch_in_at: string | null
+    duration_minutes: number | null
+    allowance_minutes: number | null
+    excess_minutes: number
+  }[]
+}
+
+export interface AttendanceRangeRecalculationResult {
+  employee_id: string
+  from_date: string
+  to_date: string
+  dry_run: boolean
+  preview_count: number
+  updated_count: number
+  unchanged_count: number
+  skipped_count: number
+  records: AttendanceRangeRecalculationRecord[]
+}
+
+export async function recalculateAttendanceRange(
+  payload: AttendanceRangeRecalculationRequest,
+): Promise<AttendanceRangeRecalculationResult> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<AttendanceRangeRecalculationResult>>(
+      '/attendance/recalculate-range',
+      { ...payload, dry_run: payload.dry_run ?? true },
+    )
+    return response.data.data
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not recalculate attendance.'))
+  }
+}
+
 export async function clockAttendance(
   file: File,
   userId: string,
@@ -149,6 +213,7 @@ interface RecentAttendanceSnapshot {
     minutes_worked: number | null
     late_minutes?: number
     undertime_minutes?: number
+    excess_minutes_break?: number
     calculated_ot_minutes?: number
     overtime_hours?: number
     regular_overtime_minutes?: number
@@ -306,6 +371,21 @@ export async function submitOvertimeApplication(
   }
 }
 
+export async function updateOvertimeApplication(
+  applicationId: string,
+  payload: OvertimeApplicationInput,
+): Promise<OvertimeApplication> {
+  try {
+    const response = await apiClient.put<ApiSuccessEnvelope<OvertimeApplication>>(
+      `/attendance/overtime-applications/${encodeURIComponent(applicationId)}`,
+      payload,
+    )
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not update the overtime application.'))
+  }
+}
+
 export async function fetchPendingOvertimeApplications(): Promise<OvertimeApplication[]> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<OvertimeApplication[]>>(
@@ -382,6 +462,57 @@ export async function fetchTeamDashboardSnapshot(): Promise<AdminDashboardSnapsh
   }
 }
 
+export interface SupervisorAttendancePunchLocation {
+  attendance_id: string
+  employee_code: string
+  employee_name: string
+  work_date: string
+  action: 'CLOCK_IN' | 'CLOCK_OUT'
+  punched_at: string
+  latitude: number
+  longitude: number
+  accuracy_meters: number | null
+}
+
+export interface SupervisorAttendanceLocations {
+  company_id: string
+  employee_code: string
+  work_date: string
+  punches: SupervisorAttendancePunchLocation[]
+}
+
+export interface SupervisorTeamEmployee {
+  employee_id: string
+  employee_code: string
+  employee_name: string
+}
+
+export async function fetchSupervisorTeamEmployees(): Promise<SupervisorTeamEmployee[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<SupervisorTeamEmployee[]>>(
+      '/attendance/supervisor/team-employees',
+    )
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load your team employees.'))
+  }
+}
+
+export async function fetchSupervisorAttendanceLocations(
+  employeeCode: string,
+  workDate: string,
+): Promise<SupervisorAttendanceLocations> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<SupervisorAttendanceLocations>>(
+      '/attendance/supervisor/attendance-locations',
+      { employee_code: employeeCode, work_date: workDate },
+    )
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load attendance punch locations.'))
+  }
+}
+
 export async function fetchRecentAttendanceSnapshot(): Promise<{
   entries: AttendanceLogEntry[]
   weeklyHoursWorked: number
@@ -412,6 +543,7 @@ export async function fetchRecentAttendanceSnapshot(): Promise<{
         minutesWorked: record.minutes_worked,
         lateMinutes: record.late_minutes ?? 0,
         undertimeMinutes: record.undertime_minutes ?? 0,
+        excessMinutesBreak: record.excess_minutes_break ?? 0,
         calculatedOtMinutes: record.calculated_ot_minutes ?? 0,
         overtimeHours: record.overtime_hours ?? 0,
         regularOvertimeMinutes: record.regular_overtime_minutes ?? 0,

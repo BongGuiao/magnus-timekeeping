@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.attendance.application.use_case import (
-    RecordBreakInputDTO, RecordBreakUseCase, calculate_break_policy, calculate_attendance_metrics,
+    RecordBreakInputDTO,
+    RecordBreakUseCase,
+    calculate_attendance_metrics,
+    calculate_break_policy,
+    calculate_net_nonpayable_break_minutes,
 )
 from app.attendance.domain.entities.attendance import AttendanceEntity
 from app.auth.domain.entities.user import UserEntity
@@ -56,6 +60,22 @@ class FlexibleBreakCalculationTests(unittest.TestCase):
         )
         self.assertEqual(excess, 10)
 
+    def test_overtime_break_is_paid_up_to_its_schedule_allowance(self):
+        self.punch("ot_break", 20)
+        excess, unpaid, intervals = calculate_break_policy(
+            self.record, [rule("OT_BREAK", 15)],
+        )
+        self.assertEqual((excess, unpaid), (5, 0))
+        self.assertEqual(
+            intervals,
+            ((self.start + timedelta(minutes=15), self.start + timedelta(minutes=20)),),
+        )
+
+    def test_overtime_break_requires_a_schedule_allowance(self):
+        self.punch("ot_break", 20)
+        with self.assertRaisesRegex(ValueError, "paid OT_BREAK allowance"):
+            calculate_break_policy(self.record, [])
+
     def test_unpaid_duration_is_deducted_once_and_excess_is_undertime(self):
         self.punch("meal_break", 75)
         excess, unpaid, intervals = calculate_break_policy(
@@ -74,12 +94,34 @@ class FlexibleBreakCalculationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required meal break"):
             calculate_break_policy(self.record, [rule("MEAL_BREAK", 60, "UNPAID_BREAK")])
 
+    def test_missing_first_break_punches_without_auto_deduct_do_not_block_clockout(self):
+        excess, unpaid, _ = calculate_break_policy(
+            self.record, [rule("FIRST_BREAK", 15, "UNPAID_BREAK")],
+        )
+        self.assertEqual((excess, unpaid), (0, 0))
+
     def test_actual_punches_override_auto_deduct_not_added_to_it(self):
         self.punch("meal_break", 70)
         excess, unpaid, _ = calculate_break_policy(
             self.record, [rule("MEAL_BREAK", 60, "UNPAID_BREAK", True)],
         )
         self.assertEqual((excess, unpaid), (10, 70))
+
+    def test_short_punched_meal_deducts_full_configured_allowance(self):
+        self.punch("meal_break", 30)
+        meal_rule = rule("MEAL_BREAK", 60, "UNPAID_BREAK")
+        _, unpaid, intervals = calculate_break_policy(self.record, [meal_rule])
+        self.assertEqual(unpaid, 60)
+        self.assertEqual(
+            calculate_net_nonpayable_break_minutes(
+                self.record,
+                [meal_rule],
+                intervals,
+                self.start - timedelta(hours=1),
+                self.start + timedelta(hours=2),
+            ),
+            60,
+        )
 
     def test_unused_paid_break_has_no_undertime(self):
         excess, unpaid, _ = calculate_break_policy(self.record, [rule("FIRST_BREAK", 15)])
@@ -137,6 +179,39 @@ class FlexibleBreakSegmentValidationTests(unittest.IsolatedAsyncioTestCase):
         result = await _normalize_break_segment(SegmentRepo(work), template_id, payload)
         self.assertEqual((result["start_time"], result["end_time"], result["end_day_offset"]), (time(22), time(6), 1))
         self.assertTrue(result["punch_required"])
+
+    async def test_overtime_break_must_be_configured_as_paid(self):
+        template_id = uuid4()
+        work = ScheduleSegmentEntity(
+            schedule_template_id=template_id, segment_sequence=1, segment_type="WORK",
+            start_time=time(17), end_time=time(21),
+        )
+        result = await _normalize_break_segment(
+            SegmentRepo(work),
+            template_id,
+            {
+                "segment_type": "PAID_BREAK",
+                "break_slot": "OT_BREAK",
+                "work_segment_sequence": 1,
+                "break_minutes": 15,
+                "auto_deduct": False,
+            },
+        )
+        self.assertEqual(result["break_slot"], "OT_BREAK")
+        self.assertEqual(result["segment_type"], "PAID_BREAK")
+
+        with self.assertRaisesRegex(ScheduleSegmentReferenceError, "OT_BREAK must be configured as a paid break"):
+            await _normalize_break_segment(
+                SegmentRepo(work),
+                template_id,
+                {
+                    "segment_type": "UNPAID_BREAK",
+                    "break_slot": "OT_BREAK",
+                    "work_segment_sequence": 1,
+                    "break_minutes": 15,
+                    "auto_deduct": False,
+                },
+            )
 
     async def test_break_allowance_cannot_exceed_work_window(self):
         template_id = uuid4()
@@ -224,13 +299,16 @@ class FlexibleBreakPunchTests(unittest.IsolatedAsyncioTestCase):
         self.record.undertime_minutes = 13
         self.record.punch_metadata["break_calculation"] = {"excess_undertime_minutes": 3}
         await self.punch("second_break_in_at")
-        self.assertEqual(self.record.undertime_minutes, 20)
+        self.assertEqual(self.record.undertime_minutes, 10)
+        self.assertTrue(
+            self.record.punch_metadata["break_calculation"]["undertime_excludes_break_excess"],
+        )
 
     async def test_return_after_work_window_is_recorded_for_excess_calculation(self):
         self.record.second_break_out_at = self.now - timedelta(minutes=25)
         self.rules[0]["end_at"] = (self.now - timedelta(minutes=1)).isoformat()
         await self.punch("second_break_in_at")
-        self.assertEqual(self.record.undertime_minutes, 10)
+        self.assertEqual(self.record.undertime_minutes, 0)
 
     async def test_second_break_rejected_if_meal_break_not_ended_when_meal_rule_exists(self):
         self.rules.append({
@@ -272,4 +350,3 @@ class FlexibleBreakPunchTests(unittest.IsolatedAsyncioTestCase):
         self.record.second_break_in_at = self.now - timedelta(minutes=15)
         with self.assertRaisesRegex(ValueError, "after the second break has started"):
             await self.punch("first_break_out_at")
-

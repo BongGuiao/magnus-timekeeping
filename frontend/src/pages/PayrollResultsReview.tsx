@@ -196,9 +196,18 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="payroll-review" onNavigate={onNavigate} onSignOut={logout} />
       <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-        <header>
-          <h1 className="text-xl font-bold text-slate-900">Payroll Calculation Review</h1>
-          <p className="mt-1 text-xs text-slate-600">Review cutoff totals and acknowledge that the calculation is correct. The workflow is employee, supervisor, then HR.</p>
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Payroll Calculation Review</h1>
+            <p className="mt-1 text-xs text-slate-600">Review cutoff totals and acknowledge that the calculation is correct. The workflow is employee, supervisor, then HR.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate?.('dashboard')}
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700"
+          >
+            Back to dashboard
+          </button>
         </header>
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}

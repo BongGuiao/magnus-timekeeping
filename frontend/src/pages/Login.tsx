@@ -12,13 +12,11 @@ export default function Login({ onSuccess }: Props) {
     <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
-            MT
-          </div>
-          <p className="mt-3 text-lg font-extrabold tracking-tight text-slate-900">
-            MAGNUS<span className="text-indigo-600">TIME</span>
-          </p>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Timekeeping Center</p>
+          <img
+            src="/TimeLogo.jpg"
+            alt="Magnus Business Solutions Inc."
+            className="h-[110px] w-full max-w-[300px] object-contain"
+          />
         </div>
 
         <form onSubmit={submit} className="space-y-4">

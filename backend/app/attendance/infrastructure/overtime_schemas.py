@@ -77,3 +77,69 @@ class OvertimeCutoffSchema(BaseModel):
 class OvertimeAttendanceOptionsSchema(BaseModel):
     cutoff: OvertimeCutoffSchema
     records: list[RecentAttendanceItem]
+
+
+class AttendanceRangeRecalculationInputSchema(BaseModel):
+    employee_id: UUID
+    from_date: date
+    to_date: date
+    dry_run: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "AttendanceRangeRecalculationInputSchema":
+        if self.from_date > self.to_date:
+            raise ValueError("from_date must be on or before to_date.")
+        return self
+
+
+class AttendanceBreakCalculationDetailSchema(BaseModel):
+    break_slot: str
+    punch_out_at: datetime | None
+    punch_in_at: datetime | None
+    duration_minutes: int | None
+    allowance_minutes: int | None
+    excess_minutes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AttendanceRangeRecalculationItemSchema(BaseModel):
+    attendance_id: UUID
+    work_date: date
+    status: Literal["PREVIEW", "UPDATED", "UNCHANGED", "SKIPPED"]
+    reason: str | None
+    previous_expected_clock_in_at: datetime | None
+    previous_expected_clock_out_at: datetime | None
+    actual_clock_in_at: datetime | None
+    actual_clock_out_at: datetime | None
+    expected_clock_in_at: datetime | None
+    expected_clock_out_at: datetime | None
+    regular_overtime_minutes: int
+    night_differential_overtime_minutes: int
+    calculated_ot_minutes: int
+    night_differential_minutes: int
+    regular_night_differential_minutes: int
+    previous_late_minutes: int
+    late_minutes: int
+    undertime_minutes: int
+    excess_minutes_break: int = 0
+    minutes_worked: int | None = None
+    break_calculation_details: list[AttendanceBreakCalculationDetailSchema] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AttendanceRangeRecalculationSchema(BaseModel):
+    employee_id: UUID
+    from_date: date
+    to_date: date
+    dry_run: bool
+    preview_count: int
+    updated_count: int
+    unchanged_count: int
+    skipped_count: int
+    records: list[AttendanceRangeRecalculationItemSchema]
+
+    model_config = ConfigDict(from_attributes=True)

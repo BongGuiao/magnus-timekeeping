@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
 from app.auth.application.accounts import (
+    DEFAULT_EMPLOYEE_PASSWORD,
     create_user_account,
     find_user_conflict,
     sync_user_account_with_employee,
@@ -17,9 +18,6 @@ from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
-
-DEFAULT_EMPLOYEE_PASSWORD = "Default123!"
-
 
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_payload = payload.copy()

@@ -1,9 +1,16 @@
 import { useEffect, useId, useState } from 'react'
 import { AxiosError } from 'axios'
-import { AlertCircle, CheckCircle2, CircleDot, Crosshair, Home, Info, LoaderCircle, MapPin, Save, ShieldCheck, Smartphone } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { AlertCircle, CheckCircle2, CircleDot, Crosshair, Home, Info, LoaderCircle, MapPin, Save, ShieldCheck, Smartphone, X } from 'lucide-react'
+import LocationCoordinatePicker from '../../components/common/LocationCoordinatePicker'
+import type { Coordinates } from '../../components/common/LocationCoordinatePicker'
 import { apiClient } from '../../lib/apiClient'
 import { fetchGeofences } from '../../lib/geofenceApi'
-import { fetchEmploymentAssignments, getManilaDate } from '../../lib/employeeRelatedApi'
+import {
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
+  fetchEmploymentAssignments,
+  isCurrentEmploymentAssignment,
+} from '../../lib/employeeRelatedApi'
 import type { ApiErrorEnvelope, ApiSuccessEnvelope } from '../../types/auth'
 import type { Employee } from '../../types/employee'
 import type { Geofence } from '../../types/geofence'
@@ -17,6 +24,17 @@ interface WfhRegistration {
 
 const inputClassName = 'mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500'
 const labelClassName = 'text-xs font-semibold text-slate-700'
+const DEFAULT_MAP_CENTER: Coordinates = { latitude: 14.5995, longitude: 120.9842 }
+
+function parseGeofenceCenter(centerPoint: string | null): Coordinates | null {
+  const match = centerPoint?.match(/POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s*\)/i)
+  if (!match) return null
+  const longitude = Number(match[1])
+  const latitude = Number(match[2])
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+    || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) return null
+  return { latitude, longitude }
+}
 
 function errorText(error: unknown): string {
   if (error instanceof AxiosError) {
@@ -39,50 +57,71 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [assignmentWarning, setAssignmentWarning] = useState('')
+  const [isMapOpen, setIsMapOpen] = useState(false)
 
   useEffect(() => {
     if (!employeeId) {
       return
     }
     let current = true
-    Promise.all([
-      apiClient.get<ApiSuccessEnvelope<WfhRegistration | null>>(`/employees/${employeeId}/wfh`),
-      fetchGeofences(),
-      fetchEmploymentAssignments(employeeId),
-    ]).then(([response, fences, assignments]) => {
-      if (!current) return
-      const record = response.data.data
-      const now = Date.now()
-      const today = getManilaDate()
-      const eligibleFences = fences.filter((fence) =>
-        fence.is_active && fence.status === 'ACTIVE'
-        && fence.radius_meters !== null && Number(fence.radius_meters) > 0
-        && Date.parse(fence.effective_from) <= now
-        && (!fence.effective_to || Date.parse(fence.effective_to) >= now)
-        && assignments.some((assignment) =>
-          assignment.company_id === fence.company_id && assignment.primary_location_id === fence.location_id
-          && assignment.is_active && assignment.status === 'ACTIVE'
-          && assignment.effective_from <= today
-          && (!assignment.effective_to || assignment.effective_to >= today)
-          && (!assignment.separation_date || assignment.separation_date >= today),
-        ),
-      )
-      if (record && !eligibleFences.some((fence) => fence.id === record.geofence_id)) {
-        const previous = fences.find((fence) => fence.id === record.geofence_id)
-        if (previous) eligibleFences.push(previous)
+    const refreshPanel = async () => {
+      setIsLoading(true)
+      setHasLoaded(false)
+      try {
+        const [response, assignments] = await Promise.all([
+          apiClient.get<ApiSuccessEnvelope<WfhRegistration | null>>(`/employees/${employeeId}/wfh`),
+          fetchEmploymentAssignments(employeeId),
+        ])
+        if (!current) return
+        const record = response.data.data
+        const latestAssignment = assignments[0] ?? null
+        const fences = latestAssignment ? await fetchGeofences(latestAssignment.company_id) : []
+        if (!current) return
+        const now = Date.now()
+        const eligibleFences = fences.filter((fence) =>
+          latestAssignment
+          && (latestAssignment.authorized_geofence_ids ?? []).includes(fence.id)
+          && isCurrentEmploymentAssignment(latestAssignment)
+          && fence.is_active && fence.status === 'ACTIVE'
+          && fence.radius_meters !== null && Number(fence.radius_meters) > 0
+          && Date.parse(fence.effective_from) <= now
+          && (!fence.effective_to || Date.parse(fence.effective_to) >= now),
+        )
+        if (record && !eligibleFences.some((fence) => fence.id === record.geofence_id)) {
+          const previous = fences.find((fence) => fence.id === record.geofence_id)
+          if (previous) eligibleFences.push(previous)
+        }
+        setGeofences(eligibleFences)
+        const recordGeofenceIsInAssignmentCompany = Boolean(
+          record && fences.some((fence) => fence.id === record.geofence_id),
+        )
+        setGeofenceId(recordGeofenceIsInAssignmentCompany ? record?.geofence_id ?? '' : '')
+        setLatitude(record ? String(record.latitude) : '')
+        setLongitude(record ? String(record.longitude) : '')
+        setIsActive(record?.is_active ?? false)
+        setAssignmentWarning(
+          record && !recordGeofenceIsInAssignmentCompany
+            ? 'The saved WFH geofence is not in the company on the latest employment assignment. Select an authorized geofence for that company before saving.'
+            : '',
+        )
+        setHasLoaded(true)
+        setError('')
+      } catch (cause: unknown) {
+        if (current) {
+          setHasLoaded(false)
+          setError(errorText(cause))
+        }
+      } finally {
+        if (current) setIsLoading(false)
       }
-      setGeofences(eligibleFences)
-      setGeofenceId(record?.geofence_id ?? '')
-      setLatitude(record ? String(record.latitude) : '')
-      setLongitude(record ? String(record.longitude) : '')
-      setIsActive(record?.is_active ?? false)
-      setHasLoaded(true)
-    }).catch((cause: unknown) => {
-      if (current) setError(errorText(cause))
-    }).finally(() => {
-      if (current) setIsLoading(false)
-    })
-    return () => { current = false }
+    }
+    void refreshPanel()
+    window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
+    return () => {
+      current = false
+      window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
+    }
   }, [employeeId])
 
   async function save() {
@@ -118,6 +157,13 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
     </div>
   )
   const selected = geofences.find((fence) => fence.id === geofenceId)
+  const latitudeValue = Number(latitude)
+  const longitudeValue = Number(longitude)
+  const mapCenter = latitude.trim() && longitude.trim()
+    && Number.isFinite(latitudeValue) && latitudeValue >= -90 && latitudeValue <= 90
+    && Number.isFinite(longitudeValue) && longitudeValue >= -180 && longitudeValue <= 180
+    ? { latitude: latitudeValue, longitude: longitudeValue }
+    : parseGeofenceCenter(selected?.center_point ?? null) ?? DEFAULT_MAP_CENTER
   return (
     <div className="mx-auto max-w-5xl space-y-5" aria-busy={isLoading || isSaving} onKeyDown={(event) => {
       if (event.key === 'Enter' && event.target instanceof HTMLInputElement) event.preventDefault()
@@ -138,13 +184,23 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
       {isLoading && <p role="status" className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />Loading WFH registration...</p>}
       {error && <p role="alert" className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{error}</p>}
       {notice && <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800"><CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{notice}</p>}
+      {assignmentWarning && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">{assignmentWarning}</p>}
 
       <fieldset disabled={!hasLoaded || isLoading || isSaving} className="min-w-0 space-y-5">
         <legend className="sr-only">WFH location registration</legend>
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.65fr)]">
           <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
             <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
-              <MapPin className="h-4 w-4 text-indigo-600" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => setIsMapOpen(true)}
+                disabled={!hasLoaded || isLoading}
+                aria-label="Open map to choose home location coordinates"
+                title="Choose coordinates on map"
+                className="rounded p-1 text-indigo-600 hover:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <MapPin className="h-4 w-4" aria-hidden="true" />
+              </button>
               <h4 className="text-xs font-bold text-slate-800">Location details</h4>
             </div>
             <div className="space-y-5 p-5">
@@ -155,7 +211,7 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
                 </select>
               </label>
               <p id={`${panelId}-policy-help`} className="-mt-3 text-[11px] leading-5 text-slate-500">Uses the selected office geofence's radius and accuracy limits. Its office center point stays unchanged.</p>
-              {hasLoaded && geofences.length === 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">No eligible geofence found. Configure a geofence with a radius for an active office assignment first.</p>}
+              {hasLoaded && geofences.length === 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">No eligible geofence found for the company on the latest active employment assignment. Assign an authorized geofence with a radius first.</p>}
               <div className="border-t border-slate-100 pt-4">
                 <div className="mb-3 flex items-center gap-2">
                   <Crosshair className="h-4 w-4 text-slate-400" aria-hidden="true" />
@@ -171,7 +227,7 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
                     <span id={`${panelId}-longitude-help`} className="mt-1.5 block text-[11px] font-normal text-slate-400">Between -180 and 180</span>
                   </label>
                 </div>
-                <p className="mt-3 text-[11px] leading-5 text-slate-500">Enter decimal-degree coordinates for the employee's approved home location.</p>
+                <p className="mt-3 text-[11px] leading-5 text-slate-500">Click the location icon to choose a point on the map, or enter coordinates for the employee&apos;s approved home location.</p>
               </div>
             </div>
           </section>
@@ -222,6 +278,37 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
           </button>
         </div>
       </fieldset>
+      {isMapOpen && createPortal(
+        <div className="fixed inset-0 z-[60] flex h-dvh flex-col bg-white" role="dialog" aria-modal="true" aria-labelledby={`${panelId}-map-title`}>
+          <header className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
+            <div>
+              <h2 id={`${panelId}-map-title`} className="text-base font-bold text-slate-900">Choose home location</h2>
+              <p className="mt-1 text-xs text-slate-600">Double-click the map to fill the WFH latitude and longitude fields.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMapOpen(false)}
+              className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              aria-label="Close map"
+            >
+              <X className="h-5 w-5" aria-hidden="true" />
+            </button>
+          </header>
+          <div className="min-h-0 flex-1">
+            <LocationCoordinatePicker
+              center={mapCenter}
+              onSelect={(coordinates) => {
+                setLatitude(String(coordinates.latitude))
+                setLongitude(String(coordinates.longitude))
+                setIsMapOpen(false)
+                setError('')
+                setNotice('')
+              }}
+            />
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }

@@ -149,7 +149,6 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             select(
                 EmploymentAssignmentModel.employee_id.label("employee_id"),
                 PayrollCutoffModel.period_start.label("period_start"),
-                PayrollCutoffModel.period_end.label("period_end"),
                 func.row_number()
                 .over(
                     partition_by=EmploymentAssignmentModel.employee_id,
@@ -182,7 +181,6 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             select(
                 ranked_cutoffs.c.employee_id,
                 ranked_cutoffs.c.period_start,
-                ranked_cutoffs.c.period_end,
             )
             .where(ranked_cutoffs.c.cutoff_number == 1)
             .subquery()
@@ -240,7 +238,6 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             .where(
                 AttendanceModel.record_status == "VALID",
                 AttendanceModel.work_date >= current_cutoff.c.period_start,
-                AttendanceModel.work_date <= current_cutoff.c.period_end,
             )
         )
         if user_id is not None:
@@ -347,6 +344,21 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
                 )
                 late_minutes = row.late_minutes
                 undertime_minutes = row.undertime_minutes
+                break_calculation = (row.punch_metadata or {}).get("break_calculation") or {}
+                excess_minutes_break = (
+                    int(break_calculation.get(
+                        "excess_minutes_break",
+                        break_calculation.get("excess_undertime_minutes", 0),
+                    ))
+                    if isinstance(break_calculation, dict)
+                    else 0
+                )
+                if (
+                    excess_minutes_break
+                    and isinstance(break_calculation, dict)
+                    and not break_calculation.get("undertime_excludes_break_excess", False)
+                ):
+                    undertime_minutes = max(undertime_minutes - excess_minutes_break, 0)
                 is_late = late_minutes > 0
                 is_undertime = undertime_minutes > 0
                 record_status = (
@@ -384,6 +396,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
                         ),
                         "late_minutes": late_minutes,
                         "undertime_minutes": undertime_minutes,
+                        "excess_minutes_break": excess_minutes_break,
                         "calculated_ot_minutes": row.calculated_ot_minutes,
                         "overtime_hours": float(row.overtime_hours),
                         "regular_overtime_minutes": row.regular_overtime_minutes,
@@ -476,9 +489,26 @@ def _load_leave_dashboard_snapshots(employee_id: str | None = None) -> dict[str,
             .where(LeaveApplicationModel.is_active.is_(True))
             .order_by(LeaveApplicationModel.created_at.desc(), LeaveApplicationModel.id.desc())
         )
+        pending_leave_statement = (
+            select(
+                LeaveApplicationModel.employee_id,
+                LeaveApplicationModel.leave_type_id,
+                func.sum(LeaveApplicationModel.requested_minutes).label("pending_minutes"),
+            )
+            .where(
+                LeaveApplicationModel.is_active.is_(True),
+                LeaveApplicationModel.status == "PENDING",
+                LeaveApplicationModel.start_at >= datetime(current_year, 1, 1, tzinfo=PH_TIMEZONE),
+                LeaveApplicationModel.start_at < datetime(current_year + 1, 1, 1, tzinfo=PH_TIMEZONE),
+            )
+            .group_by(LeaveApplicationModel.employee_id, LeaveApplicationModel.leave_type_id)
+        )
         if employee_id is not None:
             entitlement_statement = entitlement_statement.where(EmployeeEntitlementModel.employee_id == UUID(employee_id))
             application_statement = application_statement.where(LeaveApplicationModel.employee_id == UUID(employee_id))
+            pending_leave_statement = pending_leave_statement.where(
+                LeaveApplicationModel.employee_id == UUID(employee_id)
+            )
 
         refreshed_at = datetime.now(timezone.utc).isoformat()
         snapshots: dict[str, dict[str, Any]] = {}
@@ -515,9 +545,20 @@ def _load_leave_dashboard_snapshots(employee_id: str | None = None) -> dict[str,
                         "allotted_minutes": allotted_minutes,
                         "used_minutes": row.used_minutes,
                         "available_minutes": available_minutes,
+                        "pending_minutes": 0,
                         "entitlement_year": row.entitlement_year,
                     }
                 )
+            pending_by_employee_and_type = {
+                (str(row.employee_id), str(row.leave_type_id)): row.pending_minutes
+                for row in session.execute(pending_leave_statement)
+            }
+            for key, snapshot in snapshots.items():
+                for balance in snapshot["balances"]:
+                    balance["pending_minutes"] = pending_by_employee_and_type.get(
+                        (key, balance["type"]),
+                        0,
+                    )
             for row in session.execute(application_statement):
                 key = str(row.employee_id)
                 if key not in snapshots:

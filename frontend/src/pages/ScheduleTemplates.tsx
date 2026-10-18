@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, ChevronsUpDown, Pencil, Plus, Power, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronsUpDown, ChevronDown, Pencil, Plus, Power, Search } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
@@ -111,6 +111,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([])
   const [form, setForm] = useState<TemplateForm>(blankForm)
   const [segments, setSegments] = useState<SegmentForm[]>([])
+  const [expandedSegmentIndexes, setExpandedSegmentIndexes] = useState<number[]>([])
   const [originalSegments, setOriginalSegments] = useState<ScheduleSegment[]>([])
   const [editing, setEditing] = useState<ScheduleTemplate | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
@@ -154,6 +155,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
     setEditing(null)
     setIsFormOpen(false)
     setSegments([])
+    setExpandedSegmentIndexes([])
     setOriginalSegments([])
   }, [companyId])
 
@@ -218,6 +220,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
     setEditing(null)
     setIsFormOpen(false)
     setSegments([])
+    setExpandedSegmentIndexes([])
     setOriginalSegments([])
     setForm({
       ...blankForm,
@@ -259,6 +262,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
         end_day_offset: template.is_overnight ? 1 : 0,
         id,
       })))
+      setExpandedSegmentIndexes([])
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load schedule template segments.')
     } finally {
@@ -303,6 +307,22 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
       setError('Add at least one schedule segment before saving the template.')
       return
     }
+    const invalidWorkSegmentIndex = segments.findIndex((segment) =>
+      segment.segment_type === 'WORK'
+      && (
+        !segment.start_time
+        || !segment.end_time
+        || !Number.isInteger(segment.paid_minutes)
+        || segment.paid_minutes < 0
+        || !Number.isInteger(segment.flex_start_minutes)
+        || segment.flex_start_minutes < 0
+      ),
+    )
+    if (invalidWorkSegmentIndex >= 0) {
+      setExpandedSegmentIndexes((current) => [...new Set([...current, invalidWorkSegmentIndex])])
+      setError(`Complete the work hours and minute settings for segment ${segments[invalidWorkSegmentIndex].segment_sequence}.`)
+      return
+    }
     const sequences = segments.map((segment) => Number(segment.segment_sequence))
     if (sequences.some((sequence) => !Number.isInteger(sequence) || sequence < 1 || sequence > 32767)) {
       setError('Segment sequence must be a whole number between 1 and 32767.')
@@ -313,11 +333,18 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
       return
     }
     const breaks = segments.filter((segment) => segment.segment_type !== 'WORK')
-    if (breaks.some((segment) =>
-      !segment.break_slot || segment.break_minutes <= 0
-      || !segments.some((work) => work.segment_type === 'WORK'
-        && work.segment_sequence === segment.work_segment_sequence),
-    )) {
+    const invalidBreakIndex = segments.findIndex((segment) =>
+      segment.segment_type !== 'WORK'
+      && (
+        !segment.break_slot
+        || !Number.isInteger(segment.break_minutes)
+        || segment.break_minutes <= 0
+        || !segments.some((work) => work.segment_type === 'WORK'
+          && work.segment_sequence === segment.work_segment_sequence)
+      ),
+    )
+    if (invalidBreakIndex >= 0) {
+      setExpandedSegmentIndexes((current) => [...new Set([...current, invalidBreakIndex])])
       setError('Each break needs an attendance break slot, a WORK segment, and positive break minutes.')
       return
     }
@@ -400,7 +427,10 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
   }
 
   const activeCompanies = companies.filter((company) => company.is_active || company.id === form.company_id)
-  const activeCalendars = calendars.filter((calendar) => calendar.status === 'ACTIVE')
+  const activeCalendars = calendars.filter((calendar) =>
+    (calendar.is_active && calendar.status === 'PUBLISHED')
+    || calendar.id === form.holiday_calendar_id,
+  )
   const normalizedSearch = search.trim().toLowerCase()
   const filteredTemplates = normalizedSearch
     ? templates.filter((template) => [
@@ -458,6 +488,16 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
     )
   }
 
+  function addSegment() {
+    const nextIndex = segments.length
+    const nextSegment = {
+      ...blankSegment(segments.reduce((highest, segment) => Math.max(highest, segment.segment_sequence), 0) + 1),
+      end_day_offset: form.is_overnight ? 1 : 0,
+    }
+    setSegments((current) => [...current, nextSegment])
+    setExpandedSegmentIndexes((current) => [...new Set([...current, nextIndex])])
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="schedule-templates" onNavigate={onNavigate} onSignOut={logout} />
@@ -507,7 +547,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
             <label className={labelClass}>Holiday calendar
               <select className={inputClass} value={form.holiday_calendar_id ?? ''} onChange={(event) => setField('holiday_calendar_id', event.target.value || null)}>
                 <option value="">No holiday calendar</option>
-                {activeCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.calendar_code} — {calendar.calendar_name}</option>)}
+                {activeCalendars.map((calendar) => <option key={calendar.id} value={calendar.id}>{calendar.calendar_code} — {calendar.calendar_name} ({calendar.effective_year})</option>)}
               </select>
             </label>
             <label className={labelClass}>Effective from
@@ -545,16 +585,18 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
             )}
             <fieldset className="space-y-3 rounded-lg border border-slate-200 p-4 sm:col-span-2 lg:col-span-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <legend className="px-1 text-sm font-bold text-slate-800">Schedule segments</legend>
+                <div>
+                  <legend className="px-1 text-sm font-bold text-slate-800">Schedule segments</legend>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {segments.filter((segment) => segment.segment_type === 'WORK').length} work
+                    {' · '}
+                    {segments.filter((segment) => segment.segment_type !== 'WORK').length} breaks
+                    {' · '}Expand a segment to edit its settings.
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setSegments((current) => [
-                    ...current,
-                    {
-                      ...blankSegment(current.reduce((highest, segment) => Math.max(highest, segment.segment_sequence), 0) + 1),
-                      end_day_offset: form.is_overnight ? 1 : 0,
-                    },
-                  ])}
+                  onClick={addSegment}
                   className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 px-3 py-1.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
                 >
                   <Plus className="h-4 w-4" /> Add segment
@@ -563,80 +605,135 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
               {segments.length === 0 && (
                 <p className="text-sm text-rose-700">At least one segment is required. Add work or break segments to define the template’s daily schedule.</p>
               )}
-              {segments.map((segment, index) => (
-                <div key={segment.id ?? `new-segment-${index}`} className="grid gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <label className={labelClass}>Sequence
-                    <input className={inputClass} type="number" min={1} max={32767} step={1} required value={segment.segment_sequence} onChange={(event) => updateSegment(index, { segment_sequence: Number(event.target.value) })} />
-                  </label>
-                  <label className={labelClass}>Segment type
-                    <select className={inputClass} required value={segment.segment_type} onChange={(event) => updateSegment(index, { segment_type: event.target.value as ScheduleSegmentType })}>
-                      <option value="WORK">Work</option>
-                      <option value="PAID_BREAK">Paid break</option>
-                      <option value="UNPAID_BREAK">Unpaid break</option>
-                    </select>
-                  </label>
-                  <label className={labelClass}>Start time
-                    <input className={inputClass} type="time" required disabled={segment.segment_type !== 'WORK'} value={segment.start_time} onChange={(event) => updateSegment(index, { start_time: event.target.value })} />
-                  </label>
-                  <label className={labelClass}>End time
-                    <input className={inputClass} type="time" required disabled={segment.segment_type !== 'WORK'} value={segment.end_time} onChange={(event) => updateSegment(index, { end_time: event.target.value })} />
-                  </label>
-                  <label className={labelClass}>End day offset
-                    <select className={inputClass} required disabled value={segment.end_day_offset}>
-                      <option value={0}>0 — Ends on the same date</option>
-                      <option value={1}>1 — Ends on the next date</option>
-                    </select>
-                    <span className="mt-1 block text-xs font-normal text-slate-500">Set automatically by Overnight schedule.</span>
-                  </label>
-                  {segment.segment_type !== 'WORK' && <>
-                    <label className={labelClass}>Attendance break
-                      <select className={inputClass} required value={segment.break_slot ?? ''} onChange={(event) => updateSegment(index, { break_slot: event.target.value as BreakSlot })}>
-                        <option value="">Select a break</option>
-                        <option value="FIRST_BREAK">First break</option>
-                        <option value="MEAL_BREAK">Meal break</option>
-                        <option value="SECOND_BREAK">Second break</option>
-                      </select>
-                    </label>
-                    <label className={labelClass}>Linked WORK segment
-                      <select className={inputClass} required value={segment.work_segment_sequence ?? ''} onChange={(event) => updateSegment(index, { work_segment_sequence: Number(event.target.value) || null })}>
-                        <option value="">Select WORK segment</option>
-                        {segments.filter((item) => item.segment_type === 'WORK').map((item) =>
-                          <option key={item.segment_sequence} value={item.segment_sequence}>Work #{item.segment_sequence}: {item.start_time} - {item.end_time}</option>,
-                        )}
-                      </select>
-                    </label>
-                    <label className={labelClass}>{segment.segment_type === 'PAID_BREAK' ? 'Allowed paid break minutes' : 'Required unpaid break minutes'}
-                      <input className={inputClass} type="number" min={1} step={1} required value={segment.break_minutes} onChange={(event) => updateSegment(index, { break_minutes: Number(event.target.value) })} />
-                    </label>
-                    <p className="text-xs text-slate-500 sm:col-span-2">Breaks inherit the WORK time range. Actual punches determine duration; excess minutes are undertime.</p>
-                  </>}
-                  {segment.segment_type === 'WORK' && <label className={labelClass}>Paid minutes
-                    <input className={inputClass} type="number" min={0} step={1} required value={segment.paid_minutes} onChange={(event) => updateSegment(index, { paid_minutes: Number(event.target.value) })} />
-                  </label>}
-                  {segment.segment_type === 'WORK' && <label className={labelClass}>Early clock-in allowance (minutes)
-                    <input className={inputClass} type="number" min={0} step={1} required value={segment.flex_start_minutes} onChange={(event) => updateSegment(index, { flex_start_minutes: Number(event.target.value) })} />
-                    <span className="mt-1 block text-xs font-normal text-slate-500">The first WORK segment controls shift clock-in. Zero allows no early punches. This does not change grace, shift end, or overtime eligibility.</span>
-                  </label>}
-                  <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-slate-700">
-                    <input type="checkbox" disabled={segment.segment_type !== 'WORK'} checked={segment.punch_required} onChange={(event) => updateSegment(index, { punch_required: event.target.checked })} className="h-4 w-4 accent-indigo-600" />
-                    Punch required
-                  </label>
-                  <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-slate-700">
-                    <input type="checkbox" disabled={segment.segment_type !== 'UNPAID_BREAK'} checked={segment.auto_deduct} onChange={(event) => updateSegment(index, { auto_deduct: event.target.checked })} className="h-4 w-4 accent-indigo-600" />
-                    Auto deduct
-                  </label>
-                  <div className="flex items-end justify-end">
+              {segments.map((segment, index) => {
+                const isExpanded = expandedSegmentIndexes.includes(index)
+                const isWork = segment.segment_type === 'WORK'
+                const breakLabel = segment.break_slot ? {
+                  FIRST_BREAK: 'First break',
+                  MEAL_BREAK: 'Meal break',
+                  SECOND_BREAK: 'Second break',
+                  OT_BREAK: 'Overtime break',
+                }[segment.break_slot] : undefined
+                const summary = isWork
+                  ? `${segment.start_time || 'Set start'}–${segment.end_time || 'Set end'}${segment.end_day_offset ? ' (+1 day)' : ''} · ${formatMinutes(segment.paid_minutes)} paid`
+                  : `${breakLabel ?? 'Choose break'} · ${segment.segment_type === 'PAID_BREAK' ? `${segment.break_minutes} min paid allowance` : `${segment.break_minutes} min unpaid`}`
+                return (
+                <section key={segment.id ?? `new-segment-${index}`} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                  <div className="flex items-center gap-2 bg-slate-50">
                     <button
                       type="button"
-                      onClick={() => setSegments((current) => current.filter((_, segmentIndex) => segmentIndex !== index))}
-                      className="rounded-lg border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                      aria-expanded={isExpanded}
+                      aria-controls={`segment-settings-${index}`}
+                      onClick={() => setExpandedSegmentIndexes((current) =>
+                        isExpanded ? current.filter((item) => item !== index) : [...current, index],
+                      )}
+                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left hover:bg-slate-100"
+                    >
+                      <ChevronDown className={`h-4 w-4 shrink-0 text-slate-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} aria-hidden="true" />
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">
+                        {segment.segment_sequence}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold text-slate-800">
+                          {isWork ? 'Work segment' : breakLabel ?? 'Break segment'}
+                          <span className={`ml-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${isWork ? 'bg-indigo-100 text-indigo-700' : segment.segment_type === 'PAID_BREAK' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
+                            {isWork ? 'Work' : segment.segment_type === 'PAID_BREAK' ? 'Paid' : 'Unpaid'}
+                          </span>
+                        </span>
+                        <span className="block truncate text-xs text-slate-500">{summary}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSegments((current) => current.filter((_, segmentIndex) => segmentIndex !== index))
+                        setExpandedSegmentIndexes((current) => current
+                          .filter((item) => item !== index)
+                          .map((item) => item > index ? item - 1 : item))
+                      }}
+                      className="mr-3 rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
                       aria-label={`Remove segment ${segment.segment_sequence}`}
                     >
                       Remove
                     </button>
                   </div>
-                </div>
-              ))}
+                  <fieldset id={`segment-settings-${index}`} disabled={!isExpanded} className={`grid gap-3 p-3 sm:grid-cols-2 lg:grid-cols-4 ${isExpanded ? '' : 'hidden'}`}>
+                    <label className={labelClass}>Sequence
+                      <input className={inputClass} type="number" min={1} max={32767} step={1} required value={segment.segment_sequence} onChange={(event) => updateSegment(index, { segment_sequence: Number(event.target.value) })} />
+                    </label>
+                    <label className={labelClass}>Segment type
+                      <select className={inputClass} required value={segment.segment_type} disabled={['FIRST_BREAK', 'SECOND_BREAK', 'OT_BREAK'].includes(segment.break_slot ?? '')} onChange={(event) => updateSegment(index, { segment_type: event.target.value as ScheduleSegmentType })}>
+                        <option value="WORK">Work</option>
+                        <option value="PAID_BREAK">Paid break</option>
+                        <option value="UNPAID_BREAK">Unpaid break</option>
+                      </select>
+                    </label>
+                    {isWork && <>
+                      <label className={labelClass}>Start time
+                        <input className={inputClass} type="time" required value={segment.start_time} onChange={(event) => updateSegment(index, { start_time: event.target.value })} />
+                      </label>
+                      <label className={labelClass}>End time
+                        <input className={inputClass} type="time" required value={segment.end_time} onChange={(event) => updateSegment(index, { end_time: event.target.value })} />
+                      </label>
+                      <label className={labelClass}>Paid minutes
+                        <input className={inputClass} type="number" min={0} step={1} required value={segment.paid_minutes} onChange={(event) => updateSegment(index, { paid_minutes: Number(event.target.value) })} />
+                      </label>
+                      <label className={labelClass}>Early clock-in allowance (minutes)
+                        <input className={inputClass} type="number" min={0} step={1} required value={segment.flex_start_minutes} onChange={(event) => updateSegment(index, { flex_start_minutes: Number(event.target.value) })} />
+                        <span className="mt-1 block text-xs font-normal text-slate-500">Only the first WORK segment controls shift clock-in. Zero allows no early punches.</span>
+                      </label>
+                      <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-slate-700">
+                        <input type="checkbox" checked={segment.punch_required} onChange={(event) => updateSegment(index, { punch_required: event.target.checked })} className="h-4 w-4 accent-indigo-600" />
+                        Punch required
+                      </label>
+                    </>}
+                    {!isWork && <>
+                      <label className={labelClass}>Attendance break
+                        <select className={inputClass} required value={segment.break_slot ?? ''} onChange={(event) => {
+                          const breakSlot = event.target.value as BreakSlot
+                          updateSegment(index, ['FIRST_BREAK', 'SECOND_BREAK', 'OT_BREAK'].includes(breakSlot)
+                            ? { break_slot: breakSlot, segment_type: 'PAID_BREAK', auto_deduct: false }
+                            : { break_slot: breakSlot })
+                        }}>
+                          <option value="">Select a break</option>
+                          <option value="FIRST_BREAK">First break</option>
+                          <option value="MEAL_BREAK">Meal break</option>
+                          <option value="SECOND_BREAK">Second break</option>
+                          <option value="OT_BREAK">Overtime break</option>
+                        </select>
+                      </label>
+                      <label className={labelClass}>Linked WORK segment
+                        <select className={inputClass} required value={segment.work_segment_sequence ?? ''} onChange={(event) => updateSegment(index, { work_segment_sequence: Number(event.target.value) || null })}>
+                          <option value="">Select WORK segment</option>
+                          {segments.filter((item) => item.segment_type === 'WORK').map((item) =>
+                            <option key={item.segment_sequence} value={item.segment_sequence}>Work #{item.segment_sequence}: {item.start_time} - {item.end_time}</option>,
+                          )}
+                        </select>
+                      </label>
+                      <label className={labelClass}>{segment.segment_type === 'PAID_BREAK' ? 'Allowed paid break minutes' : 'Required unpaid break minutes'}
+                        <input className={inputClass} type="number" min={1} step={1} required value={segment.break_minutes} onChange={(event) => updateSegment(index, { break_minutes: Number(event.target.value) })} />
+                      </label>
+                      {segment.segment_type === 'UNPAID_BREAK' && <label className="flex items-center gap-2 self-end pb-2 text-sm font-medium text-slate-700">
+                        <input type="checkbox" checked={segment.auto_deduct} onChange={(event) => updateSegment(index, { auto_deduct: event.target.checked })} className="h-4 w-4 accent-indigo-600" />
+                        Auto deduct when not punched
+                      </label>}
+                      <p className="text-xs text-slate-500 sm:col-span-2 lg:col-span-4">
+                        {segment.break_slot === 'OT_BREAK'
+                          ? 'Paid up to this allowance; only excess minutes are deducted from worked time.'
+                          : 'Breaks inherit the linked WORK segment hours. Paid breaks are paid up to the allowance; unpaid meal time is deducted from worked time.'}
+                      </p>
+                    </>}
+                    {!isWork && <label className="text-sm font-medium text-slate-700">
+                      Break hours
+                      <span className={`${inputClass} block cursor-not-allowed bg-slate-100 text-slate-500`}>
+                        {segment.start_time || '—'}–{segment.end_time || '—'}
+                        {segment.end_day_offset ? ' (+1 day)' : ''}
+                      </span>
+                    </label>}
+                  </fieldset>
+                </section>
+                )
+              })}
             </fieldset>
             <div className="flex items-end justify-end gap-2 sm:col-span-2 lg:col-span-4">
               <button type="button" onClick={resetForm} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
@@ -661,6 +758,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
                 setError('')
                 setSuccess('')
                 setSegments([{ ...blankSegment(1), end_day_offset: blankForm.is_overnight ? 1 : 0 }])
+                setExpandedSegmentIndexes([0])
                 setOriginalSegments([])
                 setIsFormOpen(true)
               }} className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"><Plus className="h-4 w-4" /> New template</button>}

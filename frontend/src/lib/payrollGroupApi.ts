@@ -37,6 +37,7 @@ export interface HolidayCalendarOption {
   calendar_name: string
   effective_year: number
   status: string
+  is_active: boolean
 }
 
 function rethrowApiError(error: unknown, fallback: string): never {

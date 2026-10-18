@@ -62,6 +62,20 @@ def _configure_json_file_logger(
     return logger
 
 
+LOGGED_PATH_PREFIXES = ("/locations",)
+LOGGED_EXACT_PATHS = ("/attendance/clock", "/attendance/clock-break")
+
+
+def _logged_path_group(path: str) -> str | None:
+    """Returns the redaction label for paths that are request-logged, or None."""
+    if path in LOGGED_EXACT_PATHS:
+        return path
+    for prefix in LOGGED_PATH_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return prefix
+    return None
+
+
 class RequestLoggingMiddleware:
     def __init__(
         self,
@@ -78,9 +92,8 @@ class RequestLoggingMiddleware:
         root_path = scope.get("root_path", "")
         if root_path and path.startswith(root_path + "/"):
             path = path[len(root_path):]
-        if scope["type"] != "http" or not (
-            path == "/locations" or path.startswith("/locations/")
-        ):
+        path_group = _logged_path_group(path) if scope["type"] == "http" else None
+        if path_group is None:
             await self.app(scope, receive, send)
             return
 
@@ -119,7 +132,7 @@ class RequestLoggingMiddleware:
             raise
         finally:
             route = scope.get("route")
-            route_path = getattr(route, "path", "/locations/<unmatched>")
+            route_path = getattr(route, "path", f"{path_group}/<unmatched>")
             failed = status_code >= 400 or error_type is not None or not completed
             event: dict[str, object] = {
                 "@timestamp": datetime.now(timezone.utc).isoformat(),

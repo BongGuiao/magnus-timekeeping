@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal, Optional
+from decimal import Decimal
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
@@ -17,6 +18,9 @@ class OvertimeCutoff:
     cutoff_code: str
     period_start: date
     period_end: date
+    employee_review_deadline: datetime | None = None
+    supervisor_deadline: datetime | None = None
+    hr_deadline: datetime | None = None
 
 
 @dataclass
@@ -24,15 +28,34 @@ class OvertimeAttendance:
     id: UUID
     user_id: UUID
     work_date: date
+    schedule_template_id: Optional[UUID] = None
+    record_status: str = "VALID"
+    is_locked: bool = False
     expected_clock_in_at: Optional[datetime] = None
     expected_clock_out_at: Optional[datetime] = None
     clock_in_at: Optional[datetime] = None
     clock_out_at: Optional[datetime] = None
     corrected_clock_in_at: Optional[datetime] = None
     corrected_clock_out_at: Optional[datetime] = None
+    first_break_out_at: Optional[datetime] = None
+    first_break_in_at: Optional[datetime] = None
+    meal_break_out_at: Optional[datetime] = None
+    meal_break_in_at: Optional[datetime] = None
+    second_break_out_at: Optional[datetime] = None
+    second_break_in_at: Optional[datetime] = None
+    ot_break_out_at: Optional[datetime] = None
+    ot_break_in_at: Optional[datetime] = None
+    punch_metadata: Optional[dict[str, Any]] = None
+    calculated_ot_minutes: int = 0
+    overtime_hours: Decimal = Decimal(0)
+    late_minutes: int = 0
+    undertime_minutes: int = 0
     regular_overtime_minutes: int = 0
+    regular_overtime_hours: Decimal = Decimal(0)
     night_differential_overtime_minutes: int = 0
+    night_differential_overtime_hours: Decimal = Decimal(0)
     night_differential_minutes: int = 0
+    night_differential_hours: Decimal = Decimal(0)
     overtime_request_status: Optional[str] = None
     requested_regular_overtime_minutes: int = 0
     requested_night_differential_overtime_minutes: int = 0

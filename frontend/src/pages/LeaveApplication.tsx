@@ -5,7 +5,6 @@ import { useLogout } from '../hooks/useLogout'
 import { fetchCurrentEmploymentAssignments } from '../lib/employeeRelatedApi'
 import {
   createLeaveApplication,
-  fetchLeaveDashboardSnapshot,
   fetchLeaveTypes,
   fetchMyLeaveApplications,
   getAuthenticatedEmployeeId,
@@ -13,7 +12,7 @@ import {
   minutesToLeaveUnits,
   submitLeaveApplication,
 } from '../lib/leaveApi'
-import type { LeaveApplication, LeaveDashboardSnapshot, LeaveType } from '../lib/leaveApi'
+import type { LeaveApplication, LeaveType } from '../lib/leaveApi'
 
 interface Props {
   employeeName: string
@@ -91,10 +90,6 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [allLeaveTypes, setAllLeaveTypes] = useState<LeaveType[]>([])
   const [applications, setApplications] = useState<LeaveApplication[]>([])
-  const [leaveBalances, setLeaveBalances] = useState<LeaveDashboardSnapshot['balances']>([])
-  const [balancesRefreshedAt, setBalancesRefreshedAt] = useState('')
-  const [balancesLoading, setBalancesLoading] = useState(!previewOnly)
-  const [balancesError, setBalancesError] = useState('')
   const [leaveTypeId, setLeaveTypeId] = useState('')
   const [startAt, setStartAt] = useState(() => localDateTime(1, 9))
   const [endAt, setEndAt] = useState(() => localDateTime(1, 18))
@@ -117,27 +112,6 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Could not load leave application data.'))
       .finally(() => setLoading(false))
-  }, [previewOnly])
-
-  useEffect(() => {
-    if (previewOnly) return
-    let isCurrent = true
-    void fetchLeaveDashboardSnapshot()
-      .then((snapshot) => {
-        if (!isCurrent) return
-        setLeaveBalances(snapshot.balances)
-        setBalancesRefreshedAt(snapshot.refreshed_at)
-        setBalancesError('')
-      })
-      .catch((cause: unknown) => {
-        if (isCurrent) setBalancesError(cause instanceof Error ? cause.message : 'Could not load your leave balances.')
-      })
-      .finally(() => {
-        if (isCurrent) setBalancesLoading(false)
-      })
-    return () => {
-      isCurrent = false
-    }
   }, [previewOnly])
 
   const selectedLeaveType = leaveTypes.find((type) => type.id === leaveTypeId)
@@ -213,12 +187,21 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
     <div className="min-h-screen bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="leave-application" onNavigate={onNavigate} onSignOut={logout} />
       <main className="mx-auto w-[95%] max-w-6xl pt-6">
-        <div className="mb-6">
-          <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Employee self-service</p>
-          <h1 className="mt-1 text-2xl font-extrabold text-slate-900">Apply for Leave</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Leave duration follows the unit configured for each leave type. Your application is saved as a draft.
-          </p>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Employee self-service</p>
+            <h1 className="mt-1 text-2xl font-extrabold text-slate-900">Apply for Leave</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Leave duration follows the unit configured for each leave type. Your application is saved as a draft.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate?.('dashboard')}
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700"
+          >
+            Back to dashboard
+          </button>
         </div>
 
         {previewOnly && (
@@ -229,35 +212,6 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
 
         {error && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}
-
-        <section aria-labelledby="leave-balances-heading" className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 id="leave-balances-heading" className="text-lg font-bold text-slate-900">My Remaining Leave Balance</h2>
-            {balancesRefreshedAt && (
-              <p className="text-xs text-slate-500">Updated {formatDateTime(balancesRefreshedAt)}</p>
-            )}
-          </div>
-          {balancesError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{balancesError}</p>}
-          {balancesLoading ? (
-            <p role="status" className="mt-3 text-sm text-slate-500">Loading your leave balances…</p>
-          ) : previewOnly ? (
-            <p className="mt-3 text-sm text-slate-500">Sign in with an employee-linked account to view leave balances.</p>
-          ) : balancesError ? null : leaveBalances.length === 0 ? (
-            <p className="mt-3 text-sm text-slate-500">No leave balances are available for this year.</p>
-          ) : (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {leaveBalances.map((balance) => (
-                <div key={`${balance.type}-${balance.entitlement_year}`} className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-                  <p className="text-sm font-medium text-slate-600">{balance.label}</p>
-                  <p className="mt-1 text-2xl font-bold text-indigo-700">
-                    {formatDuration(balance.available_minutes, balance.unit_type)}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">remaining · {balance.entitlement_year}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
 
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           {loading ? <p className="text-sm text-slate-500">Loading leave options…</p> : (

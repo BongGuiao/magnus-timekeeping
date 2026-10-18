@@ -1,8 +1,13 @@
 import unittest
 from uuid import uuid4
+from unittest.mock import patch
 
+from fastapi import HTTPException
+
+from app.attendance.infrastructure.clock_policy import AttendanceClockPolicy
 from app.auth.application.use_case import _build_token_payload
 from app.auth.domain.entities.user import Role, UserEntity, resolve_app_role
+from app.auth.infrastructure.dependencies import require_admin_or_kiosk_employee
 from app.auth.infrastructure.router import TokenResponseSchema
 
 
@@ -30,6 +35,40 @@ class AuthRoleCodesTests(unittest.TestCase):
             expires_in_hours=12,
             token_type="bearer",
             employee_name="Employee One",
+            must_change_password=True,
         )
 
         self.assertEqual(response.model_dump()["role_code"], role_codes)
+        self.assertTrue(response.must_change_password)
+
+    @patch(
+        "app.auth.infrastructure.dependencies.resolve_attendance_clock_policy",
+        return_value=AttendanceClockPolicy("kiosk", False, "192.168.1.10"),
+    )
+    def test_employee_role_can_search_from_authorized_kiosk(self, _resolve_policy) -> None:
+        claims = {"role": Role.USER.value}
+
+        self.assertIs(
+            require_admin_or_kiosk_employee(None, claims, None),
+            claims,
+        )
+
+    @patch(
+        "app.auth.infrastructure.dependencies.resolve_attendance_clock_policy",
+        return_value=AttendanceClockPolicy("desktop", True, "192.168.1.10"),
+    )
+    def test_employee_role_cannot_search_outside_kiosk(self, _resolve_policy) -> None:
+        with self.assertRaises(HTTPException) as error:
+            require_admin_or_kiosk_employee(None, {"role": Role.USER.value}, None)
+
+        self.assertEqual(error.exception.status_code, 403)
+
+    @patch("app.auth.infrastructure.dependencies.resolve_attendance_clock_policy")
+    def test_admin_can_search_outside_kiosk(self, resolve_policy) -> None:
+        claims = {"role": Role.ADMIN.value}
+
+        self.assertIs(
+            require_admin_or_kiosk_employee(None, claims, None),
+            claims,
+        )
+        resolve_policy.assert_not_called()

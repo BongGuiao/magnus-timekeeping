@@ -4,7 +4,20 @@ from uuid import UUID
 import face_recognition
 import numpy as np
 
-DEFAULT_MATCH_THRESHOLD = 0.6
+DEFAULT_MATCH_THRESHOLD = 0.5
+
+
+def match_threshold() -> float:
+    from app.core.config import settings
+
+    return float(getattr(settings, "FACE_MATCH_THRESHOLD", DEFAULT_MATCH_THRESHOLD))
+
+
+def face_distances(candidate_encoding: list[float], known_encodings: list[list[float]]) -> list[float]:
+    if not known_encodings:
+        return []
+    vectors = [np.asarray(vector, dtype=float) for vector in known_encodings]
+    return [float(d) for d in face_recognition.face_distance(vectors, np.asarray(candidate_encoding, dtype=float))]
 
 
 def extract_face_encoding(image_bytes: bytes) -> list[float]:
@@ -23,23 +36,23 @@ def extract_face_encoding(image_bytes: bytes) -> list[float]:
 def find_best_match(
     candidate_encoding: list[float],
     known_encodings: list[tuple[UUID, list[float]]],
-    threshold: float = DEFAULT_MATCH_THRESHOLD,
+    threshold: float | None = None,
 ) -> tuple[UUID, float] | None:
-    """1:N face search. known_encodings is a list of (user_id, encoding) pairs.
+    """1:N face search. known_encodings is a list of (employee_id, encoding) pairs.
 
-    Returns the (user_id, distance) of the closest match within the threshold, or None if no match.
+    Returns the (employee_id, distance) of the closest match within the threshold, or None if no match.
     """
     if not known_encodings:
         return None
 
-    candidate = np.array(candidate_encoding)
+    limit = match_threshold() if threshold is None else threshold
     user_ids, vectors = zip(*known_encodings)
-    distances = face_recognition.face_distance(list(vectors), candidate)
+    distances = face_distances(candidate_encoding, list(vectors))
 
     best_index = int(np.argmin(distances))
     best_distance = float(distances[best_index])
 
-    if best_distance > threshold:
+    if best_distance > limit:
         return None
 
     return user_ids[best_index], best_distance

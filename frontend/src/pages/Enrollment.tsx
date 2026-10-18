@@ -1,9 +1,9 @@
-import { useRef } from 'react'
+import { useEffect } from 'react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import Stepper from '../components/common/Stepper'
 import { useFaceEnrollment } from '../hooks/useFaceEnrollment'
-import { useWebcamCapture } from '../hooks/useWebcamCapture'
+import { useBlinkWebcamCapture } from '../hooks/useBlinkWebcamCapture'
 import { useLogout } from '../hooks/useLogout'
 
 interface Props {
@@ -14,7 +14,7 @@ interface Props {
 
 const steps = [
   { label: 'Identify', description: 'Enter employee number' },
-  { label: 'Capture', description: 'Take or upload a photo' },
+  { label: 'Capture', description: 'Blink and capture a photo' },
   { label: 'Enrolled', description: 'Face sample saved' },
 ]
 
@@ -33,8 +33,12 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
     selectFile,
     submit,
   } = useFaceEnrollment()
-  const webcam = useWebcamCapture()
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const webcam = useBlinkWebcamCapture()
+  const stopCamera = webcam.stop
+
+  useEffect(() => {
+    stopCamera()
+  }, [verifiedUser?.id, stopCamera])
 
   async function handleCapture() {
     const file = await webcam.capture()
@@ -61,7 +65,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
           <p className="text-xs font-bold uppercase tracking-[0.15em] text-indigo-600">Biometrics</p>
           <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight text-slate-900">Face ID Enrollment</h1>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-slate-500 [@media(max-height:700px)]:hidden">
-            Register an employee's face so it can be matched during clock-in and clock-out. Capture several samples in
+            Register an employee's face so it can be matched during clock-in and clock-out.             Blink before each capture. Capture several samples in
             different lighting for the best accuracy.
           </p>
         </header>
@@ -134,7 +138,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                 <button
                   type="button"
                   onClick={startOver}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || webcam.isCheckingBlink}
                   className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Change employee
@@ -142,7 +146,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
               </div>
 
               <p className="mt-3 shrink-0 text-sm text-slate-500 [@media(max-height:700px)]:hidden">
-                Use a clear, front-facing photo with a single visible face and even lighting.
+                Look at the live camera in even lighting. Blink once when prompted, then reopen both eyes.
               </p>
 
               <div className="mt-3 flex min-h-0 flex-1 flex-col items-center gap-2">
@@ -175,14 +179,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                   )}
                 </div>
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  className="hidden"
-                  onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
-                />
+                {webcam.blinkStatus && <p role="status" className="text-sm text-indigo-700">{webcam.blinkStatus}</p>}
 
                 <div className="flex w-full max-w-sm shrink-0 flex-wrap justify-center gap-2">
                   {webcam.isActive ? (
@@ -190,9 +187,10 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                       <button
                         type="button"
                         onClick={handleCapture}
-                        className="flex-1 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
+                        disabled={webcam.isCheckingBlink || isSubmitting}
+                        className="flex-1 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
                       >
-                        Capture Photo
+                        {webcam.isCheckingBlink ? 'Waiting for blink...' : 'Blink and Capture'}
                       </button>
                       <button
                         type="button"
@@ -206,17 +204,11 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                     <>
                       <button
                         type="button"
-                        onClick={webcam.start}
+                        disabled={isSubmitting}
+                        onClick={() => { selectFile(null); void webcam.start() }}
                         className="flex-1 rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                       >
                         Use Webcam
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex-1 rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                      >
-                        Choose Photo
                       </button>
                     </>
                   )}
@@ -225,7 +217,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                 <button
                   type="button"
                   onClick={submit}
-                  disabled={isSubmitting || webcam.isActive}
+                  disabled={isSubmitting || webcam.isActive || !previewUrl || webcam.isCheckingBlink}
                   className="w-full max-w-sm shrink-0 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
                 >
                   {isSubmitting ? 'Enrolling…' : 'Submit Enrollment'}
@@ -248,7 +240,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                 </div>
                 <p className="mt-4 text-2xl font-extrabold tracking-tight text-slate-900">Employee Enrolled</p>
                 <p className="mt-1 text-sm font-semibold text-slate-600">
-                  {result.sample_count} employee{result.sample_count === 1 ? '' : 's'} on file
+                  {result.sample_count} face sample{result.sample_count === 1 ? '' : 's'} on file
                   {verifiedUser ? ` for ${verifiedUser.employee_name}` : ''}
                 </p>
                 <p className="mt-1 text-xs text-slate-400">{new Date(result.enrolled_at).toLocaleString()}</p>

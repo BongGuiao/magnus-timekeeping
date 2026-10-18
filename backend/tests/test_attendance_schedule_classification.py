@@ -200,6 +200,21 @@ class AttendanceScheduleClassificationTests(unittest.TestCase):
 
         self.assertEqual(overtime, (4 * 60, 3 * 60, 7 * 60))
 
+    def test_overtime_starting_after_midnight_counts_previous_night_window(self) -> None:
+        ph_timezone = ZoneInfo("Asia/Manila")
+        expected_out = datetime(2026, 10, 9, 2, tzinfo=ph_timezone)
+        actual_out = datetime(2026, 10, 9, 9, tzinfo=ph_timezone)
+
+        overtime = calculate_overtime_breakdown(
+            expected_clock_in_at=datetime(2026, 10, 8, 17, tzinfo=ph_timezone),
+            expected_clock_out_at=expected_out,
+            actual_clock_in_at=datetime(2026, 10, 8, 17, tzinfo=ph_timezone),
+            actual_clock_out_at=actual_out,
+            ot_eligible=True,
+        )
+
+        self.assertEqual(overtime, (3 * 60, 4 * 60, 7 * 60))
+
     def test_overtime_minimum_applies_to_the_combined_overtime(self) -> None:
         ph_timezone = ZoneInfo("Asia/Manila")
 

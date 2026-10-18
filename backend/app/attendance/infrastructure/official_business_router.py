@@ -21,6 +21,10 @@ from app.filemaintenance.employees.infrastructure.db_model import (
     EmploymentAssignmentModel,
 )
 from app.filemaintenance.geofences.infrastructure.db_model import Geofence
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    CutoffDeadlineError,
+    require_employee_phase_open,
+)
 
 router = APIRouter(prefix="/attendance/official-business", tags=["Official Business"])
 
@@ -533,6 +537,20 @@ async def create_official_business_request(
         session = _active_session(active_uow)
         employee = await _employee_for_user(session, user_id, lock=True)
         await _validate_request(session, employee.id, payload)
+        if payload.submit:
+            try:
+                await require_employee_phase_open(
+                    session,
+                    employee.id,
+                    _local_date(payload.start_at),
+                    _local_date(payload.end_at),
+                    "EMPLOYEE",
+                )
+            except CutoffDeadlineError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(error),
+                ) from error
         request = OfficialBusinessRequestModel(
             request_no=f"OB-{_local_date(payload.start_at):%Y%m%d}-{uuid4().hex[:12].upper()}",
             employee_id=employee.id,
@@ -598,6 +616,19 @@ async def submit_official_business_request(
         session = _active_session(active_uow)
         employee = await _employee_for_user(session, user_id, lock=True)
         request = await _own_request(session, request_id, employee.id, payload.row_version, ("DRAFT",))
+        try:
+            await require_employee_phase_open(
+                session,
+                request.employee_id,
+                _local_date(request.start_at),
+                _local_date(request.end_at),
+                "EMPLOYEE",
+            )
+        except CutoffDeadlineError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
         # Re-validate because assignments, geofences, or vehicles may have changed since drafting.
         await _validate_request(
             session,
@@ -732,6 +763,19 @@ async def decide_official_business_request(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This request was changed by another session. Reload and try again.",
             )
+        try:
+            await require_employee_phase_open(
+                session,
+                request.employee_id,
+                _local_date(request.start_at),
+                _local_date(request.end_at),
+                "SUPERVISOR",
+            )
+        except CutoffDeadlineError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
         if payload.approved_minutes is not None and payload.approved_minutes > request.requested_minutes:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

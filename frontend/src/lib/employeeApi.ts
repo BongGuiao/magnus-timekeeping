@@ -3,6 +3,8 @@ import { apiClient } from './apiClient'
 import type { ApiErrorEnvelope, ApiSuccessEnvelope } from '../types/auth'
 import type { Employee } from '../types/employee'
 
+export const EMPLOYEE_CREATED_EVENT = 'employee-created'
+
 export type EmployeeWritePayload = Omit<
   Employee,
   'id' | 'created_at' | 'created_by' | 'updated_at' | 'updated_by' | 'row_version'

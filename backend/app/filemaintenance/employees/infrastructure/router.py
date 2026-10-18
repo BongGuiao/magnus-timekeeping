@@ -15,7 +15,10 @@ from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import (
-    EmployeeModel, EmployeeWfhLocationModel, EmploymentAssignmentModel,
+    EmployeeModel,
+    EmployeeWfhLocationModel,
+    EmploymentAssignmentGeofenceModel,
+    EmploymentAssignmentModel,
 )
 from app.filemaintenance.geofences.infrastructure.db_model import Geofence
 from app.filemaintenance.location.infrastructure.db_model import Location
@@ -117,8 +120,13 @@ async def save_employee_wfh(
                 .join(Location, Location.id == Geofence.location_id)
                 .join(
                     EmploymentAssignmentModel,
-                    (EmploymentAssignmentModel.primary_location_id == Location.id)
-                    & (EmploymentAssignmentModel.company_id == Geofence.company_id),
+                    EmploymentAssignmentModel.company_id == Geofence.company_id
+                )
+                .join(
+                    EmploymentAssignmentGeofenceModel,
+                    (EmploymentAssignmentGeofenceModel.assignment_id == EmploymentAssignmentModel.id)
+                    & (EmploymentAssignmentGeofenceModel.geofence_id == Geofence.id)
+                    & (EmploymentAssignmentGeofenceModel.company_id == Geofence.company_id),
                 )
                 .where(
                     Geofence.id == payload.geofence_id,
@@ -139,7 +147,7 @@ async def save_employee_wfh(
                 )
             )
             if fence is None:
-                raise ValueError("Select an active geofence with a radius from this employee's assigned office locations.")
+                raise ValueError("Select an active assigned geofence with a radius for this employee.")
         elif await session.get(Geofence, payload.geofence_id) is None:
             raise ValueError("Geofence not found.")
         record = await session.scalar(
