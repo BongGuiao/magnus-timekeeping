@@ -41,6 +41,13 @@ from app.filemaintenance.schedule.infrastructure.employee_schedule_assignment_ro
 from app.filemaintenance.schedule.infrastructure.rest_day_pattern_router import (
     router as rest_day_patterns_router,
 )
+from app.filemaintenance.schedule.infrastructure.schedule_upload_router import (
+    my_schedule_router as my_schedule_assignments_router,
+    router as schedule_uploads_router,
+)
+from app.filemaintenance.schedule.infrastructure.emergency_schedule_router import (
+    router as emergency_schedule_requests_router,
+)
 from app.psgc.infrastructure.router import router as psgc_router
 
 @asynccontextmanager
@@ -135,5 +142,8 @@ app.include_router(roles_router)
 app.include_router(schedule_templates_router)
 app.include_router(rest_day_patterns_router)
 app.include_router(employee_schedule_assignments_router)
+app.include_router(schedule_uploads_router)
+app.include_router(my_schedule_assignments_router)
+app.include_router(emergency_schedule_requests_router)
 app.include_router(psgc_router)
 register_exception_handlers(app)

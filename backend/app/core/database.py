@@ -49,6 +49,13 @@ def init_db_models():
         ScheduleSegmentModel,
         ScheduleTemplateModel,
     )
+    from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model import (  # noqa: F401
+        EmergencyScheduleRequestModel,
+    )
+    from app.filemaintenance.schedule.infrastructure.schedule_upload_db_model import (  # noqa: F401
+        ScheduleUploadBatchModel,
+        ScheduleUploadBatchRowModel,
+    )
     from app.filemaintenance.location.infrastructure.db_model import Location  # noqa: F401
     from app.filemaintenance.geofences.infrastructure.db_model import Geofence  # noqa: F401
     from app.filemaintenance.employees.infrastructure.db_model import (  # noqa: F401

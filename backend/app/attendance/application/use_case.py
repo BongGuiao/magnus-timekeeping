@@ -37,6 +37,9 @@ from app.filemaintenance.schedule.infrastructure.db_model import (
     ScheduleSegmentModel,
     ScheduleTemplateModel,
 )
+from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model import (
+    EmergencyScheduleRequestModel,
+)
 from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
 from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
 
@@ -1022,6 +1025,13 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         if uow.session is None:
             raise RuntimeError("UnitOfWork session is not active.")
 
+        emergency_request = await uow.session.scalar(
+            select(EmergencyScheduleRequestModel).where(
+                EmergencyScheduleRequestModel.employee_id == employee_id,
+                EmergencyScheduleRequestModel.work_date == work_date,
+                EmergencyScheduleRequestModel.status == "APPROVED",
+            )
+        )
         assignment_row = (
             await uow.session.execute(
                 select(
@@ -1050,7 +1060,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             )
         ).first()
 
-        if assignment_row is None:
+        if assignment_row is None and emergency_request is None:
             return ScheduleDayConfiguration(
                 work_type="REG",
                 expected_clock_in_at=datetime.combine(
@@ -1065,41 +1075,48 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 ),
             )
 
-        assignment, cycle_length_days = assignment_row
+        assignment = None
         pattern_day = None
         cycle_day_no = None
-        if assignment.rest_day_pattern_id is not None:
-            if cycle_length_days is None:
-                raise RuntimeError("The assigned rest-day pattern could not be loaded.")
-            cycle_day_no = get_cycle_day_number(
-                assignment.effective_from,
-                work_date,
-                cycle_length_days,
-            )
-            pattern_day = await uow.session.scalar(
-                select(RestDayPatternDayModel).where(
-                    RestDayPatternDayModel.pattern_id == assignment.rest_day_pattern_id,
-                    RestDayPatternDayModel.cycle_day_no == cycle_day_no,
+        if assignment_row is not None:
+            assignment, cycle_length_days = assignment_row
+            if assignment.rest_day_pattern_id is not None:
+                if cycle_length_days is None:
+                    raise RuntimeError("The assigned rest-day pattern could not be loaded.")
+                cycle_day_no = get_cycle_day_number(
+                    assignment.effective_from,
+                    work_date,
+                    cycle_length_days,
                 )
-            )
-            if pattern_day is None:
-                raise RuntimeError(
-                    "The assigned rest-day pattern is missing a cycle day "
-                    f"({cycle_day_no})."
+                pattern_day = await uow.session.scalar(
+                    select(RestDayPatternDayModel).where(
+                        RestDayPatternDayModel.pattern_id == assignment.rest_day_pattern_id,
+                        RestDayPatternDayModel.cycle_day_no == cycle_day_no,
+                    )
                 )
+                if pattern_day is None:
+                    raise RuntimeError(
+                        "The assigned rest-day pattern is missing a cycle day "
+                        f"({cycle_day_no})."
+                    )
 
         is_workday = pattern_day is None or pattern_day.is_workday
-        schedule_template_id = (
-            pattern_day.schedule_template_id or assignment.schedule_template_id
-            if pattern_day is not None
-            else assignment.schedule_template_id
-        )
-        schedule_context = {
-            "schedule_assignment_id": str(assignment.id),
-        }
+        schedule_template_id = None
+        schedule_context: dict[str, Any] = {}
+        if assignment is not None:
+            schedule_template_id = (
+                pattern_day.schedule_template_id or assignment.schedule_template_id
+                if pattern_day is not None
+                else assignment.schedule_template_id
+            )
+            schedule_context["schedule_assignment_id"] = str(assignment.id)
+        if emergency_request is not None:
+            schedule_template_id = emergency_request.schedule_template_id
+            is_workday = True
+            schedule_context["emergency_schedule_request_id"] = str(emergency_request.id)
         if schedule_template_id is not None:
             schedule_context["schedule_template_id"] = str(schedule_template_id)
-        if assignment.rest_day_pattern_id is not None and cycle_day_no is not None:
+        if assignment is not None and assignment.rest_day_pattern_id is not None and cycle_day_no is not None:
             schedule_context["rest_day_pattern_id"] = str(assignment.rest_day_pattern_id)
             schedule_context["cycle_day_no"] = cycle_day_no
         if not is_workday:

@@ -75,14 +75,13 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
         ])
         if (!current) return
         const record = response.data.data
-        const latestAssignment = assignments[0] ?? null
-        const fences = latestAssignment ? await fetchGeofences(latestAssignment.company_id) : []
+        const currentAssignment = assignments.find((assignment) => isCurrentEmploymentAssignment(assignment)) ?? null
+        const fences = currentAssignment ? await fetchGeofences(currentAssignment.company_id) : []
         if (!current) return
         const now = Date.now()
         const eligibleFences = fences.filter((fence) =>
-          latestAssignment
-          && (latestAssignment.authorized_geofence_ids ?? []).includes(fence.id)
-          && isCurrentEmploymentAssignment(latestAssignment)
+          currentAssignment
+          && (currentAssignment.authorized_geofence_ids ?? []).includes(fence.id)
           && fence.is_active && fence.status === 'ACTIVE'
           && fence.radius_meters !== null && Number(fence.radius_meters) > 0
           && Date.parse(fence.effective_from) <= now
@@ -102,7 +101,7 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
         setIsActive(record?.is_active ?? false)
         setAssignmentWarning(
           record && !recordGeofenceIsInAssignmentCompany
-            ? 'The saved WFH geofence is not in the company on the latest employment assignment. Select an authorized geofence for that company before saving.'
+            ? 'The saved WFH geofence is not in the company on the current active employment assignment. Select an authorized geofence for that company before saving.'
             : '',
         )
         setHasLoaded(true)

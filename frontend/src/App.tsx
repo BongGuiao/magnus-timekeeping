@@ -5,6 +5,10 @@ import Dashboard from './pages/Dashboard'
 import Enrollment from './pages/Enrollment'
 import Attendance from './pages/Attendance'
 import AttendanceRecalculation from './pages/AttendanceRecalculation'
+import MySchedule from './pages/MySchedule'
+import ScheduleUploads from './pages/ScheduleUploads'
+import ScheduleUploadApprovals from './pages/ScheduleUploadApprovals'
+import EmergencyScheduleApprovals from './pages/EmergencyScheduleApprovals'
 import Companies from './pages/Companies'
 import OrgUnits from './pages/OrgUnits'
 import Employees from './pages/Employees'
@@ -37,7 +41,9 @@ const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'attendance-recalculation', 'companies', 'org-units', 'locations',
   'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
-  'overtime-application', 'official-business', 'change-password',
+  'overtime-application', 'official-business', 'change-password', 'my-schedule', 'schedule-uploads',
+  'schedule-upload-approvals',
+  'emergency-schedule-approvals',
 ]
 
 function getStoredView(): NavView {
@@ -153,6 +159,10 @@ function App() {
     'payroll-review': ['payroll.read_own', 'payroll.acknowledge_team'],
     'schedule-templates': 'schedule.manage',
     'rest-day-patterns': 'schedule.manage',
+    'my-schedule': 'schedule.read_own',
+    'schedule-uploads': 'schedule.upload_team',
+    'schedule-upload-approvals': 'schedule.approve',
+    'emergency-schedule-approvals': 'schedule.approve_emergency',
     'leave-management': 'leave.manage',
     calendar: 'leave.manage',
     announcements: 'system.manage',
@@ -197,6 +207,22 @@ function App() {
         onLoggedOut={logout}
       />
     )
+  }
+
+  if (view === 'my-schedule') {
+    return <MySchedule employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'schedule-uploads') {
+    return <ScheduleUploads employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'schedule-upload-approvals') {
+    return <ScheduleUploadApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'emergency-schedule-approvals') {
+    return <EmergencyScheduleApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
 
   if (view === 'companies') {

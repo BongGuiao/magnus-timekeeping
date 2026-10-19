@@ -1,0 +1,4 @@
+employee_code,schedule_code,assignment_type,effective_from,effective_to,rest_day_pattern_code,reason
+EMP-0003,SHF-5PM-2AM,REGULAR,2026-11-01,2026-11-15,SHF-5PM-2AM,
+EMP-0004,OFC-9AM-6PM,REGULAR,2026-11-01,2026-11-15,OFFICE,
+EMP-0005,OFC-SHIFT,REGULAR,2026-11-01,2026-11-15,OFFICE,

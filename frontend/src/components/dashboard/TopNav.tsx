@@ -17,6 +17,10 @@ export type NavView =
   | 'enrollment'
   | 'attendance'
   | 'attendance-recalculation'
+  | 'my-schedule'
+  | 'schedule-uploads'
+  | 'schedule-upload-approvals'
+  | 'emergency-schedule-approvals'
   | 'companies'
   | 'org-units'
   | 'locations'
@@ -74,6 +78,14 @@ const navLinks: NavLink[] = [
         view: 'attendance-recalculation',
         adminOnly: true,
       },
+      { label: 'My Schedule', view: 'my-schedule', permission: 'schedule.read_own' },
+      {
+        label: 'Emergency Schedule Approvals',
+        view: 'emergency-schedule-approvals',
+        permission: 'schedule.approve_emergency',
+      },
+      { label: 'Team Schedule Upload', view: 'schedule-uploads', permission: 'schedule.upload_team' },
+      { label: 'Schedule Approvals', view: 'schedule-upload-approvals', permission: 'schedule.approve' },
     ],
   },
   { label: 'Reports', hasDropdown: true },
