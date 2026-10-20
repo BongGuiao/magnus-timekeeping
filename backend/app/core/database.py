@@ -42,6 +42,19 @@ def init_db_models():
     from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (  # noqa: F401
         EmployeeCutoffResultModel,
     )
+    from app.payroll.infrastructure.db_model import (  # noqa: F401
+        EmployeeCompensationModel,
+        BenefitTypeModel,
+        CutoffBenefitModel,
+        GrossPayResultModel,
+        GrossPayRunModel,
+        PayrollEarningRuleModel,
+        PayrollOpeningYtdBalanceModel,
+        StatutoryContributionBracketModel,
+        StatutoryContributionScheduleModel,
+        WithholdingTaxBracketModel,
+        WithholdingTaxScheduleModel,
+    )
     from app.filemaintenance.schedule.infrastructure.db_model import (  # noqa: F401
         EmployeeScheduleAssignmentModel,
         RestDayPatternDayModel,

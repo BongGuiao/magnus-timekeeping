@@ -24,6 +24,11 @@ import OfficialBusiness from './pages/OfficialBusiness'
 import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
 import PayrollResultsReview from './pages/PayrollResultsReview'
+import PayrollManagementPage from './features/payroll/presentation/PayrollManagementPage'
+import StatutorySchedulesPage from './features/payroll/presentation/StatutorySchedulesPage'
+import CompanyBenefitTypesPage from './features/payroll/presentation/CompanyBenefitTypesPage'
+import { PayrollUseCases } from './features/payroll/application/useCases'
+import { HttpPayrollRepository } from './features/payroll/infrastructure/HttpPayrollRepository'
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
@@ -37,10 +42,13 @@ import {
   normalizeDashboardRole,
 } from './types/role'
 
+const payrollUseCases = new PayrollUseCases(new HttpPayrollRepository())
+
 const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'attendance-recalculation', 'companies', 'org-units', 'locations',
   'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
-  'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
+  'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
+  'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
   'overtime-application', 'official-business', 'change-password', 'my-schedule', 'schedule-uploads',
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
@@ -156,6 +164,15 @@ function App() {
     employees: 'employees.read',
     'payroll-groups': 'payroll.manage',
     'payroll-cutoffs': 'payroll.manage',
+    'payroll-compensation': 'payroll.manage',
+    'payroll-earning-rules': 'payroll.manage',
+    'payroll-gross': 'payroll.manage',
+    'payroll-benefits': 'payroll.manage',
+    'payroll-deductions': 'payroll.manage',
+    'payroll-management': 'payroll.manage',
+    'company-benefit-types': 'payroll.manage',
+    'company-deduction-types': 'payroll.manage',
+    'payroll-statutory': 'payroll.manage',
     'payroll-review': ['payroll.read_own', 'payroll.acknowledge_team'],
     'schedule-templates': 'schedule.manage',
     'rest-day-patterns': 'schedule.manage',
@@ -266,6 +283,54 @@ function App() {
 
   if (view === 'payroll-cutoffs') {
     return <PayrollCutoffs employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'payroll-statutory') {
+    return (
+      <StatutorySchedulesPage
+        employeeName={employeeName}
+        useCases={payrollUseCases}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
+  if (view === 'company-benefit-types' || view === 'company-deduction-types') {
+    return (
+      <CompanyBenefitTypesPage
+        key={view}
+        employeeName={employeeName}
+        useCases={payrollUseCases}
+        setupType={view === 'company-benefit-types' ? 'benefits' : 'deductions'}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
+  if (view === 'payroll-management') {
+    return (
+      <PayrollManagementPage
+        employeeName={employeeName}
+        activeView="payroll-compensation"
+        useCases={payrollUseCases}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
+  if (view === 'payroll-compensation' || view === 'payroll-earning-rules' || view === 'payroll-gross' || view === 'payroll-benefits' || view === 'payroll-deductions') {
+    return (
+      <PayrollManagementPage
+        employeeName={employeeName}
+        activeView={view}
+        useCases={payrollUseCases}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
   }
 
   if (view === 'payroll-review') {

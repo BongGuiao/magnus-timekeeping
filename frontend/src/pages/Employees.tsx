@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Pencil, Plus, Users } from 'lucide-react'
+import { BadgeCheck, BriefcaseBusiness, CalendarDays, ContactRound, Download, FileUp, MapPin, Pencil, Plus, ScanFace, Shield, Sparkles, Users } from 'lucide-react'
 import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
@@ -13,6 +13,7 @@ import { createEmployee, EMPLOYEE_CREATED_EVENT, fetchEmployee, fetchEmployees, 
 import type { EmployeeWritePayload } from '../lib/employeeApi'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchOrgUnits } from '../lib/orgUnitApi'
+import { EMPLOYEE_CSV_HEADERS, parseEmployeeCsv } from '../lib/employeeCsv'
 import { EmployeeSkillsPanel, EmploymentAssignmentsPanel } from '../features/employees/EmployeeRelatedPanels'
 import EmployeeEntitlementsPanel from '../features/employees/EmployeeEntitlementsPanel'
 import EmployeeScheduleAssignmentsPanel from '../features/employees/EmployeeScheduleAssignmentsPanel'
@@ -31,16 +32,16 @@ interface Props {
 
 type EmployeeTab = 'details' | 'assignments' | 'entitlements' | 'skills' | 'schedule' | 'face' | 'wfh' | 'role'
 
-const employeeTabs: { id: EmployeeTab; label: string }[] = [
-  { id: 'details', label: 'Employee Details' },
-  { id: 'assignments', label: 'Employment Assignments' },
-  { id: 'entitlements', label: 'Employee Entitlements' },
-  { id: 'schedule', label: 'Schedule Assignments' },
-  { id: 'face', label: 'Face Enrollment' },
-  { id: 'wfh', label: 'WFH Location' },
-  { id: 'role', label: 'Role' },
-  { id: 'skills', label: 'Skills' },
-]
+const employeeTabs = [
+  { id: 'details', label: 'Details', icon: ContactRound },
+  { id: 'assignments', label: 'Assignments', icon: BriefcaseBusiness },
+  { id: 'entitlements', label: 'Entitlements', icon: BadgeCheck },
+  { id: 'schedule', label: 'Schedule', icon: CalendarDays },
+  { id: 'face', label: 'Face Enrollment', icon: ScanFace },
+  { id: 'wfh', label: 'WFH Location', icon: MapPin },
+  { id: 'role', label: 'Role', icon: Shield },
+  { id: 'skills', label: 'Skills', icon: Sparkles },
+] satisfies { id: EmployeeTab; label: string; icon: typeof ContactRound }[]
 
 const employeeSchema = z.object({
   employee_no: z.string().trim().min(1, 'Employee number is required.').max(30),
@@ -59,6 +60,19 @@ const employeeSchema = z.object({
 })
 
 type EmployeeFormValues = z.infer<typeof employeeSchema>
+
+interface EmployeeCsvPreviewRow {
+  rowNumber: number
+  payload: EmployeeWritePayload
+  errors: string[]
+}
+
+interface EmployeeCsvResult {
+  rowNumber: number
+  employeeNo: string
+  status: 'created' | 'skipped' | 'failed'
+  message: string
+}
 
 const emptyEmployee: EmployeeFormValues = {
   employee_no: '',
@@ -134,6 +148,12 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false)
+  const [csvFileName, setCsvFileName] = useState('')
+  const [csvPreviewRows, setCsvPreviewRows] = useState<EmployeeCsvPreviewRow[]>([])
+  const [csvResults, setCsvResults] = useState<EmployeeCsvResult[]>([])
+  const [csvError, setCsvError] = useState('')
+  const [isImportingCsv, setIsImportingCsv] = useState(false)
   const [companies, setCompanies] = useState<Company[]>([])
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([])
   const visibleEmployeeTabs = employeeTabs.filter((tab) =>
@@ -263,6 +283,147 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     }
   }
 
+  function downloadEmployeeCsvTemplate() {
+    const example = [
+      'EMP-0002',
+      'Alex',
+      '',
+      'Santos',
+      '',
+      '',
+      '1990-01-31',
+      'OTHER',
+      'alex.santos@example.com',
+      '09171234567',
+      'ACTIVE',
+      'true',
+    ]
+    const contents = [EMPLOYEE_CSV_HEADERS.join(','), example.join(',')].join('\r\n')
+    const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'employee-import-template.csv'
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function selectEmployeeCsv(file: File | undefined) {
+    setCsvError('')
+    setCsvResults([])
+    setCsvPreviewRows([])
+    setCsvFileName(file?.name ?? '')
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      setCsvError('The CSV file must be 5 MB or smaller.')
+      return
+    }
+
+    try {
+      const parsedRows = parseEmployeeCsv(await file.text())
+      if (parsedRows.length > 500) {
+        setCsvError('The CSV can contain no more than 500 employee rows per import.')
+        return
+      }
+
+      const knownEmployeeNumbers = new Set(employees.map((employee) => employee.employee_no.trim().toLowerCase()))
+      const knownEmails = new Set(employees.map((employee) => employee.personal_email?.trim().toLowerCase()).filter(Boolean))
+      const seenEmployeeNumbers = new Set<string>()
+      const seenEmails = new Set<string>()
+      const previewRows = parsedRows.map(({ rowNumber, payload }) => {
+        const errors: string[] = []
+        const formValues: EmployeeFormValues = {
+          employee_no: payload.employee_no,
+          first_name: payload.first_name,
+          middle_name: payload.middle_name ?? '',
+          last_name: payload.last_name,
+          suffix: payload.suffix ?? '',
+          preferred_name: payload.preferred_name ?? '',
+          birth_date: payload.birth_date ?? '',
+          gender_code: payload.gender_code ?? 'OTHER',
+          personal_email: payload.personal_email ?? '',
+          mobile_no: payload.mobile_no ?? '',
+          photo_reference: payload.photo_reference ?? '',
+          record_status: payload.record_status,
+          is_active: payload.is_active,
+        }
+        const validation = employeeSchema.safeParse(formValues)
+        if (!validation.success) {
+          errors.push(...validation.error.issues.map((issue) => issue.message))
+        }
+        if (!formValues.personal_email.trim()) {
+          errors.push('Personal email is required to create the employee account.')
+        }
+
+        const employeeNumber = payload.employee_no.trim().toLowerCase()
+        if (knownEmployeeNumbers.has(employeeNumber)) {
+          errors.push('Employee number already exists; existing employees are not updated by CSV import.')
+        } else if (seenEmployeeNumbers.has(employeeNumber)) {
+          errors.push('Employee number is duplicated in this CSV file.')
+        }
+        seenEmployeeNumbers.add(employeeNumber)
+
+        const email = (payload.personal_email ?? '').trim().toLowerCase()
+        if (email && knownEmails.has(email)) {
+          errors.push('Personal email is already assigned to an employee.')
+        } else if (email && seenEmails.has(email)) {
+          errors.push('Personal email is duplicated in this CSV file.')
+        }
+        if (email) seenEmails.add(email)
+
+        return { rowNumber, payload, errors: [...new Set(errors)] }
+      })
+
+      setCsvPreviewRows(previewRows)
+    } catch (error) {
+      setCsvError(error instanceof Error ? error.message : 'Could not read the CSV file.')
+    }
+  }
+
+  async function importEmployeeCsv() {
+    if (isImportingCsv) return
+    const readyRows = csvPreviewRows.filter((row) => row.errors.length === 0)
+    if (readyRows.length === 0) return
+
+    setIsImportingCsv(true)
+    setCsvError('')
+    setSuccessMessage('')
+    const results: EmployeeCsvResult[] = csvPreviewRows
+      .filter((row) => row.errors.length > 0)
+      .map((row) => ({
+        rowNumber: row.rowNumber,
+        employeeNo: row.payload.employee_no || '(blank)',
+        status: 'skipped',
+        message: row.errors.join(' '),
+      }))
+    setCsvResults(results)
+
+    for (const row of readyRows) {
+      try {
+        const employee = await createEmployee(row.payload)
+        results.push({
+          rowNumber: row.rowNumber,
+          employeeNo: employee.employee_no,
+          status: 'created',
+          message: 'Employee profile and initial employee account created.',
+        })
+        setEmployees((current) => [employee, ...current])
+        window.dispatchEvent(new Event(EMPLOYEE_CREATED_EVENT))
+      } catch (error) {
+        results.push({
+          rowNumber: row.rowNumber,
+          employeeNo: row.payload.employee_no || '(blank)',
+          status: 'failed',
+          message: error instanceof Error ? error.message : 'Could not create this employee.',
+        })
+      }
+      setCsvResults([...results].sort((left, right) => left.rowNumber - right.rowNumber))
+    }
+
+    const createdCount = results.filter((result) => result.status === 'created').length
+    setSuccessMessage(`${createdCount} employee${createdCount === 1 ? '' : 's'} imported. Review the row results for skipped or failed records.`)
+    setIsImportingCsv(false)
+  }
+
   const columns: DataTableColumn<Employee>[] = [
     {
       key: 'employee',
@@ -325,14 +486,113 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             <h1 className="mt-1 text-2xl font-extrabold text-slate-900">Employees</h1>
             <p className="mt-1 text-sm text-slate-500">Maintain employee identity, contact details, and record status.</p>
           </div>
-          <button type="button" onClick={openCreate} disabled={isLoading} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
-            <Plus className="h-4 w-4" />
-            New employee
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsCsvImportOpen((current) => !current)
+                setCsvError('')
+              }}
+              disabled={isLoading || isImportingCsv}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-expanded={isCsvImportOpen}
+            >
+              <FileUp className="h-4 w-4" />
+              Import CSV
+            </button>
+            <button type="button" onClick={openCreate} disabled={isLoading || isImportingCsv} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <Plus className="h-4 w-4" />
+              New employee
+            </button>
+          </div>
         </div>
 
         {errorMessage && !isFormOpen && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
         {successMessage && <p role="status" className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
+
+        {isCsvImportOpen && (
+          <section aria-label="Import employees from CSV" className="mb-5 space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Import employee profiles</h2>
+                <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+                  Import creates new profiles only. Existing or duplicate employee numbers are skipped; each successful row uses the normal employee creation flow and receives an initial Employee role. Employment assignments are managed separately.
+                </p>
+              </div>
+              <button type="button" onClick={downloadEmployeeCsvTemplate} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <Download className="h-4 w-4" />
+                Download template
+              </button>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Employee CSV file
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={isImportingCsv}
+                onChange={(event) => void selectEmployeeCsv(event.target.files?.[0])}
+                className="mt-1.5 block w-full rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-indigo-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-indigo-700 disabled:opacity-50"
+              />
+            </label>
+            <p className="text-[11px] leading-5 text-slate-500">
+              Required columns: employee_no, first_name, last_name, personal_email. Optional columns: middle_name, suffix, preferred_name, birth_date (YYYY-MM-DD), gender_code (MALE/FEMALE/OTHER), mobile_no, record_status (ACTIVE/ARCHIVED), is_active (true/false). Maximum file size 5 MB and 500 employee rows.
+            </p>
+            {csvFileName && <p className="text-xs font-medium text-slate-600">Selected: {csvFileName}</p>}
+            {csvError && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{csvError}</p>}
+            {csvPreviewRows.length > 0 && (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-slate-600">
+                    {csvPreviewRows.filter((row) => row.errors.length === 0).length} ready · {csvPreviewRows.filter((row) => row.errors.length > 0).length} skipped for validation or duplicates
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void importEmployeeCsv()}
+                    disabled={isImportingCsv || !csvPreviewRows.some((row) => row.errors.length === 0)}
+                    className="inline-flex items-center justify-center gap-2 rounded-md bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <FileUp className="h-4 w-4" />
+                    {isImportingCsv ? 'Importing…' : 'Import valid rows'}
+                  </button>
+                </div>
+                <div className="max-h-72 overflow-auto rounded-md border border-slate-200">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">CSV row</th>
+                        <th className="px-3 py-2">Employee number</th>
+                        <th className="px-3 py-2">Result / validation</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {csvPreviewRows.map((row) => {
+                        const result = csvResults.find((item) => item.rowNumber === row.rowNumber)
+                        const status = result?.status
+                        const message = result?.message ?? row.errors.join(' ')
+                        return (
+                          <tr key={row.rowNumber}>
+                            <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.rowNumber}</td>
+                            <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-800">{row.payload.employee_no || '(blank)'}</td>
+                            <td className={`px-3 py-2 ${
+                              status === 'created' ? 'text-emerald-700'
+                                : status === 'failed' || row.errors.length > 0 ? 'text-rose-700'
+                                  : 'text-slate-600'
+                            }`}>
+                              {status ? `${status === 'created' ? 'Created' : status === 'failed' ? 'Failed' : 'Skipped'}: ${message}` : row.errors.length > 0 ? `Will skip: ${message}` : 'Ready to import'}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Rows are created one at a time. If a row fails, other valid rows continue; check each row result before closing this panel.
+                </p>
+              </>
+            )}
+          </section>
+        )}
 
         <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="border-l-4 border-indigo-500 bg-white p-4"><p className="text-xs font-bold uppercase text-slate-400">Total</p><p className="mt-1 text-2xl font-bold text-slate-900">{employees.length}</p></div>
@@ -415,7 +675,10 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                                         : 'bg-slate-100 text-slate-600 hover:bg-indigo-100 hover:text-indigo-700'
                   }`}
                 >
-                  {tab.label}
+                  <span className="inline-flex items-center justify-center gap-1.5">
+                    <tab.icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                    {tab.label}
+                  </span>
                 </button>
               ))}
             </div>

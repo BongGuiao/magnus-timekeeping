@@ -1,5 +1,31 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ChevronDown, MoreVertical } from 'lucide-react'
+import {
+  BadgeCheck,
+  BriefcaseBusiness,
+  Building2,
+  CalendarDays,
+  CalendarRange,
+  Calculator,
+  ChartColumn,
+  ChevronDown,
+  Clock3,
+  ClipboardCheck,
+  FileClock,
+  Gift,
+  Landmark,
+  LayoutDashboard,
+  MapPin,
+  MapPinned,
+  Megaphone,
+  MoreVertical,
+  RefreshCw,
+  Settings2,
+  SlidersHorizontal,
+  Upload,
+  UsersRound,
+  Wallet,
+  type LucideIcon,
+} from 'lucide-react'
 import { fetchCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
@@ -28,6 +54,15 @@ export type NavView =
   | 'employees'
   | 'payroll-groups'
   | 'payroll-cutoffs'
+  | 'payroll-compensation'
+  | 'payroll-earning-rules'
+  | 'payroll-management'
+  | 'payroll-gross'
+  | 'payroll-benefits'
+  | 'payroll-deductions'
+  | 'company-benefit-types'
+  | 'company-deduction-types'
+  | 'payroll-statutory'
   | 'payroll-review'
   | 'schedule-templates'
   | 'rest-day-patterns'
@@ -40,18 +75,44 @@ export type NavView =
   | 'official-business'
   | 'change-password'
 
-const companySetupViews: NavView[] = [
+const companySetupTabViews: NavView[] = [
   'companies',
   'org-units',
   'locations',
   'geofences',
-  'payroll-groups',
-  'payroll-cutoffs',
   'schedule-templates',
   'rest-day-patterns',
   'leave-management',
   'calendar',
   'announcements',
+  'company-benefit-types',
+  'company-deduction-types',
+]
+
+const payrollManagementViews: NavView[] = [
+  'payroll-management',
+  'payroll-groups',
+  'payroll-cutoffs',
+  'payroll-compensation',
+  'payroll-earning-rules',
+  'payroll-gross',
+  'payroll-benefits',
+  'payroll-deductions',
+  'payroll-statutory',
+]
+
+const companyContextViews: NavView[] = [
+  ...companySetupTabViews,
+  'payroll-groups',
+  'payroll-cutoffs',
+  'payroll-compensation',
+  'payroll-earning-rules',
+  'payroll-management',
+  'payroll-gross',
+  'payroll-benefits',
+  'payroll-deductions',
+  'company-benefit-types',
+  'company-deduction-types',
 ]
 
 interface NavLink {
@@ -61,6 +122,59 @@ interface NavLink {
   adminOnly?: boolean
   hasDropdown?: boolean
   children?: NavLink[]
+}
+
+const viewIcons: Partial<Record<NavView, LucideIcon>> = {
+  dashboard: LayoutDashboard,
+  attendance: ClipboardCheck,
+  'attendance-recalculation': RefreshCw,
+  'my-schedule': CalendarDays,
+  'schedule-uploads': Upload,
+  'schedule-upload-approvals': BadgeCheck,
+  'emergency-schedule-approvals': Clock3,
+  companies: Building2,
+  'org-units': Building2,
+  locations: MapPin,
+  geofences: MapPinned,
+  employees: UsersRound,
+  'payroll-groups': UsersRound,
+  'payroll-cutoffs': CalendarRange,
+  'payroll-compensation': BriefcaseBusiness,
+  'payroll-earning-rules': SlidersHorizontal,
+  'payroll-management': Wallet,
+  'payroll-gross': Calculator,
+  'payroll-benefits': Gift,
+  'payroll-deductions': Wallet,
+  'company-benefit-types': Gift,
+  'company-deduction-types': Wallet,
+  'payroll-statutory': Landmark,
+  'payroll-review': FileClock,
+  'schedule-templates': CalendarDays,
+  'rest-day-patterns': CalendarRange,
+  'leave-management': BriefcaseBusiness,
+  calendar: CalendarDays,
+  announcements: Megaphone,
+  'employee-entitlements': BadgeCheck,
+  'leave-application': FileClock,
+  'overtime-application': Clock3,
+  'official-business': BriefcaseBusiness,
+}
+
+const labelIcons: Record<string, LucideIcon> = {
+  Dashboard: LayoutDashboard,
+  Timekeeping: Clock3,
+  Reports: ChartColumn,
+  People: UsersRound,
+  Settings: Settings2,
+  'Company Setup': Building2,
+  Organization: Building2,
+  'Work Rules': SlidersHorizontal,
+  'Payroll Setup': Wallet,
+  Payroll: Wallet,
+}
+
+function iconForLink(link: NavLink): LucideIcon | undefined {
+  return (link.view ? viewIcons[link.view] : undefined) ?? labelIcons[link.label]
 }
 
 const navLinks: NavLink[] = [
@@ -112,24 +226,33 @@ const navLinks: NavLink[] = [
             ],
           },
           {
-            label: 'Payroll',
-            children: [
-              { label: 'Payroll Groups', view: 'payroll-groups', permission: 'payroll.manage' },
-              { label: 'Payroll Cutoffs', view: 'payroll-cutoffs', permission: 'payroll.manage' },
-            ],
-          },
-          {
             label: 'Work Rules',
             children: [
               { label: 'Schedule Templates', view: 'schedule-templates', permission: 'schedule.manage' },
               { label: 'Rest Day Patterns', view: 'rest-day-patterns', permission: 'schedule.manage' },
               { label: 'Leave Management', view: 'leave-management', permission: 'leave.manage' },
+            ],
+          },
+          {
+            label: 'Payroll Setup',
+            children: [
+              { label: 'Benefit Types', view: 'company-benefit-types', permission: 'payroll.manage' },
+              { label: 'Deduction Types', view: 'company-deduction-types', permission: 'payroll.manage' },
               { label: 'Calendar', view: 'calendar', permission: 'leave.manage' },
               { label: 'Announcements', view: 'announcements', permission: 'system.manage' },
             ],
           },
         ],
       },
+    ],
+  },
+  {
+    label: 'Payroll',
+    children: [
+      { label: 'Payroll Cutoffs', view: 'payroll-cutoffs', permission: 'payroll.manage' },
+      { label: 'Payroll Groups', view: 'payroll-groups', permission: 'payroll.manage' },
+      { label: 'Management', view: 'payroll-management', permission: 'payroll.manage' },
+      { label: 'Statutory Schedules', view: 'payroll-statutory', permission: 'payroll.manage' },
     ],
   },
 ]
@@ -178,6 +301,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
   const [navHeight, setNavHeight] = useState(0)
   const navRef = useRef<HTMLElement>(null)
+  const companySetupNavRef = useRef<HTMLElement>(null)
   const accountMenuRef = useRef<HTMLDivElement>(null)
   const mobileAccountMenuRef = useRef<HTMLDivElement>(null)
   const [companies, setCompanies] = useState<Company[]>([])
@@ -191,7 +315,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const showDashboardRoleSelect = canPreviewRoles || hasMultipleAssignedDashboardRoles
   const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
   const { companyId, selectCompany } = useCompanySetupSelection()
-  const isCompanySetupView = companySetupViews.includes(activeView)
+  const isCompanyContextView = companyContextViews.includes(activeView)
   const filterByPermission = (link: NavLink): NavLink | null => {
     if (link.adminOnly && !isAdmin) return null
     if (typeof link.permission === 'string' && !hasPermission(link.permission)) return null
@@ -235,8 +359,15 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
     return () => observer.disconnect()
   }, [])
 
+  useLayoutEffect(() => {
+    if (activeView !== 'company-deduction-types') return
+    const setupNav = companySetupNavRef.current
+    if (!setupNav) return
+    setupNav.scrollTo({ left: setupNav.scrollWidth, behavior: 'smooth' })
+  }, [activeView, companyId])
+
   useEffect(() => {
-    if (!isCompanySetupView) return
+    if (!isCompanyContextView) return
     let isCurrent = true
     fetchCompanies()
       .then((items) => {
@@ -255,7 +386,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
     return () => {
       isCurrent = false
     }
-  }, [companyId, isCompanySetupView, selectCompany])
+  }, [companyId, isCompanyContextView, selectCompany])
 
   useEffect(() => {
     if (!isAccountMenuOpen) return
@@ -309,13 +440,18 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
               <div key={link.label} className="group relative">
                 <button
                   type="button"
-                  className={`flex items-center gap-1 text-sm font-medium transition hover:text-indigo-600 ${
+                  className={`flex items-center gap-1.5 text-sm font-medium transition hover:text-indigo-600 ${
                     link.children.some((child) => child.view === activeView)
-                      || (link.label === 'Settings' && companySetupViews.includes(activeView))
+                      || (link.label === 'Payroll' && payrollManagementViews.includes(activeView))
+                      || (link.label === 'Settings' && companySetupTabViews.includes(activeView))
                       ? 'text-indigo-600'
-                      : 'text-slate-600'
+                      : 'text-slate-900'
                   }`}
                 >
+                  {(() => {
+                    const Icon = iconForLink(link)
+                    return Icon ? <Icon className="h-4 w-4" aria-hidden="true" /> : null
+                  })()}
                   {link.label}
                   <ChevronDown className="h-3.5 w-3.5" />
                 </button>
@@ -324,19 +460,33 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                     {link.children.map((child) => child.label === 'Company Setup' && child.children ? (
                       <section key={child.label}>
                         <h2 className="mb-3 border-b border-slate-100 px-1 pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                          {(() => {
+                            const Icon = iconForLink(child)
+                            return Icon ? <Icon className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" /> : null
+                          })()}
                           {child.label}
                         </h2>
                         <div className="settings-submenu-scroll flex max-w-full gap-3 overflow-x-auto pb-2">
                           {child.children.map((section) => (
                             <div key={section.label} className="w-48 shrink-0 rounded-xl border border-slate-100 bg-slate-50/80 p-2">
-                              <h3 className="mb-1 px-2 text-xs font-bold uppercase tracking-wide text-slate-400">{section.label}</h3>
+                              <h3 className="mb-1 flex items-center gap-1.5 px-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+                                {(() => {
+                                  const Icon = iconForLink(section)
+                                  return Icon ? <Icon className="h-3.5 w-3.5" aria-hidden="true" /> : null
+                                })()}
+                                {section.label}
+                              </h3>
                               {section.children?.map((setupLink) => (
                                 <button
                                   key={setupLink.label}
                                   type="button"
                                   onClick={() => navigateTo(setupLink.view)}
-                                  className={`block w-full rounded-lg px-2 py-2 text-left text-sm font-semibold transition-colors ${setupLink.view === activeView ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-700 hover:bg-white hover:text-indigo-700'}`}
+                                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-semibold transition-colors ${setupLink.view === activeView ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-900 hover:bg-white hover:text-indigo-700'}`}
                                 >
+                                  {(() => {
+                                    const Icon = iconForLink(setupLink)
+                                    return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                                  })()}
                                   {setupLink.label}
                                 </button>
                               ))}
@@ -349,8 +499,12 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                         key={child.label}
                         type="button"
                         onClick={() => navigateTo(child.view)}
-                        className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold ${child.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'}`}
+                        className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold ${child.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-900 hover:bg-slate-50'}`}
                       >
+                        {(() => {
+                          const Icon = iconForLink(child)
+                          return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                        })()}
                         {child.label}
                       </button>
                     ))}
@@ -365,10 +519,14 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                   event.preventDefault()
                   if (link.view) onNavigate?.(link.view)
                 }}
-                className={`flex items-center gap-1 text-sm font-medium transition hover:text-indigo-600 ${
-                  link.view === activeView ? 'text-indigo-600' : 'text-slate-600'
+                className={`flex items-center gap-1.5 text-sm font-medium transition hover:text-indigo-600 ${
+                  link.view === activeView ? 'text-indigo-600' : 'text-slate-900'
                 }`}
               >
+                {(() => {
+                  const Icon = iconForLink(link)
+                  return Icon ? <Icon className="h-4 w-4" aria-hidden="true" /> : null
+                })()}
                 {link.label}
                 {link.hasDropdown && <ChevronDown className="h-3.5 w-3.5 text-slate-400" />}
               </a>
@@ -409,7 +567,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                     className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
                       activeView === 'change-password'
                         ? 'bg-indigo-50 text-indigo-700'
-                        : 'text-slate-700 hover:bg-slate-50'
+                        : 'text-slate-900 hover:bg-slate-50'
                     }`}
                   >
                     Change Password
@@ -462,7 +620,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                       className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
                         activeView === 'change-password'
                           ? 'bg-indigo-50 text-indigo-700'
-                          : 'text-slate-700 hover:bg-slate-50'
+                          : 'text-slate-900 hover:bg-slate-50'
                       }`}
                     >
                       Change Password
@@ -477,24 +635,38 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
               <div key={group.label}>
                 {group.children ? (
                   <>
-                    <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    <p className="mb-1 flex items-center gap-1.5 px-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {(() => {
+                        const Icon = iconForLink(group)
+                        return Icon ? <Icon className="h-3.5 w-3.5" aria-hidden="true" /> : null
+                      })()}
                       {group.label}
                     </p>
                     {group.label === 'Settings' ? (
                       <div className="space-y-3">
                         {group.children.find((link) => link.label === 'Company Setup')?.children?.map((section) => (
                           <section key={section.label}>
-                            <h3 className="mb-1 px-1 text-xs font-bold uppercase tracking-wide text-slate-400">{section.label}</h3>
+                            <h3 className="mb-1 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-slate-400">
+                              {(() => {
+                                const Icon = iconForLink(section)
+                                return Icon ? <Icon className="h-3.5 w-3.5" aria-hidden="true" /> : null
+                              })()}
+                              {section.label}
+                            </h3>
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                               {section.children?.map((link) => (
                                 <button
                                   key={link.label}
                                   type="button"
                                   onClick={() => navigateTo(link.view)}
-                                  className={`min-h-11 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
-                                    link.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'
+                                  className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                                    link.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-900 hover:bg-slate-50'
                                   }`}
                                 >
+                                  {(() => {
+                                    const Icon = iconForLink(link)
+                                    return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                                  })()}
                                   {link.label}
                                 </button>
                               ))}
@@ -509,10 +681,14 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                             key={link.label}
                             type="button"
                             onClick={() => navigateTo(link.view)}
-                            className={`min-h-11 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
-                              link.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'
+                            className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                              link.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-900 hover:bg-slate-50'
                             }`}
                           >
+                            {(() => {
+                              const Icon = iconForLink(link)
+                              return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                            })()}
                             {link.label}
                           </button>
                         ))}
@@ -524,14 +700,18 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                     type="button"
                     onClick={() => navigateTo(group.view)}
                     disabled={!group.view}
-                    className={`min-h-11 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                    className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
                       group.view === activeView
                         ? 'bg-indigo-50 text-indigo-700'
                         : group.view
-                          ? 'text-slate-700 hover:bg-slate-50'
+                          ? 'text-slate-900 hover:bg-slate-50'
                           : 'cursor-not-allowed text-slate-400'
                     }`}
                   >
+                    {(() => {
+                      const Icon = iconForLink(group)
+                      return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                    })()}
                     {group.label}
                   </button>
                 )}
@@ -541,36 +721,46 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
         </nav>
       )}
 
-      {companySetupViews.includes(activeView) && (
+      {companyContextViews.includes(activeView) && (
         <div className="mx-auto w-[95%] border-b border-indigo-200 pt-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
-              <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="company-setup-selector">
+              <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="company-context-selector">
                 Company
               </label>
               <select
-                id="company-setup-selector"
-                aria-label="Select company for company setup"
+                id="company-context-selector"
+                aria-label="Select company for payroll or company setup"
                 value={companyId}
                 onChange={(event) => selectCompany(event.target.value)}
                 className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
               >
-                <option value="">Select a company to configure</option>
+                <option value="">Select a company</option>
                 {companies.map((company) => (
                   <option key={company.id} value={company.id}>
                     {company.company_code} — {company.legal_name}
                   </option>
                 ))}
               </select>
-              {companyId && <span className="text-xs font-medium text-indigo-700">Setup is scoped to the selected company.</span>}
+              {companyId && (
+                <span className="text-xs font-medium text-indigo-700">
+                  {activeView.startsWith('payroll-')
+                    ? 'Payroll is scoped to the selected company.'
+                    : 'Setup is scoped to the selected company.'}
+                </span>
+              )}
             </div>
           </div>
           {!companyId && (
-            <p className="mb-3 text-sm text-slate-500">Select a company to open its setup tabs.</p>
+            <p className="mb-3 text-sm text-slate-500">
+              {activeView.startsWith('payroll-')
+                ? 'Select a company to load its payroll groups.'
+                : 'Select a company to open its setup tabs.'}
+            </p>
           )}
           {companyLoadError && <p role="alert" className="mb-2 text-sm text-rose-700">{companyLoadError}</p>}
-          {companyId && (
-            <nav aria-label="Company setup" className="flex gap-0 overflow-x-auto pb-1">
+          {companyId && !activeView.startsWith('payroll-') && (
+            <nav ref={companySetupNavRef} aria-label="Company setup" className="flex gap-0 overflow-x-auto pb-1">
               {companySetupTabs.map((link, index, links) => (
                   <button
                     key={link.label}
@@ -580,7 +770,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                     className={`relative shrink-0 px-6 py-3 text-sm font-semibold transition ${
                       link.view === activeView
                         ? 'z-10 bg-indigo-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-indigo-50 hover:text-indigo-700'
+                        : 'bg-slate-100 text-slate-900 hover:bg-indigo-50 hover:text-indigo-700'
                     }`}
                     style={{
                       clipPath: index === 0
@@ -591,6 +781,10 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                       marginLeft: index === 0 ? 0 : -10,
                     }}
                   >
+                    {(() => {
+                      const Icon = iconForLink(link)
+                      return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                    })()}
                     {link.label}
                   </button>
                 ))}

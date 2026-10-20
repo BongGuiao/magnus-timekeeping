@@ -473,10 +473,18 @@ class ListEmploymentAssignmentsUseCase(BaseUseCase[list[EmploymentAssignmentEnti
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self, employee_id: UUID | None = None) -> list[EmploymentAssignmentEntity]:
+    async def _execute(
+        self,
+        employee_id: UUID | None = None,
+        company_id: UUID | None = None,
+    ) -> list[EmploymentAssignmentEntity]:
         async with self.uow as uow:
             repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
-            criteria = [EmploymentAssignmentModel.employee_id == employee_id] if employee_id else []
+            criteria = []
+            if employee_id:
+                criteria.append(EmploymentAssignmentModel.employee_id == employee_id)
+            if company_id:
+                criteria.append(EmploymentAssignmentModel.company_id == company_id)
             assignments = await repo.find_all(
                 *criteria,
                 order_by=EmploymentAssignmentModel.effective_from.desc(),

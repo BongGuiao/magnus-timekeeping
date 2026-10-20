@@ -110,11 +110,12 @@ async def update_assignment(
 )
 async def list_assignments(
     employee_id: UUID | None = None,
+    company_id: UUID | None = None,
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: ListEmploymentAssignmentsUseCase = Depends(get_list_assignments_use_case),
 ):
     _require_email(claims)
-    result = await use_case.execute(employee_id)
+    result = await use_case.execute(employee_id, company_id)
     return ResponseEnvelope(status="success", data=result)
 
 

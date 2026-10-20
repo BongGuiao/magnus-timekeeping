@@ -71,6 +71,7 @@ class EmployeeCutoffTotals:
     scheduled_dates: set[date] = field(default_factory=set)
     present_dates: set[date] = field(default_factory=set)
     paid_leave_dates: set[date] = field(default_factory=set)
+    scheduled_minutes_by_date: dict[date, int] = field(default_factory=dict)
     regular_minutes: int = 0
     late_minutes: int = 0
     undertime_minutes: int = 0
@@ -88,10 +89,15 @@ class EmployeeCutoffTotals:
     night_ot_minutes: int = 0
     official_business_minutes: int = 0
     exception_count: int = 0
+    incomplete_time_source_count: int = 0
 
     @property
     def scheduled_days(self) -> Decimal:
         return Decimal(len(self.scheduled_dates))
+
+    @property
+    def required_work_minutes(self) -> int:
+        return sum(self.scheduled_minutes_by_date.values())
 
     @property
     def paid_days(self) -> Decimal:
@@ -125,6 +131,7 @@ class EmployeeCutoffResultEntity:
     supervisor_status: str = "PENDING"
     hr_status: str = "PENDING"
     payroll_status: str = "HOLD"
+    incomplete_time_source_count: int = 0
     calculated_at: datetime | None = None
     id: UUID | None = None
     employee_name: str | None = None
@@ -212,10 +219,16 @@ def calculate_employee_cutoff_totals(
         if current is None:
             continue
         current.scheduled_dates.add(record.work_date)
+        current.scheduled_minutes_by_date[record.work_date] = max(
+            current.scheduled_minutes_by_date.get(record.work_date, 0),
+            max(record.scheduled_minutes, 0),
+        )
         if record.is_absent:
             current.absence_minutes += max(record.scheduled_minutes, 0)
         else:
             current.present_dates.add(record.work_date)
+            if record.approved_hours_worked is None:
+                current.incomplete_time_source_count += 1
             worked_minutes = max(_hours_to_minutes(record.approved_hours_worked), 0)
             _add_classified_minutes(current, worked_minutes, record.work_type, record.day_type)
             current.night_regular_minutes += max(_hours_to_minutes(record.approved_night_diff), 0)

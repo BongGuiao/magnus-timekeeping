@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import init_db_models
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
-from app.attendance.application.worked_minutes import net_worked_minutes
+from app.attendance.domain.worked_minutes import net_worked_minutes
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.devices.infrastructure.db_model import DeviceModel
 from app.filemaintenance.employees.infrastructure.db_model import (

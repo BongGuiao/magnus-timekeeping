@@ -42,6 +42,11 @@ class EmployeeCutoffResultModel(Base):
         nullable=False,
         server_default=text("0"),
     )
+    required_work_minutes: Mapped[int] = mapped_column(
+        PositiveMinutes(),
+        nullable=False,
+        server_default=text("0"),
+    )
     regular_minutes: Mapped[int] = mapped_column(
         PositiveMinutes(),
         nullable=False,
@@ -123,6 +128,11 @@ class EmployeeCutoffResultModel(Base):
         server_default=text("0"),
     )
     exception_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
+    incomplete_time_source_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         server_default=text("0"),

@@ -84,6 +84,7 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
 
         self.assertEqual(len(totals), 1)
         self.assertEqual(totals[0].scheduled_days, 2)
+        self.assertEqual(totals[0].required_work_minutes, 960)
         self.assertEqual(totals[0].paid_days, 2)
         self.assertEqual(totals[0].regular_minutes, 480)
         self.assertEqual(totals[0].absence_minutes, 480)
@@ -202,3 +203,32 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
 
         self.assertEqual(totals[0].employee_id, employee_id)
         self.assertEqual(totals[0].regular_minutes, 0)
+
+    def test_non_absent_attendance_without_approved_time_is_marked_incomplete(self) -> None:
+        employee_id = uuid4()
+        totals = calculate_employee_cutoff_totals(
+            employee_ids=[employee_id],
+            attendance=[
+                AttendanceFact(
+                    employee_id=employee_id,
+                    work_date=date(2026, 10, 1),
+                    is_absent=False,
+                    approved_hours_worked=None,
+                    approved_night_diff=None,
+                    scheduled_minutes=480,
+                    work_type="REG",
+                    day_type="REG",
+                    late_minutes=0,
+                    undertime_minutes=0,
+                )
+            ],
+            leaves=[],
+            overtime=[],
+            official_business=[],
+            exceptions=[],
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 15),
+        )
+
+        self.assertEqual(totals[0].regular_minutes, 0)
+        self.assertEqual(totals[0].incomplete_time_source_count, 1)

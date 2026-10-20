@@ -32,6 +32,12 @@ from app.filemaintenance.payroll_cutoffs.infrastructure.router import (
     acknowledgement_router as payroll_cutoff_acknowledgements_router,
     router as payroll_cutoffs_router,
 )
+from app.payroll.infrastructure.router import (
+    payroll_employee_router,
+    payroll_manage_router,
+)
+from app.payroll.infrastructure.statutory_schedule_router import router as statutory_schedules_router
+from app.payroll.infrastructure.benefit_router import router as payroll_benefits_router
 from app.filemaintenance.roles.infrastructure.router import router as user_roles_router
 from app.filemaintenance.roles.infrastructure.role_catalog_router import router as roles_router
 from app.filemaintenance.schedule.infrastructure.router import router as schedule_templates_router
@@ -137,6 +143,10 @@ app.include_router(devices_router)
 app.include_router(payroll_groups_router)
 app.include_router(payroll_cutoffs_router)
 app.include_router(payroll_cutoff_acknowledgements_router)
+app.include_router(payroll_manage_router)
+app.include_router(payroll_employee_router)
+app.include_router(statutory_schedules_router)
+app.include_router(payroll_benefits_router)
 app.include_router(user_roles_router)
 app.include_router(roles_router)
 app.include_router(schedule_templates_router)

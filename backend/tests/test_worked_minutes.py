@@ -6,7 +6,7 @@ from app.attendance.application.use_case import (
     calculate_break_policy,
     calculate_net_nonpayable_break_minutes,
 )
-from app.attendance.application.worked_minutes import net_worked_minutes
+from app.attendance.domain.worked_minutes import net_worked_minutes
 from app.attendance.domain.entities.attendance import AttendanceEntity
 
 

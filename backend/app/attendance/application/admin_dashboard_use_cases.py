@@ -5,13 +5,13 @@ from uuid import UUID
 
 from app.attendance.application.admin_dashboard_ports import AdminDashboardUnitOfWork
 from app.attendance.application.clock import ph_today, utc_now
-from app.attendance.application.worked_minutes import net_worked_minutes
 from app.attendance.domain.admin_dashboard_rules import classify_attendance_exceptions
 from app.attendance.domain.entities.admin_dashboard import (
     AdminDashboard,
     EmployeeWeeklyHours,
     WeeklyAttendanceSample,
 )
+from app.attendance.domain.worked_minutes import net_worked_minutes
 from app.core.generics.uc_base import BaseUseCase
 
 

@@ -26,10 +26,16 @@ function rethrowApiError(error: unknown, fallback: string): never {
   throw error
 }
 
-export async function fetchEmploymentAssignments(employeeId: string): Promise<EmploymentAssignment[]> {
+export async function fetchEmploymentAssignments(
+  employeeId?: string,
+  companyId?: string,
+): Promise<EmploymentAssignment[]> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<EmploymentAssignment[]>>('/employment-assignments/list', {
-      params: { employee_id: employeeId },
+      params: {
+        ...(employeeId ? { employee_id: employeeId } : {}),
+        ...(companyId ? { company_id: companyId } : {}),
+      },
     })
     return response.data.data
   } catch (error) {
