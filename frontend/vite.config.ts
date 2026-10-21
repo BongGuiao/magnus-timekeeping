@@ -20,11 +20,11 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0', // Expose to Docker network
       port: 3000,
       strictPort: true,
-      allowedHosts: ['frontend', 'localhost', '.trycloudflare.com'], // Allow temporary HTTPS tunnels for mobile geolocation testing
+      allowedHosts: ['frontend', 'localhost', '.trycloudflare.com', 'mbsione.com', 'www.mbsione.com'], // Allow temporary HTTPS tunnels for mobile geolocation testing
       proxy: {
         '^/(api|auth|enrollment|attendance|companies|org-units|locations|geofences|employees|employment-assignments|employee-skills|holiday-calendars|holidays|announcements|leave-types|employee-entitlements|leave-applications|leave-ledger|payroll|payroll-groups|payroll-cutoffs|schedule-templates|employee-schedule-assignments|schedule-uploads|my-schedule-assignments|emergency-schedule-requests|rest-day-patterns|devices|psgc|transactions|docs|redoc|openapi\\.json)(/|$)': {
           target: backendTarget,
-          changeOrigin: true,
+          changeOrigin: true,   
         },
       },
       watch: {
