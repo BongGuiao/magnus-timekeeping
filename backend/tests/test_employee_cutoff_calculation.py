@@ -247,17 +247,23 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
             (date(2026, 10, 2), "REG", "RH"),
             (date(2026, 10, 3), "REG", "DBL"),
             (date(2026, 10, 4), "REG", "SNW"),
-            (date(2026, 10, 5), "REG", "REG"),
-            (date(2026, 10, 6), "REG", "SWH"),
+            (date(2026, 10, 5), "REG", "LOC"),
+            (date(2026, 10, 6), "REG", "REG"),
+            (date(2026, 10, 7), "REG", "SWH"),
+            (date(2026, 10, 8), "REG", "LOC"),
         ]
+        worked_holiday_dates = {
+            date(2026, 10, 7),
+            date(2026, 10, 8),
+        }
         totals = calculate_employee_cutoff_totals(
             employee_ids=[employee_id],
             attendance=[
                 AttendanceFact(
                     employee_id=employee_id,
                     work_date=work_date,
-                    is_absent=work_date != date(2026, 10, 6),
-                    approved_hours_worked=None if work_date != date(2026, 10, 6) else 8,
+                    is_absent=work_date not in worked_holiday_dates,
+                    approved_hours_worked=8 if work_date in worked_holiday_dates else None,
                     approved_night_diff=0,
                     scheduled_minutes=480,
                     work_type=work_type,
@@ -278,6 +284,7 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
         self.assertEqual(totals[0].scheduled_days, 2)
         self.assertEqual(totals[0].required_work_minutes, 960)
         self.assertEqual(totals[0].absence_minutes, 480)
+        self.assertEqual(totals[0].special_day_minutes, 960)
 
     def _official_business_totals(self, attendance, requests, scheduled_days=(), period=(1, 15)):
         employee_id = attendance[0].employee_id if attendance else scheduled_days[0].employee_id

@@ -47,6 +47,11 @@ class Location(Base):
             "AND (psgc_barangay_code IS NULL OR psgc_barangay_code ~ '^[0-9]{9}$')",
             name="chk_locations_psgc_codes",
         ),
+        CheckConstraint(
+            "ncr_district IS NULL OR ncr_district IN "
+            "('NCR_1ST_DISTRICT', 'NCR_2ND_DISTRICT', 'NCR_3RD_DISTRICT', 'NCR_4TH_DISTRICT')",
+            name="chk_locations_ncr_district",
+        ),
         {"schema": "core"},
     )
 
@@ -76,6 +81,7 @@ class Location(Base):
     psgc_region_code: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
     psgc_province_code: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
     psgc_city_code: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
+    ncr_district: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     psgc_barangay_code: Mapped[Optional[str]] = mapped_column(String(9), nullable=True)
     barangay: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)

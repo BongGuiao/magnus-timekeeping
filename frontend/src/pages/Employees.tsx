@@ -494,6 +494,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       '',
       '',
       '',
+      '',
       '2026-01-01',
       '2026-01-01',
       '',
@@ -575,7 +576,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         }
 
         const locationIds: string[] = []
-        const locationCodes = values.location_codes.split(';').map((code) => code.trim()).filter(Boolean)
+        const locationCodes = (values.location_codes ?? '').split(';').map((code) => code.trim()).filter(Boolean)
         for (const locationCode of locationCodes) {
           const location = assignmentLookups.locations.find((item) =>
             item.company_id === company?.id
@@ -583,6 +584,21 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
           )
           if (!location) errors.push(`Location code "${locationCode}" was not found for this company.`)
           else if (!locationIds.includes(location.id)) locationIds.push(location.id)
+        }
+        let primaryLocationId = locationIds[0] ?? null
+        const primaryLocationCode = values.primary_location_code?.trim() ?? ''
+        if (primaryLocationCode) {
+          const primaryLocation = assignmentLookups.locations.find((item) =>
+            item.company_id === company?.id
+            && item.location_code.trim().toLocaleLowerCase() === primaryLocationCode.toLocaleLowerCase(),
+          )
+          if (!primaryLocation) {
+            errors.push(`Primary location code "${primaryLocationCode}" was not found for this company.`)
+          } else if (!locationIds.includes(primaryLocation.id)) {
+            errors.push('The primary location code must also be included in location_codes.')
+          } else {
+            primaryLocationId = primaryLocation.id
+          }
         }
 
         const employmentType = values.employment_type.trim()
@@ -639,7 +655,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
               employee_category: employeeCategory,
               operational_group: operationalGroup,
               payroll_group_id: payrollGroupId,
-              primary_location_id: locationIds[0] ?? null,
+              primary_location_id: primaryLocationId,
               location_ids: locationIds,
               authorized_geofence_ids: [],
               hire_date: hireDate,
@@ -898,7 +914,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
               />
             </label>
             <p className="text-[11px] leading-5 text-slate-500">
-              Required: employee_no, company_code, employment_type, employee_category, hire_date, effective_from. Optional: org_unit_code, supervisor_employee_no, operational_group, payroll_group_code, location_codes (separate multiple codes with semicolons), effective_to, separation_date, status (defaults to ACTIVE), is_active (defaults to true). Dates must use YYYY-MM-DD. Maximum file size 5 MB and 500 rows.
+              Required: employee_no, company_code, employment_type, employee_category, hire_date, effective_from. Optional: org_unit_code, supervisor_employee_no, operational_group, payroll_group_code, location_codes (separate multiple codes with semicolons), primary_location_code (must be included in location_codes; defaults to the first location when blank), effective_to, separation_date, status (defaults to ACTIVE), is_active (defaults to true). Dates must use YYYY-MM-DD. Maximum file size 5 MB and 500 rows.
             </p>
             {assignmentLookups.error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">Could not load data needed to validate assignments: {assignmentLookups.error}</p>}
             {assignmentCsvFileName && <p className="text-xs font-medium text-slate-600">Selected: {assignmentCsvFileName}</p>}

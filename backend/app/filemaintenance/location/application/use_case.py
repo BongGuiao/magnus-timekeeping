@@ -10,6 +10,15 @@ from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.location.domain.entities.location import LocationEntity
 from app.filemaintenance.location.infrastructure.db_model import Location
 
+NCR_PSGC_REGION_CODE = "130000000"
+NCR_REGION_NAMES = {"NCR", "NATIONAL CAPITAL REGION"}
+NCR_DISTRICTS = {
+    "NCR_1ST_DISTRICT",
+    "NCR_2ND_DISTRICT",
+    "NCR_3RD_DISTRICT",
+    "NCR_4TH_DISTRICT",
+}
+
 
 async def _include_geo_point_wkt(
     uow: GenUnitOfWork,
@@ -39,14 +48,33 @@ def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _validate_ncr_district(location: LocationEntity) -> None:
+    is_ncr = (
+        location.psgc_region_code == NCR_PSGC_REGION_CODE
+        if location.psgc_region_code
+        else (location.region or "").strip().upper() in NCR_REGION_NAMES
+    )
+    if location.ncr_district and (
+        location.ncr_district not in NCR_DISTRICTS or not is_ncr
+    ):
+        raise ValueError("An NCR district can only be assigned to an NCR location.")
+    if is_ncr and not location.ncr_district:
+        raise ValueError("Select an NCR district for this location.")
+
+
 class CreateLocationUseCase(BaseUseCase[LocationEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
     async def _execute(self, payload: dict[str, Any]) -> LocationEntity:
         async with self.uow as uow:
+            normalized = _normalize_payload(payload)
+            entity = GenericMapper.to_entity(normalized, LocationEntity)
+            if entity is None:
+                raise ValueError("Location details are required.")
+            _validate_ncr_district(entity)
             repo = uow.get_repo(LocationEntity, Location)
-            created = await repo.add(_normalize_payload(payload))
+            created = await repo.add(normalized)
             return (await _include_geo_point_wkt(uow, [created]))[0]
 
 
@@ -97,6 +125,9 @@ class UpdateLocationUseCase(BaseUseCase[LocationEntity]):
                 {**existing.__dict__, **normalized},
                 LocationEntity,
             )
+            if entity_data is None:
+                raise ValueError("Location details are required.")
+            _validate_ncr_district(entity_data)
             entity_data.id = location_id
             changes = {
                 key: value

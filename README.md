@@ -54,6 +54,39 @@ because the base configuration is intended for development. Do not enable the
 network access, and log collection have been configured securely. Back up the
 database before applying reviewed migrations.
 
+### Local holiday date scopes
+
+Apply `backend/sql/20261027_add_local_holiday_geographic_scope.sql` before
+deploying this change. A calendar is a shared company/year container; enter
+each holiday date once. When a date is assigned type `LOCAL`, select its
+applicable region and province in the location modal. For NCR, select one of
+the four districts (1st through 4th) instead; assign each NCR location its
+district in Location maintenance. No city-to-district mapping is assumed.
+Leave municipality blank to cover **all municipalities in the selected
+province or NCR district**; select a municipality to narrow the holiday to
+that one municipality. If a fiesta applies to only
+several municipalities, add a separate LOCAL date record for each municipality
+using the same date and holiday name. Other holiday types remain nationwide.
+Existing calendar-level scopes are transferred to their local holiday dates by
+the migration.
+
+Employees may be assigned multiple locations where they can punch. Set one of
+those as the assignment's primary work location; local holiday eligibility
+uses that primary location, not the location where the employee punched.
+Choose the primary location in the assignment form or provide
+`primary_location_code` in an employment-assignment CSV (it must also appear in
+`location_codes`). If omitted from a CSV, the first location remains the
+backward-compatible default. Existing attendance records are not automatically
+reclassified; the new primary-location rule applies when attendance day types
+are determined going forward.
+
+Declared local holidays are non-working days for attendance and absence
+calculations. If worked, their minutes are classified as special-day work and
+paid using the payroll group's `SPECIAL_DAY` earning rule; overtime uses
+`SPECIAL_DAY_OT`. These are configurable full-rate multipliers per payroll
+group (for example, `1.30` means 130% of the base rate). Confirm the applicable
+rates in Earning Multipliers for every production payroll group.
+
 ## Statutory contribution and tax schedules
 
 Before deploying the program-specific schedule calculations, apply

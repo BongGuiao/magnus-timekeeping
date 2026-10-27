@@ -10,8 +10,6 @@ class HolidayCalendarEntity:
     calendar_code: str
     calendar_name: str
     effective_year: int
-    province: str | None = None
-    city: str | None = None
     status: Literal["DRAFT", "PUBLISHED", "CLOSED"] = "DRAFT"
     created_by: UUID | None = None
     updated_by: UUID | None = None

@@ -15,6 +15,7 @@ class LocationEntity:
     psgc_region_code: str | None = None
     psgc_province_code: str | None = None
     psgc_city_code: str | None = None
+    ncr_district: str | None = None
     psgc_barangay_code: str | None = None
     barangay: str | None = None
     city: str | None = None

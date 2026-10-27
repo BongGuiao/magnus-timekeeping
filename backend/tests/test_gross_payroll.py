@@ -108,6 +108,25 @@ class GrossPayrollTests(unittest.TestCase):
             },
         )
 
+    def test_special_day_uses_full_configured_thirty_percent_premium(self) -> None:
+        time = replace(
+            self.time,
+            required_work_minutes=0,
+            component_minutes={"special_day_minutes": 480},
+        )
+        rules = {
+            **self.rules,
+            "SPECIAL_DAY": EarningRule("SPECIAL_DAY", Decimal("1.30")),
+        }
+
+        result = self.calculate(time=time, earning_rules=rules)
+
+        special_day_line = next(
+            line for line in result.lines if line.component_code == "SPECIAL_DAY"
+        )
+        self.assertEqual(special_day_line.multiplier, Decimal("1.30"))
+        self.assertEqual(special_day_line.amount, Decimal("104.00"))
+
     def test_missing_earning_rule_holds_without_guessing_gross(self) -> None:
         result = self.calculate(earning_rules={})
 

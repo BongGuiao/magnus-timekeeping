@@ -20,6 +20,7 @@ export interface Location {
   psgc_region_code: string | null
   psgc_province_code: string | null
   psgc_city_code: string | null
+  ncr_district: string | null
   psgc_barangay_code: string | null
   barangay: string | null
   city: string | null

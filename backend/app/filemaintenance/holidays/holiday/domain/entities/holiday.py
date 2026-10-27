@@ -16,6 +16,13 @@ class HolidayEntity:
         "LOCAL",
         "COMPANY",
     ]
+    region: str | None = None
+    province: str | None = None
+    city: str | None = None
+    psgc_region_code: str | None = None
+    psgc_province_code: str | None = None
+    psgc_city_code: str | None = None
+    ncr_district: str | None = None
     is_double_holiday: bool = False
     pay_rule_code: str | None = None
     source_reference: str | None = None

@@ -12,8 +12,6 @@ export interface HolidayCalendar {
   calendar_code: string
   calendar_name: string
   effective_year: number
-  province: string | null
-  city: string | null
   status: HolidayCalendarStatus
   created_at: string | null
   created_by: string | null
@@ -34,6 +32,13 @@ export interface Holiday {
   holiday_date: string
   holiday_name: string
   holiday_type: HolidayType
+  region: string | null
+  province: string | null
+  city: string | null
+  psgc_region_code: string | null
+  psgc_province_code: string | null
+  psgc_city_code: string | null
+  ncr_district: string | null
   is_double_holiday: boolean
   pay_rule_code: string | null
   source_reference: string | null

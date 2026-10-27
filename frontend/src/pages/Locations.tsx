@@ -34,6 +34,13 @@ const locationTypes = [
   'FLEET_YARD',
   'OTHER',
 ] as const satisfies readonly LocationType[]
+const NCR_PSGC_REGION_CODE = '130000000'
+const ncrDistricts = [
+  { value: 'NCR_1ST_DISTRICT', label: '1st District' },
+  { value: 'NCR_2ND_DISTRICT', label: '2nd District' },
+  { value: 'NCR_3RD_DISTRICT', label: '3rd District' },
+  { value: 'NCR_4TH_DISTRICT', label: '4th District' },
+] as const
 
 const locationSchema = z.object({
   company_id: z.string().min(1, 'Company is required.'),
@@ -46,6 +53,7 @@ const locationSchema = z.object({
   psgc_region_code: z.string().regex(/^$|^\d{9}$/),
   psgc_province_code: z.string().regex(/^$|^\d{9}$/),
   psgc_city_code: z.string().regex(/^$|^\d{9}$/),
+  ncr_district: z.enum(['', ...ncrDistricts.map(({ value }) => value)]),
   psgc_barangay_code: z.string().regex(/^$|^\d{9}$/),
   barangay: z.string().trim().max(100),
   city: z.string().trim().max(100),
@@ -70,6 +78,7 @@ const emptyLocation: LocationFormValues = {
   psgc_region_code: '',
   psgc_province_code: '',
   psgc_city_code: '',
+  ncr_district: '',
   psgc_barangay_code: '',
   barangay: '',
   city: '',
@@ -186,6 +195,20 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
         message: 'Enter both coordinates or leave both blank.',
       })
     }
+    if (values.psgc_region_code === NCR_PSGC_REGION_CODE && !values.ncr_district) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ncr_district'],
+        message: 'Select the NCR district for this location.',
+      })
+    }
+    if (values.ncr_district && values.psgc_region_code !== NCR_PSGC_REGION_CODE) {
+      context.addIssue({
+        code: 'custom',
+        path: ['ncr_district'],
+        message: 'NCR districts can only be assigned to locations in NCR.',
+      })
+    }
   })
 
   const defaultValues: LocationFormValues = editingLocation
@@ -199,6 +222,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
         psgc_region_code: editingLocation.psgc_region_code ?? '',
         psgc_province_code: editingLocation.psgc_province_code ?? '',
         psgc_city_code: editingLocation.psgc_city_code ?? '',
+        ncr_district: ncrDistricts.find(({ value }) => value === editingLocation.ncr_district)?.value ?? '',
         psgc_barangay_code: editingLocation.psgc_barangay_code ?? '',
         barangay: editingLocation.barangay ?? '',
         city: editingLocation.city ?? '',
@@ -381,6 +405,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
       psgc_region_code: nullable(values.psgc_region_code),
       psgc_province_code: nullable(values.psgc_province_code),
       psgc_city_code: nullable(values.psgc_city_code),
+      ncr_district: nullable(values.ncr_district),
       psgc_barangay_code: nullable(values.psgc_barangay_code),
       barangay: nullable(values.barangay),
       city: nullable(values.city),
@@ -423,6 +448,11 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
     { key: 'company', header: 'Company', value: (location) => companyLabel(location.company_id) },
     { key: 'type', header: 'Type', value: (location) => location.location_type },
     { key: 'city', header: 'City', value: (location) => location.city ?? '—' },
+    {
+      key: 'ncr_district',
+      header: 'NCR district',
+      value: (location) => ncrDistricts.find(({ value }) => value === location.ncr_district)?.label ?? '—',
+    },
     {
       key: 'status',
       header: 'Status',
@@ -607,8 +637,22 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
                     city: errors.city?.message,
                     barangay: errors.barangay?.message,
                   }}
-                  onChange={(field, value) => setValue(field, value, { shouldDirty: true, shouldValidate: true })}
+                  onChange={(field, value) => {
+                    setValue(field, value, { shouldDirty: true, shouldValidate: true })
+                    if (field === 'psgc_region_code') {
+                      setValue('ncr_district', '', { shouldDirty: true, shouldValidate: true })
+                    }
+                  }}
                 />
+                {watch('psgc_region_code') === NCR_PSGC_REGION_CODE && (
+                  <label className={labelClassName}>NCR district
+                    <select {...register('ncr_district')} className={inputClassName}>
+                      <option value="">Select a district</option>
+                      {ncrDistricts.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                    <FieldError message={errors.ncr_district?.message} />
+                  </label>
+                )}
                 <label className={labelClassName}>Postal code<input {...register('postal_code')} className={inputClassName} /><FieldError message={errors.postal_code?.message} /></label>
                 <label className={labelClassName}>Latitude<input type="number" step="any" {...register('latitude', { setValueAs: (value: string) => value === '' ? '' : Number(value) })} className={inputClassName} /><FieldError message={errors.latitude?.message} /></label>
                 <label className={labelClassName}>Longitude<input type="number" step="any" {...register('longitude', { setValueAs: (value: string) => value === '' ? '' : Number(value) })} className={inputClassName} /><FieldError message={errors.longitude?.message} /></label>

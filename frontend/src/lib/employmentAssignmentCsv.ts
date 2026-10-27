@@ -10,6 +10,7 @@ export const EMPLOYMENT_ASSIGNMENT_CSV_HEADERS = [
   'operational_group',
   'payroll_group_code',
   'location_codes',
+  'primary_location_code',
   'hire_date',
   'effective_from',
   'effective_to',

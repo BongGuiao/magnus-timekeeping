@@ -42,6 +42,10 @@ from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model imp
     EmergencyScheduleRequestModel,
 )
 from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
+from app.filemaintenance.holidays.calendar.domain.scope import (
+    GeographicArea,
+    holiday_applies_to_location,
+)
 from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
 
 
@@ -1107,78 +1111,71 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         uow: GenUnitOfWork,
         employee_id: UUID,
         work_date: date,
-        location_id: UUID | None = None,
     ) -> str:
         """Day type from the published holiday calendar; REG when no holiday applies.
 
-        When the punch matched a specific site, that site's company/province/city decides
-        the applicable holiday calendar.
+        Local holiday eligibility follows the assignment's primary work location,
+        not whichever authorized site accepted the punch.
         """
         if uow.session is None:
             raise RuntimeError("UnitOfWork session is not active.")
 
-        assignment_filters = [
-            EmploymentAssignmentModel.employee_id == employee_id,
-            EmploymentAssignmentModel.is_active.is_(True),
-            EmploymentAssignmentModel.status == "ACTIVE",
-            EmploymentAssignmentModel.effective_from <= work_date,
-            or_(
-                EmploymentAssignmentModel.effective_to.is_(None),
-                EmploymentAssignmentModel.effective_to >= work_date,
-            ),
-        ]
-        if location_id is not None:
-            assignment_filters.append(
-                EmploymentAssignmentModel.id.in_(
-                    select(EmploymentAssignmentGeofenceModel.assignment_id)
-                    .join(
-                        Geofence,
-                        and_(
-                            Geofence.id == EmploymentAssignmentGeofenceModel.geofence_id,
-                            Geofence.company_id == EmploymentAssignmentGeofenceModel.company_id,
-                        ),
-                    )
-                    .where(
-                        EmploymentAssignmentGeofenceModel.assignment_id == EmploymentAssignmentModel.id,
-                        EmploymentAssignmentGeofenceModel.company_id == EmploymentAssignmentModel.company_id,
-                        Geofence.location_id == location_id,
-                    )
-                )
-            )
-
         row = (
             await uow.session.execute(
-                select(EmploymentAssignmentModel.company_id, LocationModel.province, LocationModel.city)
+                select(
+                    EmploymentAssignmentModel.company_id,
+                    LocationModel.region,
+                    LocationModel.province,
+                    LocationModel.city,
+                    LocationModel.psgc_region_code,
+                    LocationModel.psgc_province_code,
+                    LocationModel.psgc_city_code,
+                    LocationModel.ncr_district,
+                )
                 .outerjoin(
                     LocationModel,
-                    LocationModel.id == (
-                        location_id
-                        if location_id is not None
-                        else EmploymentAssignmentModel.primary_location_id
+                    LocationModel.id == EmploymentAssignmentModel.primary_location_id,
+                )
+                .where(
+                    EmploymentAssignmentModel.employee_id == employee_id,
+                    EmploymentAssignmentModel.is_active.is_(True),
+                    EmploymentAssignmentModel.status == "ACTIVE",
+                    EmploymentAssignmentModel.effective_from <= work_date,
+                    or_(
+                        EmploymentAssignmentModel.effective_to.is_(None),
+                        EmploymentAssignmentModel.effective_to >= work_date,
                     ),
                 )
-                .where(*assignment_filters)
                 .order_by(EmploymentAssignmentModel.effective_from.desc())
                 .limit(1)
             )
         ).first()
-        if row is None and location_id is not None:
-            return await self._resolve_day_type(uow, employee_id, work_date)
         if row is None:
             return "REG"
-        company_id, province, city = row
+        (
+            company_id,
+            region,
+            province,
+            city,
+            psgc_region_code,
+            psgc_province_code,
+            psgc_city_code,
+            ncr_district,
+        ) = row
 
-        def _scope_matches(calendar_value: str | None, location_value: str | None) -> bool:
-            if not calendar_value:
-                return True
-            return (
-                location_value is not None
-                and calendar_value.strip().casefold() == location_value.strip().casefold()
-            )
+        location_scope = GeographicArea(
+            region=region,
+            province=province,
+            city=city,
+            psgc_region_code=psgc_region_code,
+            psgc_province_code=psgc_province_code,
+            psgc_city_code=psgc_city_code,
+            ncr_district=ncr_district,
+        )
 
         holidays = (
             await uow.session.execute(
-                select(HolidayModel, HolidayCalendarModel.province, HolidayCalendarModel.city)
+                select(HolidayModel, HolidayCalendarModel)
                 .join(HolidayCalendarModel, HolidayCalendarModel.id == HolidayModel.holiday_calendar_id)
                 .where(
                     HolidayCalendarModel.company_id == company_id,
@@ -1194,8 +1191,12 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
 
         best: str | None = None
         best_rank = len(HOLIDAY_DAY_TYPE_PRIORITY)
-        for holiday, cal_province, cal_city in holidays:
-            if not (_scope_matches(cal_province, province) and _scope_matches(cal_city, city)):
+        for holiday, calendar in holidays:
+            if not holiday_applies_to_location(
+                holiday.holiday_type,
+                holiday,
+                location_scope,
+            ):
                 continue
             code = "DBL" if holiday.is_double_holiday else HOLIDAY_DAY_TYPES.get(holiday.holiday_type)
             if code is None:
@@ -1321,7 +1322,6 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     grace_minutes=schedule.grace_minutes,
                 )
                 initial_metadata = {}
-                matched_location_id: UUID | None = None
                 if schedule.schedule_context:
                     initial_metadata["schedule_context"] = schedule.schedule_context
                 if input_dto.enforce_geofence:
@@ -1336,7 +1336,6 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                         allow_wfh=input_dto.allow_wfh,
                     )
                     initial_metadata["clock_in"] = {"geofence_validation": geofence_metadata}
-                    matched_location_id = UUID(geofence_metadata["location_id"])
                 else:
                     logger.info(
                         "Attendance geofence check skipped by clock policy=%s; GPS received latitude=%s longitude=%s accuracy_meters=%s",
@@ -1368,7 +1367,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                         expected_clock_out_at=schedule.expected_clock_out_at,
                         schedule_template_id=schedule.schedule_template_id,
                         clock_in_at=now_utc,
-                        day_type=await self._resolve_day_type(uow, employee.id, today, matched_location_id),
+                        day_type=await self._resolve_day_type(uow, employee.id, today),
                         work_type=schedule.work_type,
                         late_minutes=late_minutes,
                         record_status="VALID" if input_dto.device_approved else "INVALID",

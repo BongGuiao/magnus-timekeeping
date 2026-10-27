@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import exists, or_, select
 
 from app.attendance.domain.worked_minutes import (
     allocate_official_business_minutes,
@@ -27,6 +27,10 @@ from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import (
     EmployeeModel,
     EmploymentAssignmentModel,
+)
+from app.filemaintenance.holidays.calendar.domain.scope import (
+    GeographicArea,
+    holiday_applies_to_location,
 )
 from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
 from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
@@ -538,7 +542,16 @@ async def get_attendance_detail_report(
 
         employment_rows = (
             await session.execute(
-                select(EmploymentAssignmentModel, LocationModel.province, LocationModel.city)
+                select(
+                    EmploymentAssignmentModel,
+                    LocationModel.region,
+                    LocationModel.province,
+                    LocationModel.city,
+                    LocationModel.psgc_region_code,
+                    LocationModel.psgc_province_code,
+                    LocationModel.psgc_city_code,
+                    LocationModel.ncr_district,
+                )
                 .outerjoin(
                     LocationModel,
                     LocationModel.id == EmploymentAssignmentModel.primary_location_id,
@@ -558,11 +571,31 @@ async def get_attendance_detail_report(
                 .order_by(EmploymentAssignmentModel.effective_from.desc())
             )
         ).all() if employee_ids else []
-        employment_by_employee: dict[UUID, list[tuple[EmploymentAssignmentModel, str | None, str | None]]] = {}
+        employment_by_employee: dict[UUID, list[tuple[EmploymentAssignmentModel, GeographicArea]]] = {}
         company_ids: set[UUID] = set()
-        for employment, province, city in employment_rows:
+        for (
+            employment,
+            region,
+            province,
+            city,
+            psgc_region_code,
+            psgc_province_code,
+            psgc_city_code,
+            ncr_district,
+        ) in employment_rows:
             employment_by_employee.setdefault(employment.employee_id, []).append(
-                (employment, province, city)
+                (
+                    employment,
+                    GeographicArea(
+                        region=region,
+                        province=province,
+                        city=city,
+                        psgc_region_code=psgc_region_code,
+                        psgc_province_code=psgc_province_code,
+                        psgc_city_code=psgc_city_code,
+                        ncr_district=ncr_district,
+                    ),
+                )
             )
             company_ids.add(employment.company_id)
 
@@ -612,19 +645,12 @@ async def get_attendance_detail_report(
             employment = employment_matches[0]
             location = next(
                 (
-                    (province, city)
-                    for candidate, province, city in employment_by_employee[employee_id]
+                    area
+                    for candidate, area in employment_by_employee[employee_id]
                     if candidate.id == employment.id
                 ),
-                (None, None),
+                GeographicArea(),
             )
-
-            def scope_matches(calendar_value: str | None, location_value: str | None) -> bool:
-                return not calendar_value or (
-                    location_value is not None
-                    and calendar_value.strip().casefold()
-                    == location_value.strip().casefold()
-                )
 
             priorities = ("DBL", "RH", "SNW", "LOC", "COM", "SWH")
             matches: list[str] = []
@@ -633,9 +659,10 @@ async def get_attendance_detail_report(
                     continue
                 if calendar.effective_year != work_date.year:
                     continue
-                if not (
-                    scope_matches(calendar.province, location[0])
-                    and scope_matches(calendar.city, location[1])
+                if not holiday_applies_to_location(
+                    holiday.holiday_type,
+                    holiday,
+                    location,
                 ):
                     continue
                 code = _holiday_day_type(holiday.holiday_type, holiday.is_double_holiday)

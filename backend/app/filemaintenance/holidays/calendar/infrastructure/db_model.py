@@ -40,8 +40,6 @@ class HolidayCalendarModel(Base):
     )
     calendar_code: Mapped[str] = mapped_column(String(30), nullable=False)
     calendar_name: Mapped[str] = mapped_column(String(150), nullable=False)
-    province: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     effective_year: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20),

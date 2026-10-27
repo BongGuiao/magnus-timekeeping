@@ -6,16 +6,24 @@ from zoneinfo import ZoneInfo
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.infrastructure.dependencies import get_current_user_claims
+from app.auth.infrastructure.db_model import UserModel
 from app.core.database import get_db
-from app.core.employee_company_scope import get_active_employee_company_ids
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.employees.infrastructure.db_model import (
+    EmployeeModel,
+    EmploymentAssignmentModel,
+)
+from app.filemaintenance.holidays.calendar.domain.scope import (
+    GeographicArea,
+    holiday_applies_to_location,
+)
 from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
 from app.filemaintenance.holidays.holiday.application.use_case import (
     CreateHolidayUseCase,
@@ -31,6 +39,7 @@ from app.filemaintenance.holidays.holiday.infrastructure.dependencies import (
     get_list_holidays_use_case,
     get_update_holiday_use_case,
 )
+from app.filemaintenance.location.infrastructure.db_model import Location as LocationModel
 
 router = APIRouter(prefix="/holidays", tags=["Holidays"])
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
@@ -72,20 +81,42 @@ async def list_upcoming_holidays(
 ):
     user_id = _get_user_id(claims)
     today = datetime.now(PH_TIMEZONE).date()
-    company_ids = await get_active_employee_company_ids(session, user_id, today)
-    if not company_ids:
-        return ResponseEnvelope(status="success", data=[])
-
     holidays = await session.execute(
-        select(HolidayModel.holiday_date, HolidayModel.holiday_name)
-        .distinct()
+        select(HolidayModel, HolidayCalendarModel, LocationModel)
         .select_from(HolidayModel)
         .join(
             HolidayCalendarModel,
             HolidayCalendarModel.id == HolidayModel.holiday_calendar_id,
         )
+        .join(
+            EmploymentAssignmentModel,
+            and_(
+                EmploymentAssignmentModel.company_id == HolidayCalendarModel.company_id,
+                EmploymentAssignmentModel.effective_from <= HolidayModel.holiday_date,
+                or_(
+                    EmploymentAssignmentModel.effective_to.is_(None),
+                    EmploymentAssignmentModel.effective_to >= HolidayModel.holiday_date,
+                ),
+                EmploymentAssignmentModel.is_active.is_(True),
+                EmploymentAssignmentModel.status == "ACTIVE",
+                or_(
+                    EmploymentAssignmentModel.separation_date.is_(None),
+                    EmploymentAssignmentModel.separation_date >= HolidayModel.holiday_date,
+                ),
+            ),
+        )
+        .join(EmployeeModel, EmployeeModel.id == EmploymentAssignmentModel.employee_id)
+        .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+        .outerjoin(
+            LocationModel,
+            LocationModel.id == EmploymentAssignmentModel.primary_location_id,
+        )
         .where(
-            HolidayCalendarModel.company_id.in_(company_ids),
+            UserModel.id == user_id,
+            UserModel.is_active.is_(True),
+            UserModel.account_status == "ACTIVE",
+            EmployeeModel.is_active.is_(True),
+            EmployeeModel.record_status == "ACTIVE",
             HolidayCalendarModel.effective_year >= today.year,
             HolidayCalendarModel.status == "PUBLISHED",
             HolidayCalendarModel.is_active.is_(True),
@@ -95,13 +126,24 @@ async def list_upcoming_holidays(
             HolidayModel.is_active.is_(True),
         )
         .order_by(HolidayModel.holiday_date, HolidayModel.holiday_name)
-        .limit(100)
     )
+    upcoming_holidays: set[tuple[date, str]] = set()
+    for holiday, calendar, location in holidays:
+        if calendar.effective_year != holiday.holiday_date.year:
+            continue
+        location_area = location or GeographicArea()
+        if holiday_applies_to_location(
+            holiday.holiday_type,
+            holiday,
+            location_area,
+        ):
+            upcoming_holidays.add((holiday.holiday_date, holiday.holiday_name))
+
     return ResponseEnvelope(
         status="success",
         data=[
             UpcomingHolidaySchema(date=holiday_date, name=holiday_name)
-            for holiday_date, holiday_name in holidays
+            for holiday_date, holiday_name in sorted(upcoming_holidays)[:100]
         ],
     )
 

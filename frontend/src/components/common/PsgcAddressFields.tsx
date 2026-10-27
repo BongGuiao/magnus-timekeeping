@@ -29,6 +29,7 @@ interface Props {
   psgcBarangayCode: string | null
   onChange: (field: PsgcAddressField, value: string) => void
   errors?: Partial<Record<'province' | 'city' | 'barangay', string>>
+  includeBarangay?: boolean
 }
 
 const inputClassName =
@@ -46,6 +47,7 @@ export default function PsgcAddressFields({
   psgcBarangayCode,
   onChange,
   errors = {},
+  includeBarangay = true,
 }: Props) {
   const [regions, setRegions] = useState<PsgcPlace[]>([])
   const [provinces, setProvinces] = useState<PsgcPlace[]>([])
@@ -96,9 +98,10 @@ export default function PsgcAddressFields({
         setCities(cityOptions)
 
         if (initialCodes.city) {
+          setCityCode(initialCodes.city)
+          if (!includeBarangay) return
           const barangayOptions = await fetchPsgcBarangays(initialCodes.city)
           if (!isCurrent) return
-          setCityCode(initialCodes.city)
           setBarangays(barangayOptions)
         }
         if (initialCodes.barangay) setBarangayCode(initialCodes.barangay)
@@ -114,7 +117,7 @@ export default function PsgcAddressFields({
     return () => {
       isCurrent = false
     }
-  }, [])
+  }, [includeBarangay])
 
   async function changeRegion(nextRegionCode: string) {
     if (nextRegionCode === 'legacy') {
@@ -202,6 +205,7 @@ export default function PsgcAddressFields({
     setError('')
     if (!nextCityCode) return
 
+    if (!includeBarangay) return
     setIsLoadingBarangays(true)
     try {
       setBarangays(await fetchPsgcBarangays(nextCityCode))
@@ -276,20 +280,22 @@ export default function PsgcAddressFields({
         </select>
         {errors.city && <p className="mt-1 text-xs font-medium text-rose-600">{errors.city}</p>}
       </label>
-      <label className={labelClassName}>
-        Barangay
-        <select
-          value={barangayCode}
-          onChange={(event) => changeBarangay(event.target.value)}
-          disabled={!cityCode || cityCode === 'legacy' || isLoadingBarangays}
-          className={inputClassName}
-        >
-          <option value="">{isLoadingBarangays ? 'Loading barangays…' : 'Select a city first'}</option>
-          {barangayCode === 'legacy' && barangay && <option value="legacy">{barangay} (saved value)</option>}
-          {barangays.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
-        </select>
-        {errors.barangay && <p className="mt-1 text-xs font-medium text-rose-600">{errors.barangay}</p>}
-      </label>
+      {includeBarangay && (
+        <label className={labelClassName}>
+          Barangay
+          <select
+            value={barangayCode}
+            onChange={(event) => changeBarangay(event.target.value)}
+            disabled={!cityCode || cityCode === 'legacy' || isLoadingBarangays}
+            className={inputClassName}
+          >
+            <option value="">{isLoadingBarangays ? 'Loading barangays…' : 'Select a city first'}</option>
+            {barangayCode === 'legacy' && barangay && <option value="legacy">{barangay} (saved value)</option>}
+            {barangays.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
+          </select>
+          {errors.barangay && <p className="mt-1 text-xs font-medium text-rose-600">{errors.barangay}</p>}
+        </label>
+      )}
     </>
   )
 }

@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Any
 
 
-NONWORKING_DAY_TYPES = frozenset({"RH", "DBL", "SNW"})
+NONWORKING_DAY_TYPES = frozenset({"RH", "DBL", "SNW", "LOC"})
 
 
 @dataclass(frozen=True)

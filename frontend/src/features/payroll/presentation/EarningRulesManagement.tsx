@@ -92,7 +92,13 @@ export default function EarningRulesManagement({ payrollGroupId, payrollGroupLab
               <div>
                 <h3 className="text-sm font-semibold text-slate-900">{payrollComponentLabels[code]}</h3>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  {premiumOnlyComponents.has(code) ? 'Premium-only portion per eligible minute' : 'Full base-rate multiple per eligible minute'}
+                  {code === 'SPECIAL_DAY'
+                    ? 'Includes declared local non-working holidays; configure the special-holiday rate for this payroll group.'
+                    : code === 'SPECIAL_DAY_OT'
+                      ? 'Includes overtime on declared local non-working holidays; use the configured special-holiday overtime rate.'
+                      : premiumOnlyComponents.has(code)
+                        ? 'Premium-only portion per eligible minute'
+                        : 'Full base-rate multiple per eligible minute'}
                 </p>
               </div>
               <label className="text-xs font-semibold text-slate-500">

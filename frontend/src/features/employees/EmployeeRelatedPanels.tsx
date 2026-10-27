@@ -246,6 +246,23 @@ const assignmentSchema = z.object({
   if (values.separation_date && values.separation_date < values.hire_date) {
     context.addIssue({ code: 'custom', path: ['separation_date'], message: 'Must be on or after hire date.' })
   }
+  if (values.location_ids.length > 0 && !values.primary_location_id) {
+    context.addIssue({
+      code: 'custom',
+      path: ['primary_location_id'],
+      message: 'Choose a primary work location.',
+    })
+  }
+  if (
+    values.primary_location_id
+    && !values.location_ids.includes(values.primary_location_id)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['primary_location_id'],
+      message: 'The primary location must be one of the assigned locations.',
+    })
+  }
 })
 
 type AssignmentFormValues = z.infer<typeof assignmentSchema>
@@ -472,7 +489,10 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   const assignedLocationNames = (ids: string[], fallbackId: string | null) => {
     const selectedIds = ids.length ? ids : fallbackId ? [fallbackId] : []
     if (selectedIds.length === 0) return 'No assigned locations'
-    return selectedIds.map((id) => locations.find((item) => item.id === id)?.location_name ?? 'Location unavailable').join(', ')
+    return selectedIds.map((id) => {
+      const name = locations.find((item) => item.id === id)?.location_name ?? 'Location unavailable'
+      return id === fallbackId ? `${name} (Primary)` : name
+    }).join(', ')
   }
 
   return (
@@ -656,7 +676,23 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
               </div>
               <FieldError message={errors.location_ids?.message} />
               {locationsError && <span className="mt-1 block text-xs font-medium text-rose-600">{locationsError}</span>}
-              <span className="mt-2 block text-[11px] font-normal text-slate-500">Select all company locations assigned to this employee. The primary location is retained for workflows that require one location.</span>
+              <span className="mt-2 block text-[11px] font-normal text-slate-500">Select the locations where this employee is permitted to punch.</span>
+              <label className={`${labelClassName} mt-3 block`}>Primary work location
+                <select
+                  {...register('primary_location_id')}
+                  disabled={selectedLocationIds.length === 0}
+                  className={inputClassName}
+                >
+                  <option value="">Select a primary work location</option>
+                  {selectedLocationIds.map((id) => (
+                    <option key={id} value={id}>{locationName(id)}</option>
+                  ))}
+                </select>
+                <FieldError message={errors.primary_location_id?.message} />
+                <span className="mt-1 block text-[11px] font-normal text-slate-500">
+                  Local holiday eligibility follows this location, even when the employee punches at another permitted location.
+                </span>
+              </label>
             </fieldset>
             <fieldset className="min-w-0">
               <legend className={labelClassName}>Authorized geofences</legend>
