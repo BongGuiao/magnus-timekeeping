@@ -39,6 +39,7 @@ import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
 import type { NavView } from './components/dashboard/TopNav'
+import { WorkspaceTabsProvider } from './components/dashboard/WorkspaceTabsContext'
 import { fetchCurrentAuthorization } from './lib/authApi'
 import {
   getSelectedDashboardRole,
@@ -65,6 +66,32 @@ function getStoredView(): NavView {
   return navViews.includes(storedView as NavView) ? storedView as NavView : 'dashboard'
 }
 
+function getStoredTabs(): NavView[] {
+  const storedTabs = sessionStorage.getItem('open_views')
+  if (storedTabs) {
+    try {
+      const parsedTabs: unknown = JSON.parse(storedTabs)
+      if (Array.isArray(parsedTabs)) {
+        const validTabs = parsedTabs.filter(
+          (tab): tab is NavView => typeof tab === 'string' && navViews.includes(tab as NavView),
+        )
+        const activeView = getStoredView()
+        const restoredTabs: NavView[] = [
+          'dashboard',
+          ...validTabs.filter((tab) => tab !== 'dashboard' && tab !== activeView),
+          ...(activeView === 'dashboard' ? [] : [activeView]),
+        ]
+        return restoredTabs
+      }
+    } catch {
+      sessionStorage.removeItem('open_views')
+    }
+  }
+  return (['dashboard', getStoredView()] as NavView[]).filter(
+    (tab, index, tabs) => tabs.indexOf(tab) === index,
+  )
+}
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('access_token')))
   const [isAuthorizationLoaded, setIsAuthorizationLoaded] = useState(
@@ -72,11 +99,15 @@ function App() {
   )
   const [employeeName, setEmployeeName] = useState(() => localStorage.getItem('employee_name') ?? '')
   const [view, setView] = useState<NavView>(getStoredView)
+  const [openViews, setOpenViews] = useState<NavView[]>(getStoredTabs)
   const [authorizationError, setAuthorizationError] = useState(false)
   const [authorizationRefreshKey, setAuthorizationRefreshKey] = useState(0)
   const { logout } = useLogout({
     onLoggedOut: () => {
       sessionStorage.removeItem('active_view')
+      sessionStorage.removeItem('open_views')
+      setOpenViews(['dashboard'])
+      setView('dashboard')
       setEmployeeName('')
       setIsAuthenticated(false)
     },
@@ -105,6 +136,8 @@ function App() {
         if (!isCurrent) return
         localStorage.removeItem('permission_codes')
         setView('dashboard')
+        setOpenViews(['dashboard'])
+        sessionStorage.setItem('open_views', JSON.stringify(['dashboard']))
         sessionStorage.setItem('active_view', 'dashboard')
         setAuthorizationError(true)
         setIsAuthorizationLoaded(true)
@@ -115,8 +148,34 @@ function App() {
   }, [authorizationRefreshKey, isAuthenticated])
 
   function navigateTo(nextView: NavView) {
+    setOpenViews((current) => {
+      const next = current.includes(nextView) ? current : [...current, nextView]
+      sessionStorage.setItem('open_views', JSON.stringify(next))
+      return next
+    })
     sessionStorage.setItem('active_view', nextView)
     setView(nextView)
+  }
+
+  function selectTab(nextView: NavView) {
+    sessionStorage.setItem('active_view', nextView)
+    setView(nextView)
+  }
+
+  function closeTab(closedView: NavView) {
+    if (closedView === 'dashboard') return
+    const closedIndex = openViews.indexOf(closedView)
+    const remaining = openViews.filter((openView) => openView !== closedView)
+    const nextView = view === closedView
+      ? remaining[Math.max(0, closedIndex - 1)] ?? 'dashboard'
+      : view
+    const nextTabs: NavView[] = remaining.length ? remaining : ['dashboard']
+    setOpenViews(nextTabs)
+    sessionStorage.setItem('open_views', JSON.stringify(nextTabs))
+    if (view === closedView) {
+      setView(nextView)
+      sessionStorage.setItem('active_view', nextView)
+    }
   }
 
   if (!isAuthenticated) {
@@ -166,286 +225,306 @@ function App() {
     )
   }
 
-  const requiredPermissionByView: Partial<Record<NavView, string | string[]>> = {
-    attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
-    'attendance-recalculation': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
-    'attendance-detail-report': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
-    'payroll-review': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
-    companies: 'company.setup',
-    'org-units': 'company.setup',
-    locations: 'company.setup',
-    geofences: 'company.setup',
-    employees: ['employees.read', 'employees.read_team'],
-    'payroll-groups': 'payroll.manage',
-    'payroll-cutoffs': 'payroll.manage',
-    'payroll-compensation': 'payroll.manage',
-    'payroll-earning-rules': 'payroll.manage',
-    'payroll-gross': 'payroll.manage',
-    'payroll-benefits': 'payroll.manage',
-    'payroll-deductions': 'payroll.manage',
-    'payroll-loans': 'payroll.manage',
-    'payroll-management': 'payroll.manage',
-    'company-benefit-types': 'payroll.manage',
-    'company-deduction-types': 'payroll.manage',
-    'payroll-statutory': 'payroll.company_parameters.manage',
-    'payroll-thirteenth-month': 'payroll.manage',
-    'payroll-off-cycle': ['payroll.manage', 'payroll.approve'],
-    'payroll-system-parameters': 'payroll.company_parameters.manage',
-    'schedule-templates': 'schedule.manage',
-    'rest-day-patterns': 'schedule.manage',
-    'my-schedule': 'schedule.read_own',
-    'schedule-uploads': 'schedule.upload_team',
-    'schedule-upload-approvals': 'schedule.approve',
-    'emergency-schedule-approvals': 'schedule.approve_emergency',
-    'leave-management': 'leave.manage',
-    calendar: 'leave.manage',
-    announcements: 'system.manage',
-    'employee-entitlements': 'leave.manage',
-    'leave-application': 'leave.submit',
-    'overtime-application': 'overtime.submit_own',
-    'official-business': 'official_business.submit_own',
-  }
-  const requiredPermission = requiredPermissionByView[view]
-  const hasRequiredPermission = typeof requiredPermission === 'string'
-    ? hasPermission(requiredPermission)
-    : requiredPermission
-      ? hasAnyPermission(requiredPermission)
-      : true
-  if (!hasRequiredPermission) {
-    return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'change-password') {
-    return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'enrollment') {
-    return <Enrollment employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'attendance') {
-    return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'attendance-detail-report') {
-    return (
-      <AttendanceDetailReport
-        employeeName={employeeName}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'attendance-recalculation') {
-    return (
-      <AttendanceRecalculation
-        employeeName={employeeName}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'my-schedule') {
-    return <MySchedule employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'schedule-uploads') {
-    return <ScheduleUploads employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'schedule-upload-approvals') {
-    return <ScheduleUploadApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'emergency-schedule-approvals') {
-    return <EmergencyScheduleApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'companies') {
-    return <Companies employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'org-units') {
-    return <OrgUnits employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'locations') {
-    return <Locations employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'geofences') {
-    return <Geofences employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'employees') {
-    return <Employees employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'leave-management' || view === 'employee-entitlements') {
-    if (view === 'leave-management') {
-      return <LeaveManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  function renderView(currentView: NavView) {
+    const view = currentView
+    const requiredPermissionByView: Partial<Record<NavView, string | string[]>> = {
+      attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      'attendance-recalculation': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      'attendance-detail-report': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+      'payroll-review': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+      companies: 'company.setup',
+      'org-units': 'company.setup',
+      locations: 'company.setup',
+      geofences: 'company.setup',
+      employees: ['employees.read', 'employees.read_team'],
+      'payroll-groups': 'payroll.manage',
+      'payroll-cutoffs': 'payroll.manage',
+      'payroll-compensation': 'payroll.manage',
+      'payroll-earning-rules': 'payroll.manage',
+      'payroll-gross': 'payroll.manage',
+      'payroll-benefits': 'payroll.manage',
+      'payroll-deductions': 'payroll.manage',
+      'payroll-loans': 'payroll.manage',
+      'payroll-management': 'payroll.manage',
+      'company-benefit-types': 'payroll.manage',
+      'company-deduction-types': 'payroll.manage',
+      'payroll-statutory': 'payroll.company_parameters.manage',
+      'payroll-thirteenth-month': 'payroll.manage',
+      'payroll-off-cycle': ['payroll.manage', 'payroll.approve'],
+      'payroll-system-parameters': 'payroll.company_parameters.manage',
+      'schedule-templates': 'schedule.manage',
+      'rest-day-patterns': 'schedule.manage',
+      'my-schedule': 'schedule.read_own',
+      'schedule-uploads': 'schedule.upload_team',
+      'schedule-upload-approvals': 'schedule.approve',
+      'emergency-schedule-approvals': 'schedule.approve_emergency',
+      'leave-management': 'leave.manage',
+      calendar: 'leave.manage',
+      announcements: 'system.manage',
+      'employee-entitlements': 'leave.manage',
+      'leave-application': 'leave.submit',
+      'overtime-application': 'overtime.submit_own',
+      'official-business': 'official_business.submit_own',
     }
-    return <EmployeeEntitlements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'calendar') {
-    return <Calendar employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'announcements') {
-    return <Announcements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'payroll-groups') {
-    return <PayrollGroups employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'payroll-cutoffs') {
-    return <PayrollCutoffs employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'payroll-statutory') {
-    return (
-      <StatutorySchedulesPage
-        employeeName={employeeName}
-        useCases={payrollUseCases}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-thirteenth-month') {
-    return (
-      <ThirteenthMonthCalculationPage
-        employeeName={employeeName}
-        useCases={payrollUseCases}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-off-cycle') {
-    return (
-      <OffCyclePayrollPage
-        employeeName={employeeName}
-        payrollUseCases={payrollUseCases}
-        offCycleUseCases={offCyclePayrollUseCases}
-        canManage={hasPermission('payroll.manage')}
-        canApprove={hasPermission('payroll.approve')}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-system-parameters') {
-    return (
-      <PayrollSystemParametersPage
-        employeeName={employeeName}
-        useCases={payrollUseCases}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'company-benefit-types' || view === 'company-deduction-types') {
-    return (
-      <CompanyBenefitTypesPage
-        key={view}
-        employeeName={employeeName}
-        useCases={payrollUseCases}
-        setupType={view === 'company-benefit-types' ? 'benefits' : 'deductions'}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-management') {
-    return (
-      <PayrollManagementPage
-        employeeName={employeeName}
-        activeView="payroll-compensation"
-        useCases={payrollUseCases}
-        canApprovePayroll={hasPermission('payroll.approve')}
-        canUnlockPayroll={hasPermission('payroll.approve')}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-compensation' || view === 'payroll-earning-rules' || view === 'payroll-gross' || view === 'payroll-benefits' || view === 'payroll-deductions' || view === 'payroll-loans') {
-    return (
-      <PayrollManagementPage
-        employeeName={employeeName}
-        activeView={view}
-        useCases={payrollUseCases}
-        canApprovePayroll={hasPermission('payroll.approve')}
-        canUnlockPayroll={hasPermission('payroll.approve')}
-        onNavigate={navigateTo}
-        onLoggedOut={logout}
-      />
-    )
-  }
-
-  if (view === 'payroll-review') {
-    return <PayrollResultsReview employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'schedule-templates') {
-    return <ScheduleTemplates employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'rest-day-patterns') {
-    return <RestDayPatterns employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
-  }
-
-  if (view === 'leave-application') {
-    if (getSelectedDashboardRole() !== 'employee') {
+    const requiredPermission = requiredPermissionByView[view]
+    const hasRequiredPermission = typeof requiredPermission === 'string'
+      ? hasPermission(requiredPermission)
+      : requiredPermission
+        ? hasAnyPermission(requiredPermission)
+        : true
+    if (!hasRequiredPermission) {
       return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
-    return (
-      <LeaveApplication
+    if (view === 'change-password') {
+      return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'enrollment') {
+      return <Enrollment employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'attendance') {
+      return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'attendance-detail-report') {
+      return (
+        <AttendanceDetailReport
+          employeeName={employeeName}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'attendance-recalculation') {
+      return (
+        <AttendanceRecalculation
+          employeeName={employeeName}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'my-schedule') {
+      return <MySchedule employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'schedule-uploads') {
+      return <ScheduleUploads employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'schedule-upload-approvals') {
+      return <ScheduleUploadApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'emergency-schedule-approvals') {
+      return <EmergencyScheduleApprovals employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'companies') {
+      return <Companies employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'org-units') {
+      return <OrgUnits employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'locations') {
+      return <Locations employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'geofences') {
+      return <Geofences employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'employees') {
+      return <Employees employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'leave-management' || view === 'employee-entitlements') {
+      if (view === 'leave-management') {
+        return <LeaveManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+      }
+      return <EmployeeEntitlements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'calendar') {
+      return <Calendar employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'announcements') {
+      return <Announcements employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'payroll-groups') {
+      return <PayrollGroups employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'payroll-cutoffs') {
+      return <PayrollCutoffs employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'payroll-statutory') {
+      return (
+        <StatutorySchedulesPage
+          employeeName={employeeName}
+          useCases={payrollUseCases}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-thirteenth-month') {
+      return (
+        <ThirteenthMonthCalculationPage
+          employeeName={employeeName}
+          useCases={payrollUseCases}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-off-cycle') {
+      return (
+        <OffCyclePayrollPage
+          employeeName={employeeName}
+          payrollUseCases={payrollUseCases}
+          offCycleUseCases={offCyclePayrollUseCases}
+          canManage={hasPermission('payroll.manage')}
+          canApprove={hasPermission('payroll.approve')}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-system-parameters') {
+      return (
+        <PayrollSystemParametersPage
+          employeeName={employeeName}
+          useCases={payrollUseCases}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'company-benefit-types' || view === 'company-deduction-types') {
+      return (
+        <CompanyBenefitTypesPage
+          key={view}
+          employeeName={employeeName}
+          useCases={payrollUseCases}
+          setupType={view === 'company-benefit-types' ? 'benefits' : 'deductions'}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-management') {
+      return (
+        <PayrollManagementPage
+          employeeName={employeeName}
+          activeView="payroll-compensation"
+          useCases={payrollUseCases}
+          canApprovePayroll={hasPermission('payroll.approve')}
+          canUnlockPayroll={hasPermission('payroll.approve')}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-compensation' || view === 'payroll-earning-rules' || view === 'payroll-gross' || view === 'payroll-benefits' || view === 'payroll-deductions' || view === 'payroll-loans') {
+      return (
+        <PayrollManagementPage
+          employeeName={employeeName}
+          activeView={view}
+          useCases={payrollUseCases}
+          canApprovePayroll={hasPermission('payroll.approve')}
+          canUnlockPayroll={hasPermission('payroll.approve')}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'payroll-review') {
+      return <PayrollResultsReview employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'schedule-templates') {
+      return <ScheduleTemplates employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'rest-day-patterns') {
+      return <RestDayPatterns employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'leave-application') {
+      if (getSelectedDashboardRole() !== 'employee') {
+        return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+      }
+
+      return (
+        <LeaveApplication
+          employeeName={employeeName}
+          previewOnly={!hasEmployeeRoleCode()}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
+    if (view === 'overtime-application') {
+      if (getSelectedDashboardRole() !== 'employee') {
+        return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+      }
+      return <OvertimeApplication
         employeeName={employeeName}
         previewOnly={!hasEmployeeRoleCode()}
         onNavigate={navigateTo}
         onLoggedOut={logout}
       />
-    )
-  }
-
-  if (view === 'overtime-application') {
-    if (getSelectedDashboardRole() !== 'employee') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
-    return <OvertimeApplication
-      employeeName={employeeName}
-      previewOnly={!hasEmployeeRoleCode()}
-      onNavigate={navigateTo}
-      onLoggedOut={logout}
-    />
-  }
 
-  if (view === 'official-business') {
-    if (getSelectedDashboardRole() !== 'employee') {
-      return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    if (view === 'official-business') {
+      if (getSelectedDashboardRole() !== 'employee') {
+        return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+      }
+      return <OfficialBusiness
+        employeeName={employeeName}
+        previewOnly={!hasEmployeeRoleCode()}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
     }
-    return <OfficialBusiness
-      employeeName={employeeName}
-      previewOnly={!hasEmployeeRoleCode()}
-      onNavigate={navigateTo}
-      onLoggedOut={logout}
-    />
-  }
 
-  return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+}
+
+  return (
+    <WorkspaceTabsProvider
+      value={{
+        views: openViews,
+        activeView: view,
+        onSelect: selectTab,
+        onClose: closeTab,
+      }}
+    >
+      {openViews.map((openView) => (
+        <div key={openView} hidden={openView !== view}>
+          {renderView(openView)}
+        </div>
+      ))}
+    </WorkspaceTabsProvider>
+  )
 }
 
 export default App

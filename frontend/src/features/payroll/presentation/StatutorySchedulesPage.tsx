@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, RefreshCw, Save, Trash2, Pencil, Check, Archive, X } from 'lucide-react'
+import { Plus, RefreshCw, Save, Trash2, Pencil, Check, Archive, Minimize2, X } from 'lucide-react'
 import TopNav, { type NavView } from '../../../components/dashboard/TopNav'
 import { useCompanySetupSelection } from '../../../hooks/useCompanySetupSelection'
 import { hasPermission } from '../../../types/role'
@@ -104,6 +104,7 @@ export default function StatutorySchedulesPage({
   const [editingScheduleId, setEditingScheduleId] = useState('')
   const [editingBracketId, setEditingBracketId] = useState('')
   const [isBracketModalOpen, setIsBracketModalOpen] = useState(false)
+  const [isBracketModalMinimized, setIsBracketModalMinimized] = useState(false)
   const [pendingBracketScrollId, setPendingBracketScrollId] = useState('')
   const [savedBracketId, setSavedBracketId] = useState('')
   const [loading, setLoading] = useState(true)
@@ -196,7 +197,7 @@ export default function StatutorySchedulesPage({
   }
 
   useEffect(() => {
-    if (!isBracketModalOpen) return
+    if (!isBracketModalOpen || isBracketModalMinimized) return
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -240,7 +241,7 @@ export default function StatutorySchedulesPage({
       document.body.style.overflow = previousOverflow
       previouslyFocused?.focus()
     }
-  }, [isBracketModalOpen])
+  }, [isBracketModalOpen, isBracketModalMinimized])
 
   useEffect(() => {
     let current = true
@@ -300,6 +301,7 @@ export default function StatutorySchedulesPage({
   function resetBracketEditor() {
     setEditingBracketId('')
     setIsBracketModalOpen(false)
+    setIsBracketModalMinimized(false)
     setPendingBracketScrollId('')
     setSavedBracketId('')
     setBracketDraft(emptyBracket)
@@ -427,6 +429,7 @@ export default function StatutorySchedulesPage({
         employeeCap: bracket.employeeContributionCap === null ? '' : String(bracket.employeeContributionCap),
         employerCap: bracket.employerContributionCap === null ? '' : String(bracket.employerContributionCap),
       })
+    setIsBracketModalMinimized(false)
     setIsBracketModalOpen(true)
   }
 
@@ -442,6 +445,7 @@ export default function StatutorySchedulesPage({
       bracketNumber: String(nextBracketNumber),
       ...(isPagibig ? { employeeCap: '200', employerCap: '200' } : {}),
     })
+    setIsBracketModalMinimized(false)
     setIsBracketModalOpen(true)
   }
 
@@ -490,6 +494,7 @@ export default function StatutorySchedulesPage({
       setSavedBracketId(result.id)
       setEditingBracketId('')
       setBracketDraft(emptyBracket)
+      setIsBracketModalMinimized(false)
       setIsBracketModalOpen(false)
       refreshData(false)
     } catch (cause) {
@@ -822,16 +827,18 @@ export default function StatutorySchedulesPage({
         </div>
       </main>
       {isBracketModalOpen && createPortal(
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !saving) resetBracketEditor()
-          }}
-        >
+        <>
+          <div
+            hidden={isBracketModalMinimized}
+            className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-[2px] sm:items-center sm:p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !saving) resetBracketEditor()
+            }}
+          >
           <div
             ref={bracketModalRef}
             role="dialog"
-            aria-modal="true"
+            aria-modal={!isBracketModalMinimized}
             aria-labelledby={bracketModalTitleId}
             tabIndex={-1}
             className="flex max-h-[94svh] w-full max-w-3xl flex-col overflow-hidden rounded-t-lg border border-slate-200 bg-white shadow-2xl outline-none sm:rounded-lg"
@@ -850,15 +857,26 @@ export default function StatutorySchedulesPage({
                   </p>
                 )}
               </div>
-              <button
-                type="button"
-                aria-label="Close bracket editor"
-                onClick={resetBracketEditor}
-                disabled={saving}
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
-              >
-                <X className="h-5 w-5" aria-hidden="true" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Minimize bracket editor"
+                  title="Minimize"
+                  onClick={() => setIsBracketModalMinimized(true)}
+                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"
+                >
+                  <Minimize2 className="h-4 w-4" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Close bracket editor"
+                  onClick={resetBracketEditor}
+                  disabled={saving}
+                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
             <form onSubmit={(event) => void saveBracket(event)} className="min-h-0 overflow-y-auto">
               <div className="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
@@ -904,7 +922,18 @@ export default function StatutorySchedulesPage({
               </div>
             </form>
           </div>
-        </div>,
+          </div>
+          {isBracketModalMinimized && (
+            <button
+              type="button"
+              onClick={() => setIsBracketModalMinimized(false)}
+              className="fixed bottom-4 right-4 z-[70] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-lg border border-indigo-300 bg-white px-4 py-3 text-sm font-semibold text-indigo-800 shadow-xl hover:bg-indigo-50"
+            >
+              <span className="h-2 w-2 shrink-0 rounded-full bg-indigo-600" aria-hidden="true" />
+              Restore: {editingBracketId ? 'Edit bracket' : 'Add bracket'}
+            </button>
+          )}
+        </>,
         document.body,
       )}
     </div>

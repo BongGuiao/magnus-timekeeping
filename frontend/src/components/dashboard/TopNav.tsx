@@ -26,6 +26,7 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react'
+import { useWorkspaceTabs } from './WorkspaceTabsContext'
 import { fetchCompanies, fetchPayrollParameterCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
@@ -295,6 +296,39 @@ const navLinks: NavLink[] = [
   },
 ]
 
+function findNavLabel(links: NavLink[], view: NavView): string | undefined {
+  for (const link of links) {
+    if (link.view === view) return link.label
+    const childLabel = link.children ? findNavLabel(link.children, view) : undefined
+    if (childLabel) return childLabel
+  }
+  return undefined
+}
+
+const additionalViewLabels: Partial<Record<NavView, string>> = {
+  enrollment: 'Enrollment',
+  'change-password': 'Change Password',
+  'payroll-compensation': 'Compensation',
+  'payroll-earning-rules': 'Earning Rules',
+  'payroll-gross': 'Gross Pay',
+  'payroll-benefits': 'Benefits',
+  'payroll-deductions': 'Deductions',
+  'payroll-management': 'Payroll Management',
+  'payroll-review': 'Payroll Review',
+  'my-schedule': 'My Schedule',
+  'schedule-uploads': 'Schedule Uploads',
+  'schedule-upload-approvals': 'Schedule Approvals',
+  'emergency-schedule-approvals': 'Emergency Schedule Approvals',
+  'overtime-application': 'Overtime Application',
+  'official-business': 'Official Business',
+}
+
+export function getNavViewLabel(view: NavView) {
+  return additionalViewLabels[view]
+    ?? findNavLabel(navLinks, view)
+    ?? view.replaceAll('-', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
 interface Props {
   employeeName: string
   activeView: NavView
@@ -335,6 +369,7 @@ function DashboardRoleSelect({
 }
 
 export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
+  const workspaceTabs = useWorkspaceTabs()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
   const [navHeight, setNavHeight] = useState(0)
@@ -903,6 +938,49 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
 
     </header>
     <div aria-hidden="true" style={{ height: `${navHeight}px` }} />
+    {workspaceTabs && (
+      <nav
+        aria-label="Open modules"
+        role="tablist"
+        className="flex min-h-10 items-end gap-1 overflow-x-auto border-b border-slate-300 bg-slate-100 px-[2.5%] pt-1"
+      >
+        {workspaceTabs.views.map((view) => {
+          const isActive = view === workspaceTabs.activeView
+          return (
+            <div
+              key={view}
+              role="presentation"
+              className={`flex shrink-0 items-center rounded-t-lg border border-b-0 ${
+                isActive
+                  ? 'border-indigo-300 bg-white text-indigo-800 shadow-sm'
+                  : 'border-transparent bg-slate-200 text-slate-600 hover:bg-white hover:text-slate-900'
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => workspaceTabs.onSelect(view)}
+                className="px-4 py-2 text-xs font-semibold"
+              >
+                {getNavViewLabel(view)}
+              </button>
+              {view !== 'dashboard' && (
+                <button
+                  type="button"
+                  aria-label={`Close ${getNavViewLabel(view)} tab`}
+                  title={`Close ${getNavViewLabel(view)}`}
+                  onClick={() => workspaceTabs.onClose(view)}
+                  className="mr-1 rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-800"
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </nav>
+    )}
     </>
   )
 }
