@@ -18,6 +18,7 @@ from app.filemaintenance.roles.application.use_case import (
     ListAvailableRolesUseCase,
     ListUserRolesUseCase,
     UpdateUserRoleUseCase,
+    UserRoleOverlapError,
     UserRoleReferenceError,
 )
 from app.filemaintenance.roles.infrastructure.dependencies import (
@@ -127,6 +128,8 @@ async def create_user_role(
         result = await use_case.execute(values)
     except PayrollAccessViolationError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except UserRoleOverlapError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except UserRoleReferenceError as error:
         _raise_reference_http_error(error)
     await log_entity_action(
@@ -162,6 +165,8 @@ async def update_user_role(
         result = await use_case.execute(payload.id, values, actor_id)
     except PayrollAccessViolationError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except UserRoleOverlapError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except UserRoleReferenceError as error:
         _raise_reference_http_error(error)
     if result is None:

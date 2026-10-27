@@ -11,7 +11,10 @@ from app.auth.infrastructure.dependencies import require_permission
 from app.auth.infrastructure.db_model import UserRoleModel as AuthUserRoleModel
 from app.auth.infrastructure.router import router as auth_router
 from app.core.database import Base
-from app.filemaintenance.roles.application.use_case import _validate_effective_dates
+from app.filemaintenance.roles.application.use_case import (
+    _date_ranges_overlap,
+    _validate_effective_dates,
+)
 from app.filemaintenance.roles.infrastructure.db_model import UserRoleModel
 from app.filemaintenance.roles.infrastructure.router import (
     CreateUserRoleSchema,
@@ -71,6 +74,26 @@ class UserRoleSchemaTests(unittest.TestCase):
     def test_merged_date_validation_rejects_end_before_start(self) -> None:
         with self.assertRaisesRegex(ValueError, "effective_to"):
             _validate_effective_dates(date(2026, 10, 2), date(2026, 10, 1))
+
+    def test_expired_role_can_be_assigned_again_after_its_end_date(self) -> None:
+        self.assertFalse(
+            _date_ranges_overlap(
+                date(2026, 1, 1),
+                date(2026, 3, 31),
+                date(2026, 4, 1),
+                date(2026, 12, 31),
+            )
+        )
+
+    def test_role_assignment_date_ranges_overlap_inclusively(self) -> None:
+        self.assertTrue(
+            _date_ranges_overlap(
+                date(2026, 1, 1),
+                date(2026, 3, 31),
+                date(2026, 3, 31),
+                None,
+            )
+        )
 
     def test_auth_and_filemaintenance_use_the_same_user_role_table(self) -> None:
         self.assertIs(AuthUserRoleModel, UserRoleModel)

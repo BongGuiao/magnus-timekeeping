@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AxiosError } from 'axios'
-import { AlertCircle, CalendarDays, CheckCircle2, LoaderCircle, Plus, ShieldCheck, UserRoundCog } from 'lucide-react'
+import { AlertCircle, CalendarDays, Check, CheckCircle2, LoaderCircle, Pencil, Plus, ShieldCheck, UserRoundCog, X } from 'lucide-react'
 import {
   createUserRoleAssignment,
   fetchAvailableRoles,
@@ -33,6 +33,14 @@ function errorText(error: unknown): string {
 function assignmentIsCurrent(assignment: UserRoleAssignment, today: string): boolean {
   return assignment.effective_from <= today
     && (!assignment.effective_to || assignment.effective_to >= today)
+}
+
+function assignmentScopesOverlap(
+  first: Pick<UserRoleAssignment, 'company_id' | 'org_unit_id'>,
+  second: Pick<UserRoleAssignment, 'company_id' | 'org_unit_id'>,
+): boolean {
+  return (!first.company_id || !second.company_id || first.company_id === second.company_id)
+    && (!first.org_unit_id || !second.org_unit_id || first.org_unit_id === second.org_unit_id)
 }
 
 function scopeLabel(
@@ -68,9 +76,15 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   const [companyId, setCompanyId] = useState('')
   const [orgUnitId, setOrgUnitId] = useState('')
   const [effectiveFrom, setEffectiveFrom] = useState(getManilaDate())
+  const [effectiveTo, setEffectiveTo] = useState('')
+  const [editingAssignment, setEditingAssignment] = useState<{
+    id: string
+    effective_from: string
+    effective_to: string
+  } | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(employeeId))
   const [isSaving, setIsSaving] = useState(false)
-  const [endingAssignmentId, setEndingAssignmentId] = useState('')
+  const [processingAssignmentId, setProcessingAssignmentId] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const today = getManilaDate()
@@ -122,10 +136,17 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
 
   async function assignRole() {
     if (!employeeId || !roleId || !companyId || !effectiveFrom || isSaving) return
+    if (effectiveTo && effectiveTo < effectiveFrom) {
+      setError('The expiration date must be on or after the effective-from date.')
+      return
+    }
     const hasOverlappingRole = assignments.some((assignment) =>
       assignment.role_id === roleId
-      && assignment.company_id === (companyId || null)
-      && assignment.org_unit_id === (orgUnitId || null)
+      && assignmentScopesOverlap(assignment, {
+        company_id: companyId || null,
+        org_unit_id: orgUnitId || null,
+      })
+      && (!effectiveTo || assignment.effective_from <= effectiveTo)
       && (!assignment.effective_to || assignment.effective_to >= effectiveFrom),
     )
     if (hasOverlappingRole) {
@@ -138,7 +159,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
       company_id: companyId,
       org_unit_id: orgUnitId || null,
       effective_from: effectiveFrom,
-      effective_to: null,
+      effective_to: effectiveTo || null,
     }
     setIsSaving(true)
     setError('')
@@ -147,6 +168,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
       await createUserRoleAssignment(payload)
       await refreshAssignments()
       setEffectiveFrom(today)
+      setEffectiveTo('')
       setNotice('Employee role assigned.')
     } catch (cause) {
       setError(errorText(cause))
@@ -155,19 +177,75 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
     }
   }
 
+  function startEditingAssignment(assignment: UserRoleAssignment) {
+    setError('')
+    setNotice('')
+    setEditingAssignment({
+      id: assignment.id,
+      effective_from: assignment.effective_from,
+      effective_to: assignment.effective_to ?? '',
+    })
+  }
+
+  async function saveAssignmentDates() {
+    if (!editingAssignment || isSaving) return
+    const { id, effective_from: nextFrom, effective_to: nextTo } = editingAssignment
+    if (!nextFrom) {
+      setError('The effective-from date is required.')
+      return
+    }
+    if (nextTo && nextTo < nextFrom) {
+      setError('The expiration date must be on or after the effective-from date.')
+      return
+    }
+    const current = assignments.find((assignment) => assignment.id === id)
+    if (!current) {
+      setError('This role assignment is no longer available. Reload the employee roles and try again.')
+      return
+    }
+    const hasOverlappingRole = assignments.some((assignment) =>
+      assignment.id !== id
+      && assignment.role_id === current.role_id
+      && assignmentScopesOverlap(assignment, current)
+      && (!nextTo || assignment.effective_from <= nextTo)
+      && (!assignment.effective_to || assignment.effective_to >= nextFrom),
+    )
+    if (hasOverlappingRole) {
+      setError('These dates overlap another assignment for the same role and scope.')
+      return
+    }
+
+    setProcessingAssignmentId(id)
+    setError('')
+    setNotice('')
+    try {
+      await updateUserRoleAssignment(id, {
+        effective_from: nextFrom,
+        effective_to: nextTo || null,
+      })
+      await refreshAssignments()
+      setEditingAssignment(null)
+      setNotice('Role assignment dates updated.')
+    } catch (cause) {
+      setError(errorText(cause))
+    } finally {
+      setProcessingAssignmentId('')
+    }
+  }
+
   async function endAssignment(assignment: UserRoleAssignment) {
     if (assignment.effective_from > today || !assignmentIsCurrent(assignment, today)) return
-    setEndingAssignmentId(assignment.id)
+    setProcessingAssignmentId(assignment.id)
     setError('')
     setNotice('')
     try {
       await updateUserRoleAssignment(assignment.id, { effective_to: today })
       await refreshAssignments()
-      setNotice('Employee role ended.')
+      setNotice('Employee role revoked. The assignment remains in history.')
     } catch (cause) {
       setError(errorText(cause))
     } finally {
-      setEndingAssignmentId('')
+      setProcessingAssignmentId('')
     }
   }
 
@@ -192,7 +270,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   )
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5" aria-busy={isLoading || isSaving || Boolean(endingAssignmentId)}>
+    <div className="mx-auto max-w-5xl space-y-5" aria-busy={isLoading || isSaving || Boolean(processingAssignmentId)}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <span className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600"><ShieldCheck className="h-5 w-5" aria-hidden="true" /></span>
@@ -210,14 +288,14 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
       {error && <p role="alert" className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{error}</p>}
       {notice && <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800"><CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{notice}</p>}
 
-      <fieldset disabled={isLoading || isSaving || Boolean(endingAssignmentId)} className="min-w-0 space-y-5">
+      <fieldset disabled={isLoading || isSaving || Boolean(processingAssignmentId)} className="min-w-0 space-y-5">
         <legend className="sr-only">Employee role assignments</legend>
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
             <Plus className="h-4 w-4 text-indigo-600" aria-hidden="true" />
             <h4 className="text-xs font-bold text-slate-800">Assign a role</h4>
           </div>
-          <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_180px_auto] lg:items-end">
+          <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(150px,0.8fr)_minmax(150px,0.8fr)_auto] lg:items-end">
             <label className={labelClassName}>Role <span className="font-normal text-slate-400">(required)</span>
               <select value={roleId} onChange={(event) => setRoleId(event.target.value)} className={inputClassName}>
                 <option value="">Select a role</option>
@@ -244,6 +322,9 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
             </label>
             <label className={labelClassName}>Effective from <span className="font-normal text-slate-400">(required)</span>
               <input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className={inputClassName} />
+            </label>
+            <label className={labelClassName}>Expires on <span className="font-normal text-slate-400">(optional)</span>
+              <input type="date" min={effectiveFrom} value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} className={inputClassName} />
             </label>
             <button type="button" onClick={() => void assignRole()} disabled={!roleId || !companyId || !effectiveFrom || isLoading || isSaving} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
               {isSaving ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Plus className="h-4 w-4" aria-hidden="true" />}
@@ -287,13 +368,74 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
                         <span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />{assignment.effective_from} – {assignment.effective_to ?? 'No end date'}</span>
                         <span>{scopeLabel(assignment, companiesById, orgUnitsById)}</span>
                       </div>
+                      {editingAssignment?.id === assignment.id && (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <label className={labelClassName}>Effective from
+                            <input
+                              type="date"
+                              required
+                              value={editingAssignment.effective_from}
+                              onChange={(event) => setEditingAssignment((current) => current
+                                ? { ...current, effective_from: event.target.value }
+                                : current)}
+                              className={inputClassName}
+                            />
+                          </label>
+                          <label className={labelClassName}>Expires on <span className="font-normal text-slate-400">(optional)</span>
+                            <input
+                              type="date"
+                              min={editingAssignment.effective_from}
+                              value={editingAssignment.effective_to}
+                              onChange={(event) => setEditingAssignment((current) => current
+                                ? { ...current, effective_to: event.target.value }
+                                : current)}
+                              className={inputClassName}
+                            />
+                          </label>
+                        </div>
+                      )}
                       {role?.description && <p className="mt-1 text-[11px] leading-5 text-slate-500">{role.description}</p>}
                     </div>
-                    {isCurrent && !isFuture && assignment.effective_to !== today && (
-                      <button type="button" onClick={() => void endAssignment(assignment)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">
-                        {endingAssignmentId === assignment.id ? 'Ending...' : 'End role today'}
-                      </button>
-                    )}
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      {editingAssignment?.id === assignment.id ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void saveAssignmentDates()}
+                            disabled={Boolean(processingAssignmentId)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                          >
+                            {processingAssignmentId === assignment.id
+                              ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                              : <Check className="h-4 w-4" aria-hidden="true" />}
+                            Save dates
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingAssignment(null)}
+                            disabled={Boolean(processingAssignmentId)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            <X className="h-4 w-4" aria-hidden="true" />Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => startEditingAssignment(assignment)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />Edit dates
+                          </button>
+                          {isCurrent && !isFuture && assignment.effective_to !== today && (
+                            <button type="button" onClick={() => void endAssignment(assignment)} disabled={Boolean(processingAssignmentId)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">
+                              {processingAssignmentId === assignment.id ? 'Revoking...' : 'Revoke today'}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </li>
                 )
               })}
@@ -302,7 +444,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
 
         <div className="flex items-start gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-4">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-indigo-500" aria-hidden="true" />
-          <p className="text-[11px] leading-5 text-indigo-900">Role changes take effect according to their effective dates. Ending an assignment preserves its history instead of deleting it.</p>
+          <p className="text-[11px] leading-5 text-indigo-900">Set an optional expiration date, edit assignment dates, or revoke a current role. Expired and revoked assignments remain in history. A new assignment for the same role and scope is allowed when its dates do not overlap.</p>
         </div>
       </fieldset>
     </div>

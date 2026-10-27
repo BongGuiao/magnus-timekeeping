@@ -19,6 +19,7 @@ from app.filemaintenance.roles.application.payroll_access import (
 from app.filemaintenance.roles.application.use_case import (
     CreateUserRoleUseCase,
     UpdateUserRoleUseCase,
+    UserRoleOverlapError,
 )
 
 ROLE_USE_CASE_MODULE = "app.filemaintenance.roles.application.use_case"
@@ -38,9 +39,21 @@ class _FakeUserRoleRepo:
         return entity
 
 
+class _FakeRoleSession:
+    def __init__(self, scalar_result=None):
+        self.scalar_result = scalar_result
+
+    async def scalar(self, *_args, **_kwargs):
+        return self.scalar_result
+
+
 class _FakeUnitOfWork:
-    def __init__(self, existing: UserRoleEntity | None = None):
-        self.session = object()
+    def __init__(
+        self,
+        existing: UserRoleEntity | None = None,
+        overlapping_assignment_id=None,
+    ):
+        self.session = _FakeRoleSession(overlapping_assignment_id)
         self.repo = _FakeUserRoleRepo(existing)
 
     async def __aenter__(self):
@@ -91,6 +104,18 @@ class RolePermissionPayrollGuardTests(unittest.TestCase):
 
 
 class UserRoleSelfAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cannot_create_overlapping_role_assignment(self):
+        payload = {
+            "user_id": uuid4(),
+            "role_id": uuid4(),
+            "effective_from": date(2026, 4, 1),
+            "effective_to": date(2026, 12, 31),
+        }
+        with self.assertRaises(UserRoleOverlapError):
+            await CreateUserRoleUseCase(
+                _FakeUnitOfWork(overlapping_assignment_id=uuid4())
+            ).execute(payload)
+
     async def test_admin_cannot_assign_payroll_role_to_self(self):
         actor_id = uuid4()
         payload = {

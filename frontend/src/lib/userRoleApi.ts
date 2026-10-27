@@ -32,6 +32,10 @@ export interface CreateUserRolePayload {
   effective_to: string | null
 }
 
+export type UpdateUserRolePayload = Partial<
+  Pick<UserRoleAssignment, 'effective_from' | 'effective_to'>
+>
+
 function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
     const body = error.response?.data as ApiErrorEnvelope | undefined
@@ -92,7 +96,7 @@ export async function createUserRoleAssignment(
 
 export async function updateUserRoleAssignment(
   assignmentId: string,
-  payload: Partial<Pick<UserRoleAssignment, 'effective_to'>>,
+  payload: UpdateUserRolePayload,
 ): Promise<UserRoleAssignment> {
   try {
     const response = await apiClient.put<ApiSuccessEnvelope<UserRoleAssignment>>('/user-roles/update', {

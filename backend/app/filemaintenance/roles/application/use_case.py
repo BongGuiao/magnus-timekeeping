@@ -2,6 +2,7 @@ from datetime import date
 from typing import Any, NoReturn
 from uuid import UUID
 
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.domain.entities.user import RoleEntity, UserRoleEntity
@@ -22,6 +23,10 @@ class UserRoleReferenceError(ValueError):
 
 
 class RoleConflictError(ValueError):
+    pass
+
+
+class UserRoleOverlapError(ValueError):
     pass
 
 
@@ -159,6 +164,65 @@ def _validate_effective_dates(effective_from: date, effective_to: date | None) -
         raise ValueError("effective_to must be on or after effective_from.")
 
 
+def _date_ranges_overlap(
+    first_from: date,
+    first_to: date | None,
+    second_from: date,
+    second_to: date | None,
+) -> bool:
+    return (
+        (first_to is None or second_from <= first_to)
+        and (second_to is None or first_from <= second_to)
+    )
+
+
+async def _ensure_no_overlapping_user_role(
+    uow: GenUnitOfWork,
+    *,
+    user_id: UUID,
+    role_id: UUID,
+    company_id: UUID | None,
+    org_unit_id: UUID | None,
+    effective_from: date,
+    effective_to: date | None,
+    exclude_assignment_id: UUID | None = None,
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+
+    criteria = [
+        UserRoleModel.user_id == user_id,
+        UserRoleModel.role_id == role_id,
+        (UserRoleModel.effective_to.is_(None))
+        | (UserRoleModel.effective_to >= effective_from),
+    ]
+    if company_id is not None:
+        criteria.append(
+            or_(
+                UserRoleModel.company_id.is_(None),
+                UserRoleModel.company_id == company_id,
+            )
+        )
+    if org_unit_id is not None:
+        criteria.append(
+            or_(
+                UserRoleModel.org_unit_id.is_(None),
+                UserRoleModel.org_unit_id == org_unit_id,
+            )
+        )
+    if effective_to is not None:
+        criteria.append(UserRoleModel.effective_from <= effective_to)
+    if exclude_assignment_id is not None:
+        criteria.append(UserRoleModel.id != exclude_assignment_id)
+    overlapping_assignment_id = await uow.session.scalar(
+        select(UserRoleModel.id).where(*criteria).limit(1)
+    )
+    if overlapping_assignment_id is not None:
+        raise UserRoleOverlapError(
+            "This employee already has an overlapping assignment for the selected role and scope."
+        )
+
+
 SELF_ASSIGN_PAYROLL_ROLE_MESSAGE = (
     "You cannot assign or extend a payroll-capable role for your own account. "
     "Payroll access is restricted to HR personnel."
@@ -198,6 +262,15 @@ class CreateUserRoleUseCase(BaseUseCase[UserRoleEntity]):
                     and await _role_grants_restricted_payroll(uow, payload["role_id"])
                 ):
                     raise PayrollAccessViolationError(SELF_ASSIGN_PAYROLL_ROLE_MESSAGE)
+                await _ensure_no_overlapping_user_role(
+                    uow,
+                    user_id=payload["user_id"],
+                    role_id=payload["role_id"],
+                    company_id=payload.get("company_id"),
+                    org_unit_id=payload.get("org_unit_id"),
+                    effective_from=payload["effective_from"],
+                    effective_to=payload.get("effective_to"),
+                )
                 repo = uow.get_repo(UserRoleEntity, UserRoleModel)
                 return await repo.add(payload)
         except IntegrityError as error:
@@ -299,6 +372,16 @@ class UpdateUserRoleUseCase(BaseUseCase[UserRoleEntity | None]):
                     and await _role_grants_restricted_payroll(uow, merged["role_id"])
                 ):
                     raise PayrollAccessViolationError(SELF_ASSIGN_PAYROLL_ROLE_MESSAGE)
+                await _ensure_no_overlapping_user_role(
+                    uow,
+                    user_id=merged["user_id"],
+                    role_id=merged["role_id"],
+                    company_id=merged.get("company_id"),
+                    org_unit_id=merged.get("org_unit_id"),
+                    effective_from=merged["effective_from"],
+                    effective_to=merged.get("effective_to"),
+                    exclude_assignment_id=user_role_id,
+                )
                 entity = GenericMapper.to_entity(merged, UserRoleEntity)
                 return await repo.update(entity)
         except IntegrityError as error:
