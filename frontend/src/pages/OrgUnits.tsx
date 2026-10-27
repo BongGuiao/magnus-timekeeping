@@ -13,8 +13,14 @@ import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchEmployees } from '../lib/employeeApi'
-import { createOrgUnit, fetchOrgUnit, fetchOrgUnits, updateOrgUnit } from '../lib/orgUnitApi'
-import type { OrgUnitWritePayload } from '../lib/orgUnitApi'
+import {
+  createOrgUnit,
+  fetchOrgUnit,
+  fetchOrgUnits,
+  fetchOrgUnitTypes,
+  updateOrgUnit,
+} from '../lib/orgUnitApi'
+import type { OrgUnitType, OrgUnitWritePayload } from '../lib/orgUnitApi'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
 import type { OrgUnit } from '../types/orgUnit'
@@ -40,6 +46,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
   const [companies, setCompanies] = useState<Company[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([])
+  const [orgUnitTypes, setOrgUnitTypes] = useState<OrgUnitType[]>([])
   const [editingOrgUnit, setEditingOrgUnit] = useState<OrgUnit | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -56,8 +63,9 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
       fetchCompanies(),
       companyId ? fetchOrgUnits(companyId) : Promise.resolve([]),
       fetchEmployees(),
+      companyId ? fetchOrgUnitTypes(companyId) : Promise.resolve([]),
     ])
-      .then(([companiesResult, orgUnitsResult, employeesResult]) => {
+      .then(([companiesResult, orgUnitsResult, employeesResult, orgUnitTypesResult]) => {
         if (!isCurrent) return
 
         const errors: string[] = []
@@ -82,6 +90,13 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
           errors.push(employeesResult.reason instanceof Error
             ? employeesResult.reason.message
             : 'Could not load employees.')
+        }
+        if (orgUnitTypesResult.status === 'fulfilled') {
+          setOrgUnitTypes(orgUnitTypesResult.value)
+        } else {
+          errors.push(orgUnitTypesResult.reason instanceof Error
+            ? orgUnitTypesResult.reason.message
+            : 'Could not load organization unit types.')
         }
         setErrorMessage(errors.join(' '))
       })
@@ -120,7 +135,11 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
 
   const defaultValues: OrgUnitFormValues = editingOrgUnit
     ? toOrgUnitFormValues(editingOrgUnit)
-    : { ...emptyOrgUnit, company_id: companyId }
+    : {
+        ...emptyOrgUnit,
+        company_id: companyId,
+        org_unit_type: orgUnitTypes.find((type) => type.is_default)?.org_unit_type ?? '',
+      }
 
   function companyLabel(companyId: string) {
     const company = companies.find((item) => item.id === companyId)
@@ -288,7 +307,15 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
         {(form) => (
           <>
             {errorMessage && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
-            <OrgUnitForm form={form} companies={companies} employees={employees} orgUnits={orgUnits} selectedCompanyId={companyId} editingId={editingOrgUnit?.id} />
+            <OrgUnitForm
+              form={form}
+              companies={companies}
+              employees={employees}
+              orgUnits={orgUnits}
+              orgUnitTypes={orgUnitTypes}
+              selectedCompanyId={companyId}
+              editingId={editingOrgUnit?.id}
+            />
           </>
         )}
       </FormModal>

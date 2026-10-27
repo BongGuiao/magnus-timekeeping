@@ -7,8 +7,9 @@ from app.attendance.application.attendance_review_ports import AttendanceReviewU
 from app.attendance.application.clock import ph_today, utc_now
 from app.attendance.application.ports import AuditTrail, RecentAttendanceRefresher
 from app.attendance.domain.entities.attendance_review import ReviewableAttendanceRecord
-from app.attendance.domain.exceptions import RecordNotFoundError
+from app.attendance.domain.exceptions import ConflictError, RecordNotFoundError
 from app.core.generics.uc_base import BaseUseCase
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import CutoffDeadlineError
 
 
 @dataclass
@@ -58,6 +59,12 @@ class ApproveInvalidAttendanceUseCase(BaseUseCase[ReviewableAttendanceRecord]):
                 raise RecordNotFoundError(
                     "Invalid attendance was not found for your assigned employees or has already been reviewed."
                 )
+            try:
+                await uow.review.require_attendance_open(
+                    record.employee.id, record.attendance.work_date, now
+                )
+            except CutoffDeadlineError as error:
+                raise ConflictError(str(error)) from error
             record.attendance.approve(data.actor_id, now)
             await uow.review.save_review(record.attendance)
 

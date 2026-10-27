@@ -45,6 +45,7 @@ class EarningRule:
 class PayrollGroupPolicy:
     payroll_group_id: UUID
     rate_type: Literal["MONTHLY", "DAILY", "HOURLY"]
+    pay_frequency: Literal["WEEKLY", "BIWEEKLY", "SEMIMONTHLY", "MONTHLY"]
     standard_minutes_per_day: int
     annual_divisor: Decimal | None
 
@@ -53,10 +54,8 @@ class PayrollGroupPolicy:
 class CutoffEmployeeTime:
     employee_id: UUID
     cutoff_result_id: UUID
-    employee_confirmation_status: str
-    supervisor_status: str
-    hr_status: str
     component_minutes: dict[str, int]
+    required_work_minutes: int = 0
     incomplete_time_source_count: int = 0
 
 
@@ -69,6 +68,8 @@ class CutoffPayrollData:
     is_locked: bool
     payroll_group: PayrollGroupPolicy
     employees: tuple[CutoffEmployeeTime, ...]
+    year_end_wtax_reconciliation_enabled: bool = False
+    cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,8 @@ class PayrollBenefitLine:
     category: str
     tax_treatment: str
     amount: Decimal
+    withholding_timing: str = "PAY_PERIOD"
+    loan_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,41 @@ class GrossPayRun:
     calculated_at: datetime
     calculated_by: UUID
     results: tuple[GrossPayResult, ...]
+
+
+class PayrollApprovalPermissionError(PermissionError):
+    pass
+
+
+@dataclass(frozen=True)
+class PayrollCutoffLockState:
+    cutoff_id: UUID
+    locked: bool
+    locked_at: datetime | None
+    locked_by: UUID | None
+
+
+@dataclass(frozen=True)
+class ThirteenthMonthResult:
+    employee_id: UUID
+    employee_no: str
+    employee_name: str
+    basic_salary_earned: Decimal
+    thirteenth_month_pay: Decimal
+    tax_exempt_amount: Decimal
+    taxable_amount: Decimal
+    source_payroll_periods: int
+
+
+@dataclass(frozen=True)
+class ThirteenthMonthRun:
+    id: UUID
+    tax_year: int
+    covered_period_from: date
+    covered_period_to: date
+    calculated_at: datetime
+    calculated_by: UUID
+    results: tuple[ThirteenthMonthResult, ...]
 
 
 def base_rate_per_minute(policy: PayrollGroupPolicy, base_rate: Decimal) -> Decimal:
@@ -152,22 +190,52 @@ def monthly_compensation_basis(
     policy: PayrollGroupPolicy,
     compensation: Compensation | None,
 ) -> Decimal | None:
+    return compensation_period_basis(policy, compensation, periods_per_year=12)
+
+
+def compensation_period_basis(
+    policy: PayrollGroupPolicy,
+    compensation: Compensation | None,
+    *,
+    periods_per_year: int,
+) -> Decimal | None:
+    if periods_per_year <= 0:
+        raise ValueError("Payroll periods per year must be positive.")
     if compensation is None:
         return None
     if policy.rate_type == "MONTHLY":
-        return compensation.base_rate.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
-    if policy.annual_divisor is None or policy.annual_divisor <= 0:
-        return None
-    if policy.rate_type == "DAILY":
-        annual_rate = compensation.base_rate * policy.annual_divisor
+        annual_rate = compensation.base_rate * Decimal(12)
     else:
-        annual_rate = (
-            compensation.base_rate
-            * Decimal(policy.standard_minutes_per_day)
-            * policy.annual_divisor
-            / Decimal(60)
-        )
-    return (annual_rate / Decimal(12)).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        if policy.annual_divisor is None or policy.annual_divisor <= 0:
+            return None
+        if policy.rate_type == "DAILY":
+            annual_rate = compensation.base_rate * policy.annual_divisor
+        else:
+            annual_rate = (
+                compensation.base_rate
+                * Decimal(policy.standard_minutes_per_day)
+                * policy.annual_divisor
+                / Decimal(60)
+            )
+    return (annual_rate / Decimal(periods_per_year)).quantize(
+        MONEY_QUANTUM, rounding=ROUND_HALF_UP
+    )
+
+
+def _monthly_salary_period_amount(
+    policy: PayrollGroupPolicy,
+    monthly_salary: Decimal,
+) -> Decimal:
+    periods_per_year = {
+        "WEEKLY": Decimal(52),
+        "BIWEEKLY": Decimal(26),
+        "SEMIMONTHLY": Decimal(24),
+        "MONTHLY": Decimal(12),
+    }[policy.pay_frequency]
+    return (monthly_salary * Decimal(12) / periods_per_year).quantize(
+        MONEY_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
 
 
 def calculate_gross_pay(
@@ -262,30 +330,72 @@ def calculate_gross_pay(
             source_minutes=source_minutes,
         )
 
-    lines = tuple(
-        GrossPayLine(
-            component_code=code,
-            minutes=source_minutes[code],
-            multiplier=earning_rules[code].multiplier,
-            amount=(
-                minute_rate
-                * Decimal(source_minutes[code])
-                * earning_rules[code].multiplier
-            ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+    if policy.rate_type == "MONTHLY":
+        covered_minutes = sum(
+            source_minutes[code]
+            for code in (
+                "REGULAR",
+                "PAID_LEAVE",
+                "OFFICIAL_BUSINESS",
+                "SPECIAL_DAY",
+                "HOLIDAY",
+            )
         )
-        for code in PAY_COMPONENT_CODES
-    )
+        unpaid_minutes = max(
+            0,
+            max(time.required_work_minutes, 0)
+            - min(max(time.required_work_minutes, 0), covered_minutes),
+        )
+        unpaid_amount = (
+            minute_rate * Decimal(unpaid_minutes)
+        ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+        monthly_base = _monthly_salary_period_amount(policy, compensation.base_rate)
+        salary_lines = (
+            GrossPayLine(
+                component_code="MONTHLY_BASE",
+                minutes=0,
+                multiplier=Decimal(1),
+                amount=monthly_base,
+            ),
+            GrossPayLine(
+                component_code="UNPAID_TIME_DEDUCTION",
+                minutes=unpaid_minutes,
+                multiplier=Decimal(-1),
+                amount=-unpaid_amount,
+            ),
+        )
+        earning_codes = ("REST_DAY", "SPECIAL_DAY", "HOLIDAY") + PAY_COMPONENT_CODES[6:]
+        earnings = tuple(
+            GrossPayLine(
+                component_code=code,
+                minutes=source_minutes[code],
+                multiplier=earning_rules[code].multiplier,
+                amount=(
+                    minute_rate
+                    * Decimal(source_minutes[code])
+                    * earning_rules[code].multiplier
+                ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+            )
+            for code in earning_codes
+        )
+        lines = salary_lines + earnings
+    else:
+        lines = tuple(
+            GrossPayLine(
+                component_code=code,
+                minutes=source_minutes[code],
+                multiplier=earning_rules[code].multiplier,
+                amount=(
+                    minute_rate
+                    * Decimal(source_minutes[code])
+                    * earning_rules[code].multiplier
+                ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
+            )
+            for code in PAY_COMPONENT_CODES
+        )
     gross_amount = sum((line.amount for line in lines), Decimal(0)).quantize(
         MONEY_QUANTUM,
         rounding=ROUND_HALF_UP,
-    )
-    ready = all(
-        status == "ACKNOWLEDGED"
-        for status in (
-            time.employee_confirmation_status,
-            time.supervisor_status,
-            time.hr_status,
-        )
     )
     return GrossPayResult(
         employee_id=time.employee_id,
@@ -293,8 +403,8 @@ def calculate_gross_pay(
         currency=compensation.currency,
         base_rate=compensation.base_rate,
         gross_amount=gross_amount,
-        status="READY" if ready else "HOLD",
-        hold_reason=None if ready else "Employee, supervisor, and HR acknowledgments are required.",
+        status="READY",
+        hold_reason=None,
         lines=lines,
         source_minutes=source_minutes,
     )

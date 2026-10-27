@@ -13,8 +13,10 @@ import CompensationManagement from './CompensationManagement'
 import EarningRulesManagement from './EarningRulesManagement'
 import GrossPayCalculation from './GrossPayCalculation'
 import BenefitsManagement from './BenefitsManagement'
+import EmployeeLoansManagement from './EmployeeLoansManagement'
 import type { PayrollUseCases } from '../application/useCases'
 import type {
+  EmployeeLoan,
   PayrollCutoffOption,
   PayrollEmployeeOption,
   PayrollGroupOption,
@@ -22,8 +24,10 @@ import type {
 
 interface Props {
   employeeName: string
-  activeView: 'payroll-compensation' | 'payroll-earning-rules' | 'payroll-gross' | 'payroll-benefits' | 'payroll-deductions'
+  activeView: 'payroll-compensation' | 'payroll-earning-rules' | 'payroll-gross' | 'payroll-benefits' | 'payroll-deductions' | 'payroll-loans'
   useCases: PayrollUseCases
+  canApprovePayroll: boolean
+  canUnlockPayroll: boolean
   onNavigate?: (view: NavView) => void
   onLoggedOut?: () => void
 }
@@ -44,13 +48,19 @@ const sections = [
   {
     view: 'payroll-benefits',
     label: 'Benefits',
-    description: 'Configure and enter per-cutoff benefits',
+    description: 'Manage recurring and per-cutoff benefits',
     icon: Gift,
   },
   {
     view: 'payroll-deductions',
     label: 'Deductions',
     description: 'Manage recurring and per-cutoff deductions',
+    icon: Wallet,
+  },
+  {
+    view: 'payroll-loans',
+    label: 'Employee loans',
+    description: 'Balances and repayments',
     icon: Wallet,
   },
   {
@@ -65,6 +75,8 @@ export default function PayrollManagementPage({
   employeeName,
   activeView,
   useCases,
+  canApprovePayroll,
+  canUnlockPayroll,
   onNavigate,
   onLoggedOut,
 }: Props) {
@@ -74,6 +86,7 @@ export default function PayrollManagementPage({
   const [cutoffs, setCutoffs] = useState<PayrollCutoffOption[]>([])
   const [selectedCutoffId, setSelectedCutoffId] = useState('')
   const [employees, setEmployees] = useState<PayrollEmployeeOption[]>([])
+  const [loans, setLoans] = useState<EmployeeLoan[]>([])
   const [loadingGroups, setLoadingGroups] = useState(false)
   const [loadingCutoffs, setLoadingCutoffs] = useState(false)
   const [error, setError] = useState('')
@@ -130,8 +143,24 @@ export default function PayrollManagementPage({
 
   useEffect(() => {
     let current = true
+    setLoans([])
+    if (activeView !== 'payroll-loans' || !selectedGroupId) return () => { current = false }
+    useCases.listEmployeeLoans(selectedGroupId)
+      .then((nextLoans) => {
+        if (current) setLoans(nextLoans)
+      })
+      .catch((cause: unknown) => {
+        if (current) setError(cause instanceof Error ? cause.message : 'Could not load employee loans.')
+      })
+    return () => {
+      current = false
+    }
+  }, [activeView, selectedGroupId, useCases])
+
+  useEffect(() => {
+    let current = true
     setEmployees([])
-    if (activeView !== 'payroll-gross' || !selectedGroupId) return () => { current = false }
+    if (!['payroll-gross', 'payroll-loans'].includes(activeView) || !selectedGroupId) return () => { current = false }
     useCases.listEmployees()
       .then((nextEmployees) => {
         if (current) setEmployees(nextEmployees)
@@ -199,7 +228,7 @@ export default function PayrollManagementPage({
 
         {selectedGroup && (
           <>
-            <nav aria-label="Payroll workspace" className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-5">
+            <nav aria-label="Payroll workspace" className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6">
               {sections.map((section) => {
                 const Icon = section.icon
                 const selected = section.view === activeView
@@ -245,8 +274,15 @@ export default function PayrollManagementPage({
                 cutoffs={cutoffs}
                 selectedCutoffId={selectedCutoffId}
                 onSelectCutoff={setSelectedCutoffId}
+                onCutoffLockChanged={(cutoffId, locked) => {
+                  setCutoffs((current) => current.map((cutoff) => (
+                    cutoff.id === cutoffId ? { ...cutoff, locked } : cutoff
+                  )))
+                }}
                 employees={employees}
                 useCases={useCases}
+                canApprovePayroll={canApprovePayroll}
+                canUnlockPayroll={canUnlockPayroll}
               />
             )}
             {(activeView === 'payroll-benefits' || activeView === 'payroll-deductions') && (
@@ -255,6 +291,16 @@ export default function PayrollManagementPage({
                 payrollGroupId={selectedGroup.id}
                 useCases={useCases}
                 mode={activeView === 'payroll-benefits' ? 'entries' : 'payroll-deductions'}
+              />
+            )}
+            {activeView === 'payroll-loans' && (
+              <EmployeeLoansManagement
+                key={selectedGroup.id}
+                payrollGroupId={selectedGroup.id}
+                employees={employees}
+                loans={loans}
+                useCases={useCases}
+                onLoansChanged={setLoans}
               />
             )}
             {activeView === 'payroll-gross' && loadingCutoffs && (

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.entity_mapping import copy_fields, to_attendance_employee
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import require_attendance_open
 
 
 def _supervised_as_of(statement, supervisor_employee_id: UUID, today: date):
@@ -90,3 +91,6 @@ class SqlAlchemyAttendanceReviewRepository:
         model.approved_by_id = attendance.approved_by_id
         model.approved_at = attendance.approved_at
         await self._session.flush()
+
+    async def require_attendance_open(self, employee_id: UUID, work_date: date, now: datetime) -> None:
+        await require_attendance_open(self._session, employee_id, work_date, work_date, now)

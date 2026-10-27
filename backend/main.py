@@ -35,9 +35,12 @@ from app.filemaintenance.payroll_cutoffs.infrastructure.router import (
 from app.payroll.infrastructure.router import (
     payroll_employee_router,
     payroll_manage_router,
+    payroll_system_parameters_router,
 )
 from app.payroll.infrastructure.statutory_schedule_router import router as statutory_schedules_router
 from app.payroll.infrastructure.benefit_router import router as payroll_benefits_router
+from app.payroll.infrastructure.loan_router import router as payroll_loans_router
+from app.payroll.infrastructure.off_cycle_router import router as payroll_off_cycle_router
 from app.filemaintenance.roles.infrastructure.router import router as user_roles_router
 from app.filemaintenance.roles.infrastructure.role_catalog_router import router as roles_router
 from app.filemaintenance.schedule.infrastructure.router import router as schedule_templates_router
@@ -87,7 +90,12 @@ async def lifespan(app: FastAPI):
         )
         await conn.run_sync(Base.metadata.create_all)
     audit_es_client = (
-        AsyncElasticsearch(settings.ELASTICSEARCH_URL)
+        AsyncElasticsearch(
+            settings.ELASTICSEARCH_URL,
+            request_timeout=3,
+            max_retries=1,
+            retry_on_timeout=False,
+        )
         if settings.ELASTICSEARCH_URL
         else None
     )
@@ -144,9 +152,12 @@ app.include_router(payroll_groups_router)
 app.include_router(payroll_cutoffs_router)
 app.include_router(payroll_cutoff_acknowledgements_router)
 app.include_router(payroll_manage_router)
+app.include_router(payroll_system_parameters_router)
 app.include_router(payroll_employee_router)
 app.include_router(statutory_schedules_router)
 app.include_router(payroll_benefits_router)
+app.include_router(payroll_loans_router)
+app.include_router(payroll_off_cycle_router)
 app.include_router(user_roles_router)
 app.include_router(roles_router)
 app.include_router(schedule_templates_router)

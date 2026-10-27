@@ -80,7 +80,8 @@ class OvertimeAttendanceOptionsSchema(BaseModel):
 
 
 class AttendanceRangeRecalculationInputSchema(BaseModel):
-    employee_id: UUID
+    scope: Literal["own", "team", "employee"]
+    employee_id: UUID | None = None
     from_date: date
     to_date: date
     dry_run: bool = True
@@ -91,6 +92,10 @@ class AttendanceRangeRecalculationInputSchema(BaseModel):
     def validate_date_range(self) -> "AttendanceRangeRecalculationInputSchema":
         if self.from_date > self.to_date:
             raise ValueError("from_date must be on or before to_date.")
+        if self.scope == "employee" and self.employee_id is None:
+            raise ValueError("employee_id is required for employee scope.")
+        if self.scope != "employee" and self.employee_id is not None:
+            raise ValueError("employee_id is only allowed for employee scope.")
         return self
 
 

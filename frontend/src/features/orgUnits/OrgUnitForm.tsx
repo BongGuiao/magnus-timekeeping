@@ -3,12 +3,14 @@ import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
 import type { OrgUnit } from '../../types/orgUnit'
 import type { OrgUnitFormValues } from './orgUnitSchema'
+import type { OrgUnitType } from '../../lib/orgUnitApi'
 
 interface Props {
   form: UseFormReturn<OrgUnitFormValues>
   companies: Company[]
   employees: Employee[]
   orgUnits: OrgUnit[]
+  orgUnitTypes: OrgUnitType[]
   selectedCompanyId?: string
   editingId?: string
 }
@@ -27,10 +29,20 @@ function employeeName(employee: Employee) {
   return `${employee.employee_no} — ${name}${employee.is_active ? '' : ' (Inactive)'}`
 }
 
-export default function OrgUnitForm({ form, companies, employees, orgUnits, selectedCompanyId, editingId }: Props) {
+export default function OrgUnitForm({
+  form,
+  companies,
+  employees,
+  orgUnits,
+  orgUnitTypes,
+  selectedCompanyId,
+  editingId,
+}: Props) {
   const { register, watch, formState: { errors } } = form
   const companyId = watch('company_id')
+  const selectedOrgUnitType = watch('org_unit_type')
   const parentOptions = orgUnits.filter((unit) => unit.company_id === companyId && unit.id !== editingId)
+  const selectedTypeIsAvailable = orgUnitTypes.some((type) => type.org_unit_type === selectedOrgUnitType)
 
   return (
     <div className="space-y-4">
@@ -66,11 +78,15 @@ export default function OrgUnitForm({ form, companies, employees, orgUnits, sele
           <label className={labelClassName}>
             Org unit type
             <select {...register('org_unit_type')} className={inputClassName}>
-              <option value="DIVISION">Division</option>
-              <option value="DEPARTMENT">Department</option>
-              <option value="TEAM">Team</option>
-              <option value="BRANCH">Branch</option>
-              <option value="COST_CENTER">Cost center</option>
+              <option value="">Select an org unit type</option>
+              {!selectedTypeIsAvailable && selectedOrgUnitType && (
+                <option value={selectedOrgUnitType}>{selectedOrgUnitType} (inactive or unavailable)</option>
+              )}
+              {orgUnitTypes.map((type) => (
+                <option key={type.org_unit_type} value={type.org_unit_type}>
+                  {type.display_name}
+                </option>
+              ))}
             </select>
             <FieldError message={errors.org_unit_type?.message} />
           </label>

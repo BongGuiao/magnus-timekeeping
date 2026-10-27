@@ -31,7 +31,9 @@ CREATE TEMP TABLE statutory_contribution_bracket_seed (
     employer_rate numeric(8, 6) NOT NULL,
     employee_fixed_amount numeric(14, 2) NOT NULL,
     employer_fixed_amount numeric(14, 2) NOT NULL,
-    employer_additional_fixed_amount numeric(14, 2) NOT NULL
+    employer_additional_fixed_amount numeric(14, 2) NOT NULL,
+    employee_contribution_cap numeric(14, 2),
+    employer_contribution_cap numeric(14, 2)
 ) ON COMMIT DROP;
 
 CREATE TEMP TABLE withholding_tax_bracket_seed (
@@ -45,12 +47,15 @@ CREATE TEMP TABLE withholding_tax_bracket_seed (
 ) ON COMMIT DROP;
 
 -- Enter official contribution rows here. Example shape only; no rates are
--- provided or implied:
+-- provided or implied. Supply both monthly caps for PAGIBIG; use NULL for
+-- both cap fields for SSS and PHILHEALTH. For PAGIBIG, contribution_base and
+-- fixed amounts are unused by its salary-percentage calculation; set them to
+-- zero:
 -- INSERT INTO statutory_contribution_bracket_seed VALUES
 --   ('<DRAFT-SCHEDULE-UUID>', 1, 0.00, <MAX>, <BASE>, <EE_RATE>, <ER_RATE>,
---    <EE_FIXED>, <ER_FIXED>, <ER_ADDITIONAL>),
+--    <EE_FIXED>, <ER_FIXED>, <ER_ADDITIONAL>, <EE_MONTHLY_CAP>, <ER_MONTHLY_CAP>),
 --   ('<DRAFT-SCHEDULE-UUID>', 2, <NEXT_MIN>, NULL, <BASE>, <EE_RATE>, <ER_RATE>,
---    <EE_FIXED>, <ER_FIXED>, <ER_ADDITIONAL>);
+--    <EE_FIXED>, <ER_FIXED>, <ER_ADDITIONAL>, <EE_MONTHLY_CAP>, <ER_MONTHLY_CAP>);
 --
 -- Enter official withholding-tax rows here. Example shape only; no rates are
 -- provided or implied:
@@ -166,6 +171,8 @@ BEGIN
            OR employee_fixed_amount < 0
            OR employer_fixed_amount < 0
            OR employer_additional_fixed_amount < 0
+           OR (employee_contribution_cap IS NOT NULL AND employee_contribution_cap < 0)
+           OR (employer_contribution_cap IS NOT NULL AND employer_contribution_cap < 0)
     ) OR EXISTS (
         SELECT 1
         FROM pg_temp.withholding_tax_bracket_seed
@@ -178,6 +185,22 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'A seed row contains an invalid range, rate, or amount; no existing brackets were deleted.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_temp.statutory_contribution_bracket_seed AS seed
+        JOIN payroll.statutory_contribution_schedules AS schedule
+          ON schedule.id = seed.schedule_id
+        WHERE (schedule.program_code = 'PAGIBIG'
+               AND (seed.employee_contribution_cap IS NULL
+                    OR seed.employer_contribution_cap IS NULL))
+           OR (schedule.program_code <> 'PAGIBIG'
+               AND (seed.employee_contribution_cap IS NOT NULL
+                    OR seed.employer_contribution_cap IS NOT NULL))
+    ) THEN
+        RAISE EXCEPTION
+            'Pag-IBIG rows require both monthly contribution caps; SSS and PhilHealth rows must omit them. No existing brackets were deleted.';
     END IF;
 
     IF EXISTS (
@@ -272,7 +295,9 @@ INSERT INTO payroll.statutory_contribution_brackets (
     employer_rate,
     employee_fixed_amount,
     employer_fixed_amount,
-    employer_additional_fixed_amount
+    employer_additional_fixed_amount,
+    employee_contribution_cap,
+    employer_contribution_cap
 )
 SELECT
     schedule_id,
@@ -284,7 +309,9 @@ SELECT
     employer_rate,
     employee_fixed_amount,
     employer_fixed_amount,
-    employer_additional_fixed_amount
+    employer_additional_fixed_amount,
+    employee_contribution_cap,
+    employer_contribution_cap
 FROM pg_temp.statutory_contribution_bracket_seed;
 
 INSERT INTO payroll.withholding_tax_brackets (

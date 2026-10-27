@@ -6,6 +6,7 @@ from uuid import uuid4
 from app.payroll.application.benefit_inputs import (
     BenefitTypeInput,
     CutoffBenefitInput,
+    CutoffBenefitUploadRow,
     EmployeeBenefitDeductionInput,
 )
 from app.payroll.application.benefit_use_cases import BenefitUseCases
@@ -46,6 +47,7 @@ class FakeBenefitRepository:
             deduct_for_late=data.deduct_for_late,
             deduct_for_undertime=data.deduct_for_undertime,
             posting_schedule=data.posting_schedule,
+            withholding_timing=data.withholding_timing,
         )
         self.types.append(result)
         return result
@@ -81,6 +83,12 @@ class FakeBenefitRepository:
 
     async def delete_cutoff_benefit(self, entry_id):
         self.entries = [item for item in self.entries if item.id != entry_id]
+
+    async def upload_cutoff_benefits(self, cutoff_id, rows, actor_id):
+        return len(rows), 0
+
+    async def upload_cutoff_deductions(self, cutoff_id, rows, actor_id):
+        return len(rows), 0
 
 
 class BenefitUseCaseTests(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +128,35 @@ class BenefitUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.posting_schedule, "SECOND_HALF")
 
+    async def test_create_taxable_bonus_with_year_end_withholding(self) -> None:
+        result = await self.use_cases.create_benefit_type(
+            BenefitTypeInput(
+                payroll_group_id=self.group_id,
+                code="ANNUAL-BONUS",
+                name="Annual bonus",
+                category="ONE_TIME_BONUS",
+                tax_treatment="TAXABLE",
+                actor_id=self.actor_id,
+                withholding_timing="YEAR_END",
+            )
+        )
+
+        self.assertEqual(result.withholding_timing, "YEAR_END")
+
+    async def test_year_end_withholding_is_limited_to_taxable_one_time_bonuses(self) -> None:
+        with self.assertRaisesRegex(ValueError, "taxable one-time bonuses"):
+            await self.use_cases.create_benefit_type(
+                BenefitTypeInput(
+                    payroll_group_id=self.group_id,
+                    code="PHONE",
+                    name="Phone allowance",
+                    category="CASH_ALLOWANCE",
+                    tax_treatment="TAXABLE",
+                    actor_id=self.actor_id,
+                    withholding_timing="YEAR_END",
+                )
+            )
+
     async def test_employee_deduction_must_be_tax_exempt(self) -> None:
         with self.assertRaisesRegex(ValueError, "must use EXEMPT"):
             await self.use_cases.create_benefit_type(
@@ -144,6 +181,49 @@ class BenefitUseCaseTests(unittest.IsolatedAsyncioTestCase):
                     notes=None,
                     actor_id=self.actor_id,
                 )
+            )
+
+    async def test_bulk_cutoff_benefit_upload_rejects_duplicate_employee_benefit_rows(self) -> None:
+        row = CutoffBenefitUploadRow(
+            employee_no="EMP-001",
+            benefit_code="BONUS",
+            amount=Decimal("1000"),
+            notes=None,
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate employee number and benefit code"):
+            await self.use_cases.upload_cutoff_benefits(
+                uuid4(),
+                (row, row),
+                self.actor_id,
+            )
+
+    async def test_bulk_cutoff_benefit_upload_validates_all_rows_before_repository_call(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Row 2:.*greater than zero"):
+            await self.use_cases.upload_cutoff_benefits(
+                uuid4(),
+                (
+                    CutoffBenefitUploadRow(
+                        employee_no="EMP-001",
+                        benefit_code="BONUS",
+                        amount=Decimal("0"),
+                        notes=None,
+                    ),
+                ),
+                self.actor_id,
+            )
+
+    async def test_bulk_cutoff_deduction_upload_rejects_duplicate_employee_deduction_rows(self) -> None:
+        row = CutoffBenefitUploadRow(
+            employee_no="EMP-001",
+            benefit_code="UNIFORM",
+            amount=Decimal("500"),
+            notes=None,
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate employee number and deduction code"):
+            await self.use_cases.upload_cutoff_deductions(
+                uuid4(),
+                (row, row),
+                self.actor_id,
             )
 
     async def test_cutoff_benefit_uses_benefit_type_tax_snapshot(self) -> None:
@@ -196,22 +276,23 @@ class BenefitUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
 class BenefitScheduleTests(unittest.TestCase):
     def test_benefit_posting_schedule_selects_expected_half_month_cutoff(self) -> None:
-        self.assertTrue(is_benefit_due("FIRST_HALF", 1))
-        self.assertFalse(is_benefit_due("FIRST_HALF", 2))
-        self.assertFalse(is_benefit_due("SECOND_HALF", 1))
-        self.assertTrue(is_benefit_due("SECOND_HALF", 2))
-        self.assertTrue(is_benefit_due("EVERY_CUTOFF", 1))
-        self.assertTrue(is_benefit_due("EVERY_CUTOFF", 2))
-        self.assertFalse(is_benefit_due("EVERY_CUTOFF", 0))
+        self.assertTrue(is_benefit_due("FIRST_HALF", "FIRST_HALF"))
+        self.assertFalse(is_benefit_due("FIRST_HALF", "SECOND_HALF"))
+        self.assertFalse(is_benefit_due("SECOND_HALF", "FIRST_HALF"))
+        self.assertTrue(is_benefit_due("SECOND_HALF", "SECOND_HALF"))
+        self.assertTrue(is_benefit_due("EVERY_CUTOFF", None))
+        self.assertTrue(is_benefit_due("EVERY_CUTOFF", "FIRST_HALF"))
+        with self.assertRaisesRegex(ValueError, "Assign this payroll cutoff"):
+            is_benefit_due("FIRST_HALF", None)
 
     def test_deduction_schedule_selects_expected_half_month_cutoff(self) -> None:
-        self.assertTrue(is_employee_deduction_due("FIRST_HALF", 1))
-        self.assertFalse(is_employee_deduction_due("FIRST_HALF", 2))
-        self.assertFalse(is_employee_deduction_due("SECOND_HALF", 1))
-        self.assertTrue(is_employee_deduction_due("SECOND_HALF", 2))
-        self.assertTrue(is_employee_deduction_due("EVERY_CUTOFF", 1))
-        self.assertTrue(is_employee_deduction_due("EVERY_CUTOFF", 2))
-        self.assertFalse(is_employee_deduction_due("EVERY_CUTOFF", 0))
+        self.assertTrue(is_employee_deduction_due("FIRST_HALF", "FIRST_HALF"))
+        self.assertFalse(is_employee_deduction_due("FIRST_HALF", "SECOND_HALF"))
+        self.assertFalse(is_employee_deduction_due("SECOND_HALF", "FIRST_HALF"))
+        self.assertTrue(is_employee_deduction_due("SECOND_HALF", "SECOND_HALF"))
+        self.assertTrue(is_employee_deduction_due("EVERY_CUTOFF", None))
+        with self.assertRaisesRegex(ValueError, "Assign this payroll cutoff"):
+            is_employee_deduction_due("SECOND_HALF", None)
 
     def test_recurring_deduction_values_require_positive_amount_and_valid_dates(self) -> None:
         with self.assertRaisesRegex(ValueError, "finite amount greater than zero"):
@@ -233,14 +314,25 @@ class BenefitScheduleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite amount greater than zero"):
             validate_employee_benefit_entitlement_values(
                 amount_per_occurrence=Decimal("0"),
+                schedule="FIRST_HALF",
                 effective_from=datetime(2026, 1, 15, tzinfo=timezone.utc).date(),
                 effective_to=None,
             )
         with self.assertRaisesRegex(ValueError, "on or after"):
             validate_employee_benefit_entitlement_values(
                 amount_per_occurrence=Decimal("100"),
+                schedule="SECOND_HALF",
                 effective_from=datetime(2026, 1, 15, tzinfo=timezone.utc).date(),
                 effective_to=datetime(2026, 1, 14, tzinfo=timezone.utc).date(),
+            )
+
+    def test_employee_benefit_entitlement_validates_schedule(self) -> None:
+        with self.assertRaisesRegex(ValueError, "schedule is invalid"):
+            validate_employee_benefit_entitlement_values(
+                amount_per_occurrence=Decimal("100"),
+                schedule="INVALID",
+                effective_from=datetime(2026, 1, 15, tzinfo=timezone.utc).date(),
+                effective_to=None,
             )
 
 

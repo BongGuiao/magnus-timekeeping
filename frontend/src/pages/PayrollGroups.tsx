@@ -248,6 +248,7 @@ export default function PayrollGroups({ employeeName, onNavigate, onLoggedOut }:
             </label>
             <label className="text-sm font-semibold text-slate-700">Annual divisor (optional)
               <input className={inputClass} type="number" min="0.01" max="99999999.99" step="0.01" value={form.annual_divisor ?? ''} onChange={(event) => setField('annual_divisor', event.target.value === '' ? null : Number(event.target.value))} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">Days per year; used to derive the daily equivalent for monthly-rated salary deductions.</span>
             </label>
             <label className="text-sm font-semibold text-slate-700">Rounding minutes
               <input className={inputClass} type="number" min={1} step={1} required value={form.rounding_minutes} onChange={(event) => setField('rounding_minutes', Number(event.target.value))} />

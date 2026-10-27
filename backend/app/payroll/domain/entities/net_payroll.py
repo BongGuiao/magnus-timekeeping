@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from app.payroll.domain.entities.benefits import CutoffBenefit
@@ -25,6 +26,10 @@ class NetPayrollInputs:
     prior_ytd_taxable_income: Decimal
     prior_ytd_withholding_tax: Decimal
     prior_ytd_limited_exempt_benefits: Decimal
+    statutory_contribution_timing: Literal["PER_CUTOFF", "FINAL_CUTOFF"] = "PER_CUTOFF"
+    pay_frequency: Literal["WEEKLY", "BIWEEKLY", "SEMIMONTHLY", "MONTHLY"] = "SEMIMONTHLY"
+    cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
+    is_final_december_cutoff: bool = False
     opening_ytd_balance_missing: bool = False
     scheduled_days: Decimal = Decimal(0)
     paid_days: Decimal = Decimal(0)

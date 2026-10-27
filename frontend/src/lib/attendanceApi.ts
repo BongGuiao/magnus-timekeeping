@@ -48,7 +48,8 @@ export function getAttendanceErrorMessage(error: unknown, fallback: string): str
 }
 
 export interface AttendanceRangeRecalculationRequest {
-  employee_id: string
+  scope: 'own' | 'team' | 'employee'
+  employee_id?: string
   from_date: string
   to_date: string
   dry_run?: boolean
@@ -99,9 +100,9 @@ export interface AttendanceRangeRecalculationResult {
 
 export async function recalculateAttendanceRange(
   payload: AttendanceRangeRecalculationRequest,
-): Promise<AttendanceRangeRecalculationResult> {
+): Promise<AttendanceRangeRecalculationResult[]> {
   try {
-    const response = await apiClient.post<ApiSuccessEnvelope<AttendanceRangeRecalculationResult>>(
+    const response = await apiClient.post<ApiSuccessEnvelope<AttendanceRangeRecalculationResult[]>>(
       '/attendance/recalculate-range',
       { ...payload, dry_run: payload.dry_run ?? true },
     )
@@ -302,6 +303,17 @@ export interface OvertimePayrollCutoff {
   cutoff_code: string
   period_start: string
   period_end: string
+}
+
+export async function fetchCurrentAttendancePayrollCutoff(): Promise<OvertimePayrollCutoff> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<OvertimePayrollCutoff>>(
+      '/attendance/recalculation-default-range',
+    )
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load your current payroll cutoff dates.'))
+  }
 }
 
 export async function fetchOvertimeAttendanceOptions(): Promise<{

@@ -165,6 +165,24 @@ class OfficialBusinessDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(vehicle.exception.status_code, 422)
 
+    async def test_filing_outside_scheduled_shift_is_rejected(self):
+        # The employee's resolved shift on 2026-10-20 is 9:00 AM - 6:00 PM.
+        for start_hour, end_hour in ((7, 10), (17, 19), (6, 8)):
+            with self.subTest(start_hour=start_hour, end_hour=end_hour):
+                with self.assertRaises(HTTPException) as outside:
+                    await self._create(
+                        start_at=datetime(2026, 10, 20, start_hour, 0, tzinfo=MANILA),
+                        end_at=datetime(2026, 10, 20, end_hour, 0, tzinfo=MANILA),
+                    )
+                self.assertEqual(outside.exception.status_code, 422)
+                self.assertIn("scheduled shift", outside.exception.detail)
+
+        inside = await self._create(
+            start_at=datetime(2026, 10, 20, 9, 0, tzinfo=MANILA),
+            end_at=datetime(2026, 10, 20, 18, 0, tzinfo=MANILA),
+        )
+        self.assertEqual(inside.status, "DRAFT")
+
     async def test_draft_update_submit_cancel_transitions(self):
         draft = await self._create()
         claims = self._claims(EMPLOYEE_ID, "EMPLOYEE")

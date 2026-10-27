@@ -11,6 +11,7 @@ from app.auth.domain.entities.user import RoleEntity
 from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.roles.application.payroll_access import PayrollAccessViolationError
 from app.filemaintenance.roles.application.use_case import (
     CreateRoleUseCase,
     DeactivateRoleUseCase,
@@ -205,6 +206,8 @@ async def set_role_permissions(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
     try:
         permission_codes = await use_case.execute(role_id, payload.permission_codes)
+    except PayrollAccessViolationError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except UnknownPermissionCodesError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

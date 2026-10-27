@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Date, bindparam, cast, exists, func, or_, select, text
 
+from app.attendance.application.use_case import resolve_schedule_day
 from app.attendance.infrastructure.db_model import OfficialBusinessRequestModel
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
@@ -23,7 +24,7 @@ from app.filemaintenance.employees.infrastructure.db_model import (
 from app.filemaintenance.geofences.infrastructure.db_model import Geofence
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
     CutoffDeadlineError,
-    require_employee_phase_open,
+    require_attendance_open,
 )
 
 router = APIRouter(prefix="/attendance/official-business", tags=["Official Business"])
@@ -246,6 +247,55 @@ async def _vehicles_table_exists(session) -> bool:
     return bool(await session.scalar(text("SELECT to_regclass('fleet.vehicles') IS NOT NULL")))
 
 
+async def _validate_within_schedule(
+    session,
+    employee_id: UUID,
+    payload: OfficialBusinessInputSchema,
+) -> None:
+    """Official business may only be filed inside the employee's scheduled shift(s)."""
+    windows: list[tuple[datetime, datetime]] = []
+    # Start a day early so an overnight shift from the previous date is included.
+    day = _local_date(payload.start_at) - timedelta(days=1)
+    last_day = _local_date(payload.end_at)
+    while day <= last_day:
+        schedule = await resolve_schedule_day(session, employee_id, day)
+        if (
+            schedule.work_type == "REG"
+            and schedule.expected_clock_in_at is not None
+            and schedule.expected_clock_out_at is not None
+            and schedule.expected_clock_out_at > schedule.expected_clock_in_at
+        ):
+            windows.append((schedule.expected_clock_in_at, schedule.expected_clock_out_at))
+        day += timedelta(days=1)
+
+    covered_until = payload.start_at
+    for window_start, window_end in sorted(windows):
+        if window_start > covered_until:
+            break
+        covered_until = max(covered_until, window_end)
+        if covered_until >= payload.end_at:
+            return
+
+    relevant = [
+        window
+        for window in sorted(windows)
+        if window[0] < payload.end_at + timedelta(hours=12)
+        and window[1] > payload.start_at - timedelta(hours=12)
+    ]
+    if relevant:
+        shifts = ", ".join(
+            f"{start.astimezone(MANILA):%b %d %I:%M %p} - {end.astimezone(MANILA):%b %d %I:%M %p}"
+            for start, end in relevant
+        )
+        detail = (
+            "Official business must be within your scheduled shift. "
+            f"Scheduled shift: {shifts}."
+        )
+    else:
+        detail = "Official business must be within your scheduled shift. No working schedule covers this period."
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+
 async def _validate_request(
     session,
     employee_id: UUID,
@@ -301,6 +351,8 @@ async def _validate_request(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="The selected vehicle is not active for your company.",
             )
+
+    await _validate_within_schedule(session, employee_id, payload)
 
     overlap = select(OfficialBusinessRequestModel.request_no).where(
         OfficialBusinessRequestModel.employee_id == employee_id,
@@ -539,12 +591,11 @@ async def create_official_business_request(
         await _validate_request(session, employee.id, payload)
         if payload.submit:
             try:
-                await require_employee_phase_open(
+                await require_attendance_open(
                     session,
                     employee.id,
                     _local_date(payload.start_at),
                     _local_date(payload.end_at),
-                    "EMPLOYEE",
                 )
             except CutoffDeadlineError as error:
                 raise HTTPException(
@@ -617,12 +668,11 @@ async def submit_official_business_request(
         employee = await _employee_for_user(session, user_id, lock=True)
         request = await _own_request(session, request_id, employee.id, payload.row_version, ("DRAFT",))
         try:
-            await require_employee_phase_open(
+            await require_attendance_open(
                 session,
                 request.employee_id,
                 _local_date(request.start_at),
                 _local_date(request.end_at),
-                "EMPLOYEE",
             )
         except CutoffDeadlineError as error:
             raise HTTPException(
@@ -764,12 +814,11 @@ async def decide_official_business_request(
                 detail="This request was changed by another session. Reload and try again.",
             )
         try:
-            await require_employee_phase_open(
+            await require_attendance_open(
                 session,
                 request.employee_id,
                 _local_date(request.start_at),
                 _local_date(request.end_at),
-                "SUPERVISOR",
             )
         except CutoffDeadlineError as error:
             raise HTTPException(

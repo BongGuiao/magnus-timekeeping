@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from elasticsearch import AsyncElasticsearch
@@ -18,6 +18,9 @@ from app.auth.infrastructure.dependencies import (
 from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    validate_attendance_deadline,
+)
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
     CalculateEmployeeCutoffResultsUseCase,
     CreatePayrollCutoffUseCase,
@@ -47,19 +50,18 @@ router = APIRouter(
 
 acknowledgement_router = APIRouter(
     prefix="/payroll-cutoffs",
-    tags=["Payroll Cutoff Acknowledgments"],
+    tags=["Payroll Cutoff Results"],
 )
 
 
 class CreatePayrollCutoffSchema(BaseModel):
     payroll_group_id: UUID
     cutoff_code: str = Field(min_length=1, max_length=50)
+    cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
     period_start: date
     period_end: date
     pay_date: date
-    employee_review_deadline: datetime | None = None
-    supervisor_deadline: datetime | None = None
-    hr_deadline: datetime | None = None
+    attendance_deadline: datetime | None = None
     status: str = Field(default="SCHEDULED", min_length=1, max_length=30)
     calculation_version: str | None = Field(default=None, max_length=50)
     export_batch_id: UUID | None = None
@@ -71,6 +73,9 @@ class CreatePayrollCutoffSchema(BaseModel):
     def validate_period(self) -> CreatePayrollCutoffSchema:
         if self.period_end < self.period_start:
             raise ValueError("period_end must be on or after period_start.")
+        validate_attendance_deadline(self.period_end, self.attendance_deadline)
+        if self.status.upper() == "LOCKED":
+            raise ValueError("Payroll cutoffs can only be locked through payroll approval.")
         return self
 
 
@@ -78,12 +83,11 @@ class UpdatePayrollCutoffSchema(BaseModel):
     id: UUID
     payroll_group_id: UUID | None = None
     cutoff_code: str | None = Field(default=None, min_length=1, max_length=50)
+    cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
     period_start: date | None = None
     period_end: date | None = None
     pay_date: date | None = None
-    employee_review_deadline: datetime | None = None
-    supervisor_deadline: datetime | None = None
-    hr_deadline: datetime | None = None
+    attendance_deadline: datetime | None = None
     status: str | None = Field(default=None, min_length=1, max_length=30)
     calculation_version: str | None = Field(default=None, max_length=50)
     export_batch_id: UUID | None = None
@@ -95,11 +99,10 @@ class UpdatePayrollCutoffSchema(BaseModel):
     def reject_null_required_fields(self) -> UpdatePayrollCutoffSchema:
         nullable_fields = {
             "id",
-            "employee_review_deadline",
-            "supervisor_deadline",
-            "hr_deadline",
+            "attendance_deadline",
             "calculation_version",
             "export_batch_id",
+            "cutoff_half",
         }
         for field_name in self.model_fields_set - nullable_fields:
             if getattr(self, field_name) is None:
@@ -110,6 +113,8 @@ class UpdatePayrollCutoffSchema(BaseModel):
             and self.period_end < self.period_start
         ):
             raise ValueError("period_end must be on or after period_start.")
+        if self.status is not None and self.status.upper() == "LOCKED":
+            raise ValueError("Payroll cutoffs can only be locked through payroll approval.")
         return self
 
 
@@ -202,6 +207,8 @@ async def update_payroll_cutoff(
         result = await use_case.execute(payload.id, values)
     except (PayrollCutoffConflictError, PayrollCutoffReferenceError) as error:
         _raise_constraint_http_error(error)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payroll cutoff not found.")
     await log_entity_action(
@@ -335,8 +342,17 @@ async def list_my_payroll_cutoff_results(
     use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
         get_calculate_employee_cutoff_results_use_case
     ),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
 ):
     actor_id = _actor_id(claims)
+    authorization = await authorization_use_case.execute(actor_id)
+    if not {
+        "attendance.read_own",
+        "payroll.read_own",
+    }.intersection(authorization.permission_codes):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
     try:
         results = await use_case.list_my_results(actor_id)
     except LookupError as error:
@@ -361,6 +377,7 @@ async def list_my_team_payroll_cutoff_results(
     actor_id = _actor_id(claims)
     authorization = await authorization_use_case.execute(actor_id)
     if not {
+        "attendance.read_team",
         "payroll.acknowledge_team",
         "payroll.manage",
     }.intersection(authorization.permission_codes):
@@ -372,14 +389,12 @@ async def list_my_team_payroll_cutoff_results(
     return ResponseEnvelope(status="success", data=results)
 
 
-@acknowledgement_router.post(
-    "/{cutoff_id}/results/{result_id}/acknowledge",
-    response_model=ResponseEnvelope[EmployeeCutoffResultEntity],
+@acknowledgement_router.get(
+    "/results/organization",
+    response_model=ResponseEnvelope[list[EmployeeCutoffResultEntity]],
     status_code=status.HTTP_200_OK,
 )
-async def acknowledge_payroll_cutoff_result(
-    cutoff_id: UUID,
-    result_id: UUID,
+async def list_organization_payroll_cutoff_results(
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: CalculateEmployeeCutoffResultsUseCase = Depends(
         get_calculate_employee_cutoff_results_use_case
@@ -387,29 +402,13 @@ async def acknowledge_payroll_cutoff_result(
     authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
         get_current_authorization_use_case
     ),
-    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     actor_id = _actor_id(claims)
     authorization = await authorization_use_case.execute(actor_id)
-    try:
-        result = await use_case.acknowledge(
-            cutoff_id,
-            result_id,
-            actor_id,
-            can_manage_payroll="payroll.manage" in authorization.permission_codes,
-        )
-    except LookupError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
-    except PermissionError as error:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    await log_entity_action(
-        es_client,
-        user_id=actor_id,
-        action="ACKNOWLEDGE",
-        resource="employee_cutoff_results",
-        resource_id=result_id,
-        after=result,
-    )
-    return ResponseEnvelope(status="success", data=result)
+    if not {
+        "attendance.read_org",
+        "payroll.manage",
+    }.intersection(authorization.permission_codes):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+    results = await use_case.list_organization_results()
+    return ResponseEnvelope(status="success", data=results)

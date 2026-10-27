@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from app.filemaintenance.employees.application.related_use_case import (
+    CreateEmploymentAssignmentsBatchUseCase,
     _ensure_single_active_assignment,
     _validate_assignment,
 )
@@ -32,6 +33,35 @@ class _FakeUnitOfWork:
 
 
 class EmploymentAssignmentPayrollGroupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_assignment_batch_rejects_duplicate_employee_company_rows(self):
+        employee_id = uuid4()
+        company_id = uuid4()
+
+        class UnopenedUnitOfWork:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, _exc_type, _exc_value, _traceback):
+                return None
+
+        rows = [
+            {
+                "row_number": row_number,
+                "assignment": {
+                    "employee_id": str(employee_id),
+                    "company_id": str(company_id),
+                    "employment_type": "REGULAR",
+                    "employee_category": "RANK_AND_FILE",
+                    "hire_date": "2026-01-01",
+                    "effective_from": "2026-01-01",
+                },
+            }
+            for row_number in (2, 3)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "CSV row 3:.*duplicated in this file"):
+            await CreateEmploymentAssignmentsBatchUseCase(UnopenedUnitOfWork()).execute(rows)
+
     async def test_assignment_rejects_a_second_active_assignment(self):
         session = SimpleNamespace(scalar=AsyncMock(return_value=uuid4()))
         uow = SimpleNamespace(session=session)

@@ -14,8 +14,10 @@ BenefitCategory = Literal[
     "EMPLOYEE_DEDUCTION",
 ]
 BenefitTaxTreatment = Literal["TAXABLE", "EXEMPT", "EXEMPT_LIMITED"]
+BenefitWithholdingTiming = Literal["PAY_PERIOD", "YEAR_END"]
 BenefitDeductionSchedule = Literal["FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"]
 BenefitPostingSchedule = Literal["FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"]
+CutoffHalf = Literal["FIRST_HALF", "SECOND_HALF"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class BenefitType:
     deduct_for_late: bool = False
     deduct_for_undertime: bool = False
     posting_schedule: BenefitPostingSchedule = "EVERY_CUTOFF"
+    withholding_timing: BenefitWithholdingTiming = "PAY_PERIOD"
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class CutoffBenefit:
     attendance_based: bool = False
     deduct_for_late: bool = False
     deduct_for_undertime: bool = False
+    withholding_timing: BenefitWithholdingTiming = "PAY_PERIOD"
+    loan_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ class EmployeeBenefitEntitlement:
     benefit_code: str
     benefit_name: str
     amount_per_occurrence: Decimal
+    schedule: BenefitPostingSchedule
     effective_from: date
     effective_to: date | None
     is_active: bool
@@ -92,6 +98,7 @@ def validate_benefit_type_values(
     deduct_for_late: bool = False,
     deduct_for_undertime: bool = False,
     posting_schedule: BenefitPostingSchedule = "EVERY_CUTOFF",
+    withholding_timing: BenefitWithholdingTiming = "PAY_PERIOD",
 ) -> None:
     if not code.strip() or len(code.strip()) > 30:
         raise ValueError("Benefit code must contain 1 to 30 characters.")
@@ -99,6 +106,14 @@ def validate_benefit_type_values(
         raise ValueError("Benefit name must contain 1 to 120 characters.")
     if posting_schedule not in {"FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"}:
         raise ValueError("Benefit posting schedule is invalid.")
+    if withholding_timing not in {"PAY_PERIOD", "YEAR_END"}:
+        raise ValueError("Benefit withholding timing is invalid.")
+    if withholding_timing == "YEAR_END" and (
+        category != "ONE_TIME_BONUS" or tax_treatment != "TAXABLE"
+    ):
+        raise ValueError(
+            "Year-end withholding is available only for taxable one-time bonuses."
+        )
     if category == "EMPLOYEE_DEDUCTION" and tax_treatment != "EXEMPT":
         raise ValueError("Employee benefit deductions must use EXEMPT tax treatment.")
     if category == "EMPLOYEE_DEDUCTION" and attendance_based:
@@ -130,40 +145,49 @@ def validate_employee_benefit_deduction_values(
 def validate_employee_benefit_entitlement_values(
     *,
     amount_per_occurrence: Decimal,
+    schedule: BenefitPostingSchedule,
     effective_from: date,
     effective_to: date | None,
 ) -> None:
     if not amount_per_occurrence.is_finite() or amount_per_occurrence <= Decimal(0):
         raise ValueError("Benefit amount per occurrence must be a finite amount greater than zero.")
+    if schedule not in {"FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"}:
+        raise ValueError("Employee benefit schedule is invalid.")
     if effective_to is not None and effective_to < effective_from:
         raise ValueError("Benefit end date must be on or after its start date.")
 
 
 def is_benefit_due(
     schedule: BenefitPostingSchedule,
-    cutoff_number_in_month: int,
+    cutoff_half: CutoffHalf | None,
 ) -> bool:
-    if cutoff_number_in_month < 1:
-        return False
     if schedule == "EVERY_CUTOFF":
         return True
+    if cutoff_half is None:
+        raise ValueError(
+            "Assign this payroll cutoff as First or Second before calculating "
+            "scheduled benefits."
+        )
     if schedule == "FIRST_HALF":
-        return cutoff_number_in_month == 1
+        return cutoff_half == "FIRST_HALF"
     if schedule == "SECOND_HALF":
-        return cutoff_number_in_month == 2
+        return cutoff_half == "SECOND_HALF"
     raise ValueError("Benefit posting schedule is invalid.")
 
 
 def is_employee_deduction_due(
     schedule: BenefitDeductionSchedule,
-    cutoff_number_in_month: int,
+    cutoff_half: CutoffHalf | None,
 ) -> bool:
-    if cutoff_number_in_month < 1:
-        return False
     if schedule == "EVERY_CUTOFF":
         return True
+    if cutoff_half is None:
+        raise ValueError(
+            "Assign this payroll cutoff as First or Second before calculating "
+            "scheduled employee deductions."
+        )
     if schedule == "FIRST_HALF":
-        return cutoff_number_in_month == 1
+        return cutoff_half == "FIRST_HALF"
     if schedule == "SECOND_HALF":
-        return cutoff_number_in_month == 2
+        return cutoff_half == "SECOND_HALF"
     raise ValueError("Employee deduction schedule is invalid.")

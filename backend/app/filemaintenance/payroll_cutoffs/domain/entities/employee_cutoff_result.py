@@ -4,6 +4,14 @@ from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from app.attendance.domain.worked_minutes import (
+    ShiftCoverage,
+    allocate_official_business_minutes,
+    requires_scheduled_work,
+    scheduled_work_minutes,
+    shift_coverage,
+)
+
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
 SPECIAL_DAY_TYPES = {"SNW", "SWH", "LOC", "COM"}
 HOLIDAY_DAY_TYPES = {"RH", "DBL"}
@@ -23,6 +31,21 @@ class AttendanceFact:
     day_type: str
     late_minutes: int
     undertime_minutes: int
+    expected_clock_in_at: datetime | None = None
+    expected_clock_out_at: datetime | None = None
+    clock_in_at: datetime | None = None
+    clock_out_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ScheduledDayFact:
+    """A scheduled workday that has no attendance record (e.g. a full-day official business)."""
+
+    employee_id: UUID
+    work_date: date
+    expected_clock_in_at: datetime
+    expected_clock_out_at: datetime
+    scheduled_minutes: int
 
 
 @dataclass(frozen=True)
@@ -40,6 +63,7 @@ class LeaveFact:
     paid_minutes: int
     unpaid_minutes: int
     days: tuple[LeaveDayFact, ...]
+    carry_forward: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,7 +170,7 @@ def _hours_to_minutes(hours: float | None) -> int:
     return int((Decimal(str(hours)) * 60).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _overlap_minutes(
+def overlap_minutes(
     minutes: int,
     start_at: datetime,
     end_at: datetime,
@@ -205,6 +229,7 @@ def calculate_employee_cutoff_totals(
     exceptions: list[ExceptionFact],
     period_start: date,
     period_end: date,
+    scheduled_days: list[ScheduledDayFact] | None = None,
 ) -> list[EmployeeCutoffTotals]:
     """Aggregate source facts into the payroll.employee_cutoff_results time fields."""
     cutoff_start = datetime.combine(period_start, time.min, tzinfo=PH_TIMEZONE)
@@ -214,39 +239,103 @@ def calculate_employee_cutoff_totals(
         tzinfo=PH_TIMEZONE,
     )
     totals = {employee_id: EmployeeCutoffTotals(employee_id=employee_id) for employee_id in employee_ids}
+    shifts_by_employee: dict[UUID, list[ShiftCoverage]] = {}
     for record in attendance:
         current = totals.get(record.employee_id)
         if current is None:
             continue
-        current.scheduled_dates.add(record.work_date)
-        current.scheduled_minutes_by_date[record.work_date] = max(
-            current.scheduled_minutes_by_date.get(record.work_date, 0),
-            max(record.scheduled_minutes, 0),
-        )
+        requires_work = requires_scheduled_work(record.work_type, record.day_type)
+        worked_minutes = 0
+        if requires_work:
+            current.scheduled_dates.add(record.work_date)
+            current.scheduled_minutes_by_date[record.work_date] = max(
+                current.scheduled_minutes_by_date.get(record.work_date, 0),
+                max(record.scheduled_minutes, 0),
+            )
         if record.is_absent:
-            current.absence_minutes += max(record.scheduled_minutes, 0)
+            if requires_work:
+                current.absence_minutes += max(record.scheduled_minutes, 0)
         else:
             current.present_dates.add(record.work_date)
             if record.approved_hours_worked is None:
                 current.incomplete_time_source_count += 1
-            worked_minutes = max(_hours_to_minutes(record.approved_hours_worked), 0)
+            if record.approved_hours_worked is None:
+                worked_minutes = 0
+            elif requires_work:
+                worked_minutes = scheduled_work_minutes(
+                    record.scheduled_minutes,
+                    record.late_minutes,
+                    record.undertime_minutes,
+                    record.work_type,
+                    record.day_type,
+                ) or 0
+            else:
+                worked_minutes = max(_hours_to_minutes(record.approved_hours_worked), 0)
             _add_classified_minutes(current, worked_minutes, record.work_type, record.day_type)
-            current.night_regular_minutes += max(_hours_to_minutes(record.approved_night_diff), 0)
+            night_minutes = max(_hours_to_minutes(record.approved_night_diff), 0)
+            current.night_regular_minutes += (
+                min(night_minutes, worked_minutes) if requires_work else night_minutes
+            )
         current.late_minutes += max(record.late_minutes, 0)
         current.undertime_minutes += max(record.undertime_minutes, 0)
+        coverage = shift_coverage(
+            work_date=record.work_date,
+            expected_clock_in_at=record.expected_clock_in_at,
+            expected_clock_out_at=record.expected_clock_out_at,
+            required_minutes=record.scheduled_minutes,
+            credited_work_minutes=worked_minutes,
+            work_type=record.work_type,
+            day_type=record.day_type,
+            clock_in_at=None if record.is_absent else record.clock_in_at,
+            clock_out_at=None if record.is_absent else record.clock_out_at,
+        )
+        if coverage is not None:
+            shifts_by_employee.setdefault(record.employee_id, []).append(coverage)
+
+    unrecorded_minutes: dict[tuple[UUID, date], int] = {}
+    for day in scheduled_days or []:
+        if day.employee_id not in totals or not period_start <= day.work_date <= period_end:
+            continue
+        coverage = shift_coverage(
+            work_date=day.work_date,
+            expected_clock_in_at=day.expected_clock_in_at,
+            expected_clock_out_at=day.expected_clock_out_at,
+            required_minutes=day.scheduled_minutes,
+            credited_work_minutes=0,
+        )
+        if coverage is not None:
+            shifts_by_employee.setdefault(day.employee_id, []).append(coverage)
+            unrecorded_minutes[(day.employee_id, day.work_date)] = max(day.scheduled_minutes, 0)
 
     for leave in leaves:
         current = totals.get(leave.employee_id)
         if current is None:
             continue
         if leave.days:
-            included_days = [day for day in leave.days if period_start <= day.leave_date <= period_end]
+            included_days = [
+                day
+                for day in leave.days
+                if leave.carry_forward or period_start <= day.leave_date <= period_end
+            ]
             paid = sum(day.paid_minutes for day in included_days)
             unpaid = sum(day.unpaid_minutes for day in included_days)
             current.paid_leave_dates.update(day.leave_date for day in included_days if day.paid_minutes > 0)
+        elif leave.carry_forward:
+            paid = leave.paid_minutes
+            unpaid = leave.unpaid_minutes
+            local_start = leave.start_at.astimezone(PH_TIMEZONE).date()
+            local_end = leave.end_at.astimezone(PH_TIMEZONE).date()
+            current.paid_leave_dates.update(
+                day
+                for day in (
+                    local_start + timedelta(days=index)
+                    for index in range((local_end - local_start).days + 1)
+                )
+                if paid > 0
+            )
         else:
-            paid = _overlap_minutes(leave.paid_minutes, leave.start_at, leave.end_at, cutoff_start, cutoff_end)
-            unpaid = _overlap_minutes(leave.unpaid_minutes, leave.start_at, leave.end_at, cutoff_start, cutoff_end)
+            paid = overlap_minutes(leave.paid_minutes, leave.start_at, leave.end_at, cutoff_start, cutoff_end)
+            unpaid = overlap_minutes(leave.unpaid_minutes, leave.start_at, leave.end_at, cutoff_start, cutoff_end)
             local_start = leave.start_at.astimezone(PH_TIMEZONE).date()
             local_end = leave.end_at.astimezone(PH_TIMEZONE).date()
             current.paid_leave_dates.update(
@@ -273,20 +362,25 @@ def calculate_employee_cutoff_totals(
                 overtime=True,
             )
 
-    for request in official_business:
+    used_by_employee: dict[UUID, dict[date, int]] = {}
+    for request in sorted(official_business, key=lambda item: item.start_at):
         current = totals.get(request.employee_id)
         if current is None:
             continue
-        current.official_business_minutes += max(
-            _overlap_minutes(
-                request.approved_minutes,
-                request.start_at,
-                request.end_at,
-                cutoff_start,
-                cutoff_end,
-            ),
-            0,
+        allocation = allocate_official_business_minutes(
+            request.start_at,
+            request.end_at,
+            request.approved_minutes,
+            shifts_by_employee.get(request.employee_id, []),
+            used_by_employee.setdefault(request.employee_id, {}),
         )
+        current.official_business_minutes += sum(allocation.values())
+        for work_date in allocation:
+            scheduled_minutes = unrecorded_minutes.get((request.employee_id, work_date))
+            if scheduled_minutes is not None:
+                # A scheduled day without punches still requires its schedule.
+                current.scheduled_dates.add(work_date)
+                current.scheduled_minutes_by_date[work_date] = scheduled_minutes
 
     for exception in exceptions:
         current = totals.get(exception.employee_id)

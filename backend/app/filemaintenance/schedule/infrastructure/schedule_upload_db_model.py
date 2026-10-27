@@ -40,10 +40,6 @@ class ScheduleUploadBatchModel(Base):
             "(status = 'PENDING_APPROVAL') = (reviewed_by IS NULL AND reviewed_at IS NULL)",
             name="ck_schedule_upload_batches_review",
         ),
-        CheckConstraint(
-            "status <> 'APPROVED' OR reviewed_by <> uploaded_by",
-            name="ck_schedule_upload_batches_no_self_approval",
-        ),
         Index("ix_schedule_upload_batches_status_submitted", "status", text("submitted_at DESC")),
         Index("ix_schedule_upload_batches_uploaded_by_submitted", "uploaded_by", text("submitted_at DESC")),
         {"schema": "schedule"},

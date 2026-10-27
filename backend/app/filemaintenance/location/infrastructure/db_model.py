@@ -16,6 +16,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import DateTime, Integer, Boolean
 from geoalchemy2 import Geography
 from app.core.database import Base
+# Registers the "CompanyModel" relationship target when this model is imported on its own.
+from app.filemaintenance.companies.infrastructure.db_model import CompanyModel  # noqa: F401
 
 class Location(Base):
     __tablename__ = "locations"

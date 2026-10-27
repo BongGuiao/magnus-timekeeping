@@ -228,6 +228,16 @@ class ScheduleUploadBatch:
             review_remarks=remarks,
         )
 
+    def approve_on_submission(self, at: datetime) -> "ScheduleUploadBatch":
+        self._ensure_pending()
+        return replace(
+            self,
+            status=ScheduleUploadBatchStatus.APPROVED,
+            reviewed_by=self.uploaded_by,
+            reviewed_at=at,
+            review_remarks="Automatically approved when submitted by the supervisor.",
+        )
+
     def reject(self, reviewer_id: UUID, at: datetime, remarks: str) -> "ScheduleUploadBatch":
         self._ensure_pending()
         self._ensure_independent_reviewer(reviewer_id)

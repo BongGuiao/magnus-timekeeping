@@ -17,6 +17,7 @@ import { fetchGeofences } from '../../lib/geofenceApi'
 import { fetchLocations } from '../../lib/locationApi'
 import { fetchPayrollGroups } from '../../lib/payrollGroupApi'
 import type { PayrollGroup } from '../../lib/payrollGroupApi'
+import { hasPermission } from '../../types/role'
 import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
 import type { Geofence } from '../../types/geofence'
@@ -41,6 +42,91 @@ function nullable(value: string) {
 
 function employeeLabel(employee: Employee) {
   return `${employee.employee_no} — ${employee.first_name} ${employee.last_name}`
+}
+
+function SupervisorEmployeeSelect({
+  employees,
+  value,
+  onChange,
+}: {
+  employees: Employee[]
+  value: string
+  onChange: (employeeId: string) => void
+}) {
+  const [search, setSearch] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+  const selectedEmployee = employees.find((item) => item.id === value)
+  const query = search.trim().toLocaleLowerCase()
+  const matches = employees
+    .filter((item) => !query || employeeLabel(item).toLocaleLowerCase().includes(query))
+    .slice(0, 50)
+
+  return (
+    <div className="relative">
+      <input
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={isOpen}
+        aria-controls="employment-assignment-supervisor-options"
+        aria-label="Search supervisor by employee number or name"
+        value={search || (selectedEmployee ? employeeLabel(selectedEmployee) : '')}
+        onFocus={() => setIsOpen(true)}
+        onBlur={() => setIsOpen(false)}
+        onChange={(event) => {
+          setSearch(event.target.value)
+          onChange('')
+          setIsOpen(true)
+        }}
+        autoComplete="off"
+        placeholder="Search supervisor by number or name"
+        className={inputClassName}
+      />
+      {isOpen && (
+        <div
+          id="employment-assignment-supervisor-options"
+          role="listbox"
+          aria-label="Matching supervisors"
+          className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          <button
+            type="button"
+            role="option"
+            aria-selected={!value}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onChange('')
+              setSearch('')
+              setIsOpen(false)
+            }}
+            className="block w-full px-3 py-2 text-left text-xs text-slate-600 hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
+          >
+            None
+          </button>
+          {matches.length ? matches.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="option"
+              aria-selected={item.id === value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(item.id)
+                setSearch('')
+                setIsOpen(false)
+              }}
+              className="block w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
+            >
+              {employeeLabel(item)}
+            </button>
+          )) : query ? (
+            <p className="px-3 py-2 text-xs text-slate-500">No employees match that search.</p>
+          ) : (
+            <p className="px-3 py-2 text-xs text-slate-500">No other employees available.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function errorText(error: unknown, fallback: string) {
@@ -217,10 +303,11 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   const [isLoadingGeofences, setIsLoadingGeofences] = useState(true)
   const [geofencesError, setGeofencesError] = useState('')
   const [payrollGroups, setPayrollGroups] = useState<PayrollGroup[]>([])
+  const canManagePayroll = hasPermission('payroll.manage')
   const [payrollGroupsLoad, setPayrollGroupsLoad] = useState<{
     loaded: boolean
     error: string
-  }>({ loaded: false, error: '' })
+  }>({ loaded: !canManagePayroll, error: '' })
 
   useEffect(() => {
     let isCurrent = true
@@ -250,6 +337,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   }, [])
 
   useEffect(() => {
+    if (!canManagePayroll) return
     let isCurrent = true
     fetchPayrollGroups()
       .then((groups) => {
@@ -265,7 +353,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
         })
       })
     return () => { isCurrent = false }
-  }, [])
+  }, [canManagePayroll])
 
   useEffect(() => {
     if (autoLoaded.current || related.isLoading || related.records.length === 0) return
@@ -349,7 +437,9 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
       employment_type: values.employment_type,
       employee_category: values.employee_category,
       operational_group: values.operational_group || null,
-      payroll_group_id: nullable(values.payroll_group_id),
+      payroll_group_id: canManagePayroll
+        ? nullable(values.payroll_group_id)
+        : related.records.find((record) => record.id === editingId)?.payroll_group_id ?? null,
       primary_location_id: nullable(values.primary_location_id),
       location_ids: selectedLocationIds,
       authorized_geofence_ids: selectedGeofenceIds,
@@ -392,7 +482,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
             <tr>
               <th className="px-3 py-2">Company / Org unit / Assigned locations</th>
-              <th className="px-3 py-2">Payroll group</th>
+              {canManagePayroll && <th className="px-3 py-2">Payroll group</th>}
               <th className="px-3 py-2">Type / Category</th>
               <th className="px-3 py-2">Effective</th>
               <th className="px-3 py-2">Status</th>
@@ -400,12 +490,12 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {related.isLoading && <tr><td colSpan={6} className="px-3 py-3 text-slate-500">Loading assignments…</td></tr>}
-            {!related.isLoading && related.records.length === 0 && <tr><td colSpan={6} className="px-3 py-3 text-slate-500">No employment assignments yet.</td></tr>}
+            {related.isLoading && <tr><td colSpan={canManagePayroll ? 6 : 5} className="px-3 py-3 text-slate-500">Loading assignments…</td></tr>}
+            {!related.isLoading && related.records.length === 0 && <tr><td colSpan={canManagePayroll ? 6 : 5} className="px-3 py-3 text-slate-500">No employment assignments yet.</td></tr>}
             {related.records.map((assignment) => (
               <tr key={assignment.id} className={editingId === assignment.id ? 'bg-indigo-50' : ''}>
                 <td className="px-3 py-2"><p className="font-semibold text-slate-900">{companyName(assignment.company_id)}</p><p className="text-slate-500">{orgUnitName(assignment.org_unit_id)} · {assignedLocationNames(assignment.location_ids ?? [], assignment.primary_location_id)}</p></td>
-                <td className="px-3 py-2">{payrollGroups.find((group) => group.id === assignment.payroll_group_id)?.payroll_group_name ?? (assignment.payroll_group_id ? 'Group unavailable' : '—')}</td>
+                {canManagePayroll && <td className="px-3 py-2">{payrollGroups.find((group) => group.id === assignment.payroll_group_id)?.payroll_group_name ?? (assignment.payroll_group_id ? 'Group unavailable' : '—')}</td>}
                 <td className="px-3 py-2"><p>{assignment.employment_type}</p><p className="text-slate-500">{assignment.employee_category}{assignment.operational_group ? ` · ${assignment.operational_group}` : ''}</p></td>
                 <td className="px-3 py-2">{assignment.effective_from} → {assignment.effective_to ?? 'present'}</td>
                 <td className="px-3 py-2"><StatusBadge status={assignment.status} isActive={assignment.is_active} /></td>
@@ -444,10 +534,14 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
             </select>
           </label>
           <label className={labelClassName}>Supervisor
-            <select {...register('supervisor_employee_id')} className={inputClassName}>
-              <option value="">None</option>
-              {employees.filter((item) => item.id !== employeeId).map((item) => <option key={item.id} value={item.id}>{employeeLabel(item)}</option>)}
-            </select>
+            <SupervisorEmployeeSelect
+              employees={employees.filter((item) => item.id !== employeeId)}
+              value={watch('supervisor_employee_id')}
+              onChange={(supervisorId) => setValue('supervisor_employee_id', supervisorId, {
+                shouldDirty: true,
+                shouldValidate: true,
+              })}
+            />
           </label>
           <label className={labelClassName}>Employment type<input {...register('employment_type')} placeholder="e.g. REGULAR" className={inputClassName} /><FieldError message={errors.employment_type?.message} /></label>
           <label className={labelClassName}>Employee category<input {...register('employee_category')} placeholder="e.g. RANK_AND_FILE" className={inputClassName} /><FieldError message={errors.employee_category?.message} /></label>
@@ -462,7 +556,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           <label className={labelClassName}>Effective to<input type="date" {...register('effective_to')} className={inputClassName} /><FieldError message={errors.effective_to?.message} /></label>
           <label className={labelClassName}>Separation date<input type="date" {...register('separation_date')} className={inputClassName} /><FieldError message={errors.separation_date?.message} /></label>
           <label className={labelClassName}>Position ID<input {...register('position_id')} placeholder="UUID (optional)" className={inputClassName} /><FieldError message={errors.position_id?.message} /></label>
-          <label className={labelClassName}>Payroll group
+          {canManagePayroll && <label className={labelClassName}>Payroll group
             <select {...register('payroll_group_id')} disabled={!selectedCompanyId || isLoadingPayrollGroups} className={inputClassName}>
               <option value="">{isLoadingPayrollGroups ? 'Loading payroll groups…' : 'None'}</option>
               {selectedPayrollGroupId && !selectedPayrollGroup && (
@@ -479,7 +573,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
             </select>
             <FieldError message={errors.payroll_group_id?.message} />
             {payrollGroupsLoad.error && <span className="mt-1 block text-xs font-medium text-rose-600">{payrollGroupsLoad.error}</span>}
-          </label>
+          </label>}
           <label className={labelClassName}>Status<input {...register('status')} className={inputClassName} /><FieldError message={errors.status?.message} /></label>
           <label className="flex items-center gap-3 self-end rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700"><input type="checkbox" {...register('is_active')} className="h-4 w-4 accent-indigo-600" />Enabled for use</label>
           </div>

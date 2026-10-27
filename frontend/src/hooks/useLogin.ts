@@ -36,6 +36,7 @@ export function useLogin(options: UseLoginOptions = {}) {
       localStorage.removeItem('role')
       localStorage.removeItem('role_codes')
       localStorage.removeItem('permission_codes')
+      localStorage.removeItem('employee_code')
       setError(err instanceof Error ? err.message : 'Login failed. Please try again.')
     } finally {
       setIsSubmitting(false)

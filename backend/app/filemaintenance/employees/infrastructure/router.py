@@ -10,7 +10,12 @@ from sqlalchemy import or_, select
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case,
+    get_current_user_claims,
+    require_permission,
+)
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
@@ -56,6 +61,24 @@ def _get_user_id(claims: dict[str, Any]) -> UUID:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User id claim missing or invalid in authentication token.",
         ) from error
+
+
+def resolve_employee_read_scope(
+    claims: dict[str, Any],
+    permission_codes: list[str] | set[str],
+) -> UUID | None:
+    """Return None for organisation-wide access, or the supervisor's employee id for team scope."""
+    if "employees.read" in permission_codes:
+        return None
+    if "employees.read_team" in permission_codes:
+        try:
+            return UUID(str(claims["employee_id"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not linked to an employee record.",
+            ) from error
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
 
 
 class EmployeeWfhInput(BaseModel):
@@ -257,11 +280,16 @@ async def update_employee(
     status_code=status.HTTP_200_OK,
 )
 async def list_employees(
-    claims: dict[str, Any] = Depends(require_permission("employees.read")),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
     use_case: ListEmployeesUseCase = Depends(get_list_employees_use_case),
 ):
-    _require_email(claims)
-    result = await use_case.execute()
+    user_id = _get_user_id(claims)
+    authorization = await authorization_use_case.execute(user_id)
+    supervisor_employee_id = resolve_employee_read_scope(claims, authorization.permission_codes)
+    result = await use_case.execute(supervisor_employee_id)
     return ResponseEnvelope(status="success", data=result)
 
 
@@ -272,9 +300,14 @@ async def list_employees(
 )
 async def get_employee(
     employee_id: UUID,
-    claims: dict[str, Any] = Depends(require_permission("employees.read")),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
     use_case: GetEmployeeUseCase = Depends(get_employee_use_case),
 ):
-    _require_email(claims)
-    result = await use_case.execute(employee_id)
+    user_id = _get_user_id(claims)
+    authorization = await authorization_use_case.execute(user_id)
+    supervisor_employee_id = resolve_employee_read_scope(claims, authorization.permission_codes)
+    result = await use_case.execute(employee_id, supervisor_employee_id)
     return ResponseEnvelope(status="success", data=result)

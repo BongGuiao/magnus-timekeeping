@@ -89,6 +89,20 @@ export async function createEmploymentAssignment(payload: EmploymentAssignmentWr
   }
 }
 
+export async function createEmploymentAssignmentsBatch(
+  payload: Array<{ row_number: number; assignment: EmploymentAssignmentWritePayload }>,
+): Promise<EmploymentAssignment[]> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<EmploymentAssignment[]>>(
+      '/employment-assignments/batch-create',
+      payload,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not import employment assignments.')
+  }
+}
+
 export async function updateEmploymentAssignment(
   assignmentId: string,
   payload: EmploymentAssignmentWritePayload,

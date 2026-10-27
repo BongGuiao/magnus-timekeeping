@@ -23,12 +23,18 @@ import OvertimeApplication from './pages/OvertimeApplication'
 import OfficialBusiness from './pages/OfficialBusiness'
 import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
+import AttendanceDetailReport from './pages/AttendanceDetailReport'
 import PayrollResultsReview from './pages/PayrollResultsReview'
 import PayrollManagementPage from './features/payroll/presentation/PayrollManagementPage'
 import StatutorySchedulesPage from './features/payroll/presentation/StatutorySchedulesPage'
+import ThirteenthMonthCalculationPage from './features/payroll/presentation/ThirteenthMonthCalculationPage'
+import OffCyclePayrollPage from './features/payroll/presentation/OffCyclePayrollPage'
+import PayrollSystemParametersPage from './features/payroll/presentation/PayrollSystemParametersPage'
 import CompanyBenefitTypesPage from './features/payroll/presentation/CompanyBenefitTypesPage'
 import { PayrollUseCases } from './features/payroll/application/useCases'
 import { HttpPayrollRepository } from './features/payroll/infrastructure/HttpPayrollRepository'
+import { OffCyclePayrollUseCases } from './features/payroll/application/offCycleUseCases'
+import { HttpOffCyclePayrollRepository } from './features/payroll/infrastructure/HttpOffCyclePayrollRepository'
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
@@ -39,16 +45,16 @@ import {
   hasAnyPermission,
   hasEmployeeRoleCode,
   hasPermission,
-  normalizeDashboardRole,
 } from './types/role'
 
 const payrollUseCases = new PayrollUseCases(new HttpPayrollRepository())
+const offCyclePayrollUseCases = new OffCyclePayrollUseCases(new HttpOffCyclePayrollRepository())
 
 const navViews: NavView[] = [
-  'dashboard', 'enrollment', 'attendance', 'attendance-recalculation', 'companies', 'org-units', 'locations',
+  'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-recalculation', 'companies', 'org-units', 'locations',
   'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
-  'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
+  'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
   'overtime-application', 'official-business', 'change-password', 'my-schedule', 'schedule-uploads',
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
@@ -88,6 +94,11 @@ function App() {
         if (!isCurrent) return
         localStorage.setItem('role_codes', JSON.stringify(authorization.role_codes))
         localStorage.setItem('permission_codes', JSON.stringify(authorization.permission_codes))
+        if (authorization.employee_code) {
+          localStorage.setItem('employee_code', authorization.employee_code)
+        } else {
+          localStorage.removeItem('employee_code')
+        }
         setIsAuthorizationLoaded(true)
       })
       .catch(() => {
@@ -157,11 +168,14 @@ function App() {
 
   const requiredPermissionByView: Partial<Record<NavView, string | string[]>> = {
     attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+    'attendance-recalculation': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+    'attendance-detail-report': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+    'payroll-review': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
     companies: 'company.setup',
     'org-units': 'company.setup',
     locations: 'company.setup',
     geofences: 'company.setup',
-    employees: 'employees.read',
+    employees: ['employees.read', 'employees.read_team'],
     'payroll-groups': 'payroll.manage',
     'payroll-cutoffs': 'payroll.manage',
     'payroll-compensation': 'payroll.manage',
@@ -169,11 +183,14 @@ function App() {
     'payroll-gross': 'payroll.manage',
     'payroll-benefits': 'payroll.manage',
     'payroll-deductions': 'payroll.manage',
+    'payroll-loans': 'payroll.manage',
     'payroll-management': 'payroll.manage',
     'company-benefit-types': 'payroll.manage',
     'company-deduction-types': 'payroll.manage',
-    'payroll-statutory': 'payroll.manage',
-    'payroll-review': ['payroll.read_own', 'payroll.acknowledge_team'],
+    'payroll-statutory': 'payroll.company_parameters.manage',
+    'payroll-thirteenth-month': 'payroll.manage',
+    'payroll-off-cycle': ['payroll.manage', 'payroll.approve'],
+    'payroll-system-parameters': 'payroll.company_parameters.manage',
     'schedule-templates': 'schedule.manage',
     'rest-day-patterns': 'schedule.manage',
     'my-schedule': 'schedule.read_own',
@@ -187,12 +204,6 @@ function App() {
     'leave-application': 'leave.submit',
     'overtime-application': 'overtime.submit_own',
     'official-business': 'official_business.submit_own',
-  }
-  if (
-    view === 'attendance-recalculation'
-    && normalizeDashboardRole(localStorage.getItem('role')) !== 'administrator'
-  ) {
-    return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
   }
   const requiredPermission = requiredPermissionByView[view]
   const hasRequiredPermission = typeof requiredPermission === 'string'
@@ -214,6 +225,16 @@ function App() {
 
   if (view === 'attendance') {
     return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+  }
+
+  if (view === 'attendance-detail-report') {
+    return (
+      <AttendanceDetailReport
+        employeeName={employeeName}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
   }
 
   if (view === 'attendance-recalculation') {
@@ -296,6 +317,42 @@ function App() {
     )
   }
 
+  if (view === 'payroll-thirteenth-month') {
+    return (
+      <ThirteenthMonthCalculationPage
+        employeeName={employeeName}
+        useCases={payrollUseCases}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
+  if (view === 'payroll-off-cycle') {
+    return (
+      <OffCyclePayrollPage
+        employeeName={employeeName}
+        payrollUseCases={payrollUseCases}
+        offCycleUseCases={offCyclePayrollUseCases}
+        canManage={hasPermission('payroll.manage')}
+        canApprove={hasPermission('payroll.approve')}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
+  if (view === 'payroll-system-parameters') {
+    return (
+      <PayrollSystemParametersPage
+        employeeName={employeeName}
+        useCases={payrollUseCases}
+        onNavigate={navigateTo}
+        onLoggedOut={logout}
+      />
+    )
+  }
+
   if (view === 'company-benefit-types' || view === 'company-deduction-types') {
     return (
       <CompanyBenefitTypesPage
@@ -315,18 +372,22 @@ function App() {
         employeeName={employeeName}
         activeView="payroll-compensation"
         useCases={payrollUseCases}
+        canApprovePayroll={hasPermission('payroll.approve')}
+        canUnlockPayroll={hasPermission('payroll.approve')}
         onNavigate={navigateTo}
         onLoggedOut={logout}
       />
     )
   }
 
-  if (view === 'payroll-compensation' || view === 'payroll-earning-rules' || view === 'payroll-gross' || view === 'payroll-benefits' || view === 'payroll-deductions') {
+  if (view === 'payroll-compensation' || view === 'payroll-earning-rules' || view === 'payroll-gross' || view === 'payroll-benefits' || view === 'payroll-deductions' || view === 'payroll-loans') {
     return (
       <PayrollManagementPage
         employeeName={employeeName}
         activeView={view}
         useCases={payrollUseCases}
+        canApprovePayroll={hasPermission('payroll.approve')}
+        canUnlockPayroll={hasPermission('payroll.approve')}
         onNavigate={navigateTo}
         onLoggedOut={logout}
       />

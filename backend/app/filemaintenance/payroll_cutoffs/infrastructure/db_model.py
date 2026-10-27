@@ -31,6 +31,10 @@ class PayrollCutoffModel(Base):
             "period_end >= period_start",
             name="ck_cutoffs_period_dates",
         ),
+        CheckConstraint(
+            "cutoff_half IS NULL OR cutoff_half IN ('FIRST_HALF', 'SECOND_HALF')",
+            name="ck_cutoffs_cutoff_half",
+        ),
         {"schema": "payroll"},
     )
 
@@ -45,18 +49,11 @@ class PayrollCutoffModel(Base):
         nullable=False,
     )
     cutoff_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    cutoff_half: Mapped[str | None] = mapped_column(String(20), nullable=True)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     pay_date: Mapped[date] = mapped_column(Date, nullable=False)
-    employee_review_deadline: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    supervisor_deadline: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    hr_deadline: Mapped[datetime | None] = mapped_column(
+    attendance_deadline: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )

@@ -36,6 +36,7 @@ def draft_schedule(*, program_code: str | None = None, effective_to: date | None
         updated_at=now,
         updated_by=None,
         row_version=1,
+        calculation_basis="ANNUAL_YTD",
     )
 
 

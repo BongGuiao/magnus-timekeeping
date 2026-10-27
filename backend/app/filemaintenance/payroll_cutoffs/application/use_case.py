@@ -5,9 +5,10 @@ from typing import Any, NoReturn
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from app.attendance.application.use_case import resolve_schedule_day
 from app.attendance.infrastructure.db_model import (
     AttendanceModel,
     OfficialBusinessRequestModel,
@@ -34,19 +35,72 @@ from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result 
     LeaveFact,
     OfficialBusinessFact,
     OvertimeFact,
+    ScheduledDayFact,
     calculate_employee_cutoff_totals,
+    overlap_minutes,
 )
 from app.filemaintenance.payroll_cutoffs.domain.entities.payroll_cutoff import PayrollCutoffEntity
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
-    require_cutoff_phase_open,
+    validate_attendance_deadline,
 )
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
 from app.filemaintenance.schedule.infrastructure.db_model import ScheduleTemplateModel
+from app.payroll.infrastructure.db_model import GrossPayRunModel
 
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
+
+
+async def _scheduled_days_without_attendance(
+    session,
+    official_business: list[OfficialBusinessFact],
+    attendance: list[AttendanceFact],
+    period_start: date,
+    period_end: date,
+) -> list[ScheduledDayFact]:
+    """Resolve the schedule for official-business dates that have no attendance record."""
+    recorded = {(fact.employee_id, fact.work_date) for fact in attendance}
+    candidates: set[tuple[UUID, date]] = set()
+    for request in official_business:
+        # Start a day early so an overnight shift from the previous date is included.
+        day = request.start_at.astimezone(PH_TIMEZONE).date() - timedelta(days=1)
+        last_day = request.end_at.astimezone(PH_TIMEZONE).date()
+        while day <= last_day:
+            if period_start <= day <= period_end and (request.employee_id, day) not in recorded:
+                candidates.add((request.employee_id, day))
+            day += timedelta(days=1)
+    if not candidates:
+        return []
+
+    facts: list[ScheduledDayFact] = []
+    template_minutes: dict[UUID, int] = {}
+    for employee_id, work_date in sorted(candidates, key=lambda item: (str(item[0]), item[1])):
+        schedule = await resolve_schedule_day(session, employee_id, work_date)
+        if (
+            schedule.work_type != "REG"
+            or schedule.schedule_template_id is None
+            or schedule.expected_clock_in_at is None
+            or schedule.expected_clock_out_at is None
+        ):
+            continue
+        if schedule.schedule_template_id not in template_minutes:
+            template = await session.get(ScheduleTemplateModel, schedule.schedule_template_id)
+            template_minutes[schedule.schedule_template_id] = (
+                template.required_minutes if template is not None else 0
+            ) or 0
+        scheduled_minutes = template_minutes[schedule.schedule_template_id]
+        facts.append(
+            ScheduledDayFact(
+                employee_id=employee_id,
+                work_date=work_date,
+                expected_clock_in_at=schedule.expected_clock_in_at,
+                expected_clock_out_at=schedule.expected_clock_out_at,
+                scheduled_minutes=scheduled_minutes,
+            )
+        )
+    return facts
 
 
 class PayrollCutoffConflictError(ValueError):
@@ -169,13 +223,26 @@ class UpdatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity | None]):
     ) -> PayrollCutoffEntity | None:
         try:
             async with self.uow as uow:
+                session = uow.session
+                if session is None:
+                    raise RuntimeError("UnitOfWork session is not active.")
+                await session.scalar(
+                    select(PayrollCutoffModel.id)
+                    .where(PayrollCutoffModel.id == cutoff_id)
+                    .with_for_update()
+                )
                 repo = uow.get_repo(PayrollCutoffEntity, PayrollCutoffModel)
                 existing = await repo.find_one(PayrollCutoffModel.id == cutoff_id)
                 if existing is None:
                     return None
+                if existing.locked_at is not None or existing.status.upper() == "LOCKED":
+                    raise ValueError(
+                        "A finalized payroll cutoff must be unlocked by an administrator before it can be changed."
+                    )
 
                 merged = {**existing.__dict__, **payload}
                 _validate_period(merged["period_start"], merged["period_end"])
+                validate_attendance_deadline(merged["period_end"], merged.get("attendance_deadline"))
                 entity = GenericMapper.to_entity(merged, PayrollCutoffEntity)
                 changes = {
                     key: value
@@ -339,95 +406,39 @@ class CalculateEmployeeCutoffResultsUseCase:
                 entities.append(entity)
             return entities
 
-    async def acknowledge(
-        self,
-        cutoff_id: UUID,
-        result_id: UUID,
-        actor_id: UUID,
-        can_manage_payroll: bool,
-    ) -> EmployeeCutoffResultEntity:
+    async def list_organization_results(self) -> list[EmployeeCutoffResultEntity]:
         async with self.uow as active_uow:
             session = active_uow.session
             if session is None:
                 raise RuntimeError("UnitOfWork session is not active.")
-            result = await session.scalar(
-                select(EmployeeCutoffResultModel)
-                .where(
-                    EmployeeCutoffResultModel.id == result_id,
-                    EmployeeCutoffResultModel.cutoff_id == cutoff_id,
-                )
-                .with_for_update()
-            )
-            if result is None:
-                raise LookupError("Payroll cutoff result not found.")
-            actor_employee_id = await session.scalar(
-                select(UserModel.employee_id).where(
-                    UserModel.id == actor_id,
-                    UserModel.is_active.is_(True),
+            result = await session.execute(
+                select(EmployeeCutoffResultModel, EmployeeModel, PayrollCutoffModel)
+                .join(EmployeeModel, EmployeeModel.id == EmployeeCutoffResultModel.employee_id)
+                .join(PayrollCutoffModel, PayrollCutoffModel.id == EmployeeCutoffResultModel.cutoff_id)
+                .order_by(
+                    PayrollCutoffModel.period_start.desc(),
+                    EmployeeModel.last_name,
+                    EmployeeModel.first_name,
                 )
             )
-            if actor_employee_id is not None and actor_employee_id == result.employee_id:
-                if result.employee_confirmation_status != "PENDING":
-                    raise ValueError("Employee confirmation has already been recorded.")
-                cutoff = await session.scalar(
-                    select(PayrollCutoffModel).where(PayrollCutoffModel.id == cutoff_id)
-                )
-                if cutoff is None:
-                    raise LookupError("Payroll cutoff not found.")
-                require_cutoff_phase_open(cutoff, "EMPLOYEE")
-                result.employee_confirmation_status = "ACKNOWLEDGED"
-            else:
-                cutoff = await session.scalar(
-                    select(PayrollCutoffModel).where(PayrollCutoffModel.id == cutoff_id)
-                )
-                if cutoff is None:
-                    raise LookupError("Payroll cutoff not found.")
-                is_assigned_supervisor = None
-                if actor_employee_id is not None:
-                    is_assigned_supervisor = await session.scalar(
-                        select(EmploymentAssignmentModel.employee_id)
-                        .where(
-                            EmploymentAssignmentModel.employee_id == result.employee_id,
-                            EmploymentAssignmentModel.supervisor_employee_id == actor_employee_id,
-                            EmploymentAssignmentModel.payroll_group_id == cutoff.payroll_group_id,
-                            EmploymentAssignmentModel.is_active.is_(True),
-                            EmploymentAssignmentModel.effective_from <= cutoff.period_end,
-                            or_(
-                                EmploymentAssignmentModel.effective_to.is_(None),
-                                EmploymentAssignmentModel.effective_to >= cutoff.period_start,
-                            ),
-                            or_(
-                                EmploymentAssignmentModel.separation_date.is_(None),
-                                EmploymentAssignmentModel.separation_date >= cutoff.period_start,
-                            ),
-                        )
-                        .limit(1)
+            entities: list[EmployeeCutoffResultEntity] = []
+            for result_model, employee, cutoff in result.all():
+                entity = GenericMapper.to_entity(result_model, EmployeeCutoffResultEntity)
+                entity.employee_name = employee.preferred_name or " ".join(
+                    part
+                    for part in (
+                        employee.first_name,
+                        employee.middle_name,
+                        employee.last_name,
+                        employee.suffix,
                     )
-                if is_assigned_supervisor is not None:
-                    if result.employee_confirmation_status != "ACKNOWLEDGED":
-                        raise ValueError("The employee must acknowledge the calculation first.")
-                    if result.supervisor_status != "PENDING":
-                        raise ValueError("Supervisor acknowledgment has already been recorded.")
-                    require_cutoff_phase_open(cutoff, "SUPERVISOR")
-                    result.supervisor_status = "ACKNOWLEDGED"
-                elif can_manage_payroll:
-                    if result.supervisor_status != "ACKNOWLEDGED":
-                        raise ValueError("The supervisor must acknowledge the calculation first.")
-                    if result.hr_status != "PENDING":
-                        raise ValueError("HR acknowledgment has already been recorded.")
-                    require_cutoff_phase_open(cutoff, "HR")
-                    result.hr_status = "ACKNOWLEDGED"
-                else:
-                    raise PermissionError(
-                        "Only the employee, assigned supervisor, or payroll HR can acknowledge this result."
-                    )
-
-            await session.flush()
-            results = await self._load_results_with_employee_names(session, cutoff_id)
-            updated = next((item for item in results if item.id == result_id), None)
-            if updated is None:
-                raise RuntimeError("Acknowledged payroll cutoff result could not be reloaded.")
-            return updated
+                    if part
+                )
+                entity.cutoff_code = cutoff.cutoff_code
+                entity.period_start = cutoff.period_start
+                entity.period_end = cutoff.period_end
+                entities.append(entity)
+            return entities
 
     async def calculate(
         self,
@@ -449,7 +460,6 @@ class CalculateEmployeeCutoffResultsUseCase:
                 raise LookupError("Payroll cutoff not found.")
             if cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED":
                 raise ValueError("A locked payroll cutoff cannot be recalculated.")
-            require_cutoff_phase_open(cutoff, "HR")
 
             cutoff_start = datetime.combine(cutoff.period_start, time.min, tzinfo=PH_TIMEZONE)
             cutoff_end = datetime.combine(
@@ -479,6 +489,7 @@ class CalculateEmployeeCutoffResultsUseCase:
             leave_facts: list[LeaveFact] = []
             overtime_facts: list[OvertimeFact] = []
             official_business_facts: list[OfficialBusinessFact] = []
+            scheduled_day_facts: list[ScheduledDayFact] = []
             exception_facts: list[ExceptionFact] = []
 
             if employee_ids:
@@ -512,29 +523,80 @@ class CalculateEmployeeCutoffResultsUseCase:
                         day_type=record.day_type,
                         late_minutes=record.late_minutes,
                         undertime_minutes=_payroll_undertime_minutes(record),
+                        expected_clock_in_at=record.expected_clock_in_at,
+                        expected_clock_out_at=record.expected_clock_out_at,
+                        clock_in_at=record.corrected_clock_in_at or record.clock_in_at,
+                        clock_out_at=record.corrected_clock_out_at or record.clock_out_at,
                     )
                     for record, employee_id, required_minutes in attendance_result.all()
                 ]
 
-                leave_result = await session.scalars(
-                    select(LeaveApplicationModel).where(
-                        LeaveApplicationModel.employee_id.in_(employee_ids),
-                        LeaveApplicationModel.status == "APPROVED",
-                        LeaveApplicationModel.is_active.is_(True),
-                        LeaveApplicationModel.start_at < cutoff_end,
-                        LeaveApplicationModel.end_at > cutoff_start,
-                    )
+                leave_statement = select(LeaveApplicationModel).where(
+                    LeaveApplicationModel.employee_id.in_(employee_ids),
+                    LeaveApplicationModel.status == "APPROVED",
+                    LeaveApplicationModel.is_active.is_(True),
+                    LeaveApplicationModel.start_at < cutoff_end,
+                    LeaveApplicationModel.end_at > cutoff_start,
                 )
+                if cutoff.attendance_deadline is not None:
+                    leave_statement = leave_statement.where(
+                        LeaveApplicationModel.approved_at <= cutoff.attendance_deadline
+                    )
+                leave_result = await session.scalars(leave_statement)
                 leave_applications = list(leave_result.all())
-                if leave_applications:
+                previous_cutoff = await session.scalar(
+                    select(PayrollCutoffModel)
+                    .where(
+                        PayrollCutoffModel.payroll_group_id == cutoff.payroll_group_id,
+                        PayrollCutoffModel.period_end < cutoff.period_start,
+                        PayrollCutoffModel.is_active.is_(True),
+                    )
+                    .order_by(PayrollCutoffModel.period_end.desc())
+                    .limit(1)
+                )
+                late_leave_applications: list[LeaveApplicationModel] = []
+                previous_cutoff_start: datetime | None = None
+                previous_cutoff_end: datetime | None = None
+                if (
+                    previous_cutoff is not None
+                    and previous_cutoff.attendance_deadline is not None
+                ):
+                    previous_cutoff_start = datetime.combine(
+                        previous_cutoff.period_start,
+                        time.min,
+                        tzinfo=PH_TIMEZONE,
+                    )
+                    previous_cutoff_end = datetime.combine(
+                        previous_cutoff.period_end + timedelta(days=1),
+                        time.min,
+                        tzinfo=PH_TIMEZONE,
+                    )
+                    late_leave_result = await session.scalars(
+                        select(LeaveApplicationModel).where(
+                            LeaveApplicationModel.employee_id.in_(employee_ids),
+                            LeaveApplicationModel.status == "APPROVED",
+                            LeaveApplicationModel.is_active.is_(True),
+                            LeaveApplicationModel.approved_at
+                            > previous_cutoff.attendance_deadline,
+                            LeaveApplicationModel.start_at < previous_cutoff_end,
+                            LeaveApplicationModel.end_at > previous_cutoff_start,
+                        )
+                    )
+                    late_leave_applications = list(late_leave_result.all())
+
+                all_leave_applications = {
+                    application.id: application
+                    for application in (*leave_applications, *late_leave_applications)
+                }
+                dates_by_application: dict[UUID, list[LeaveDayFact]] = defaultdict(list)
+                if all_leave_applications:
                     leave_dates_result = await session.scalars(
                         select(LeaveApplicationDateModel).where(
                             LeaveApplicationDateModel.leave_application_id.in_(
-                                [application.id for application in leave_applications]
+                                list(all_leave_applications)
                             )
                         )
                     )
-                    dates_by_application: dict[UUID, list[LeaveDayFact]] = defaultdict(list)
                     for leave_date in leave_dates_result.all():
                         dates_by_application[leave_date.leave_application_id].append(
                             LeaveDayFact(
@@ -543,17 +605,62 @@ class CalculateEmployeeCutoffResultsUseCase:
                                 unpaid_minutes=leave_date.approved_unpaid_minutes,
                             )
                         )
-                    leave_facts = [
-                        LeaveFact(
-                            employee_id=application.employee_id,
-                            start_at=application.start_at,
-                            end_at=application.end_at,
-                            paid_minutes=application.paid_minutes or 0,
-                            unpaid_minutes=application.unpaid_minutes or 0,
-                            days=tuple(dates_by_application[application.id]),
+                leave_facts = [
+                    LeaveFact(
+                        employee_id=application.employee_id,
+                        start_at=application.start_at,
+                        end_at=application.end_at,
+                        paid_minutes=application.paid_minutes or 0,
+                        unpaid_minutes=application.unpaid_minutes or 0,
+                        days=tuple(dates_by_application[application.id]),
+                    )
+                    for application in leave_applications
+                ]
+                if previous_cutoff_start is not None and previous_cutoff_end is not None:
+                    for application in late_leave_applications:
+                        application_days = dates_by_application[application.id]
+                        previous_days = tuple(
+                            day
+                            for day in application_days
+                            if previous_cutoff.period_start
+                            <= day.leave_date
+                            <= previous_cutoff.period_end
                         )
-                        for application in leave_applications
-                    ]
+                        if application_days:
+                            if not previous_days:
+                                continue
+                            if not any(day.paid_minutes > 0 for day in previous_days):
+                                continue
+                            paid_minutes = application.paid_minutes or 0
+                            unpaid_minutes = application.unpaid_minutes or 0
+                        else:
+                            paid_minutes = overlap_minutes(
+                                application.paid_minutes or 0,
+                                application.start_at,
+                                application.end_at,
+                                previous_cutoff_start,
+                                previous_cutoff_end,
+                            )
+                            unpaid_minutes = overlap_minutes(
+                                application.unpaid_minutes or 0,
+                                application.start_at,
+                                application.end_at,
+                                previous_cutoff_start,
+                                previous_cutoff_end,
+                            )
+                            if paid_minutes <= 0:
+                                continue
+                        leave_facts.append(
+                            LeaveFact(
+                                employee_id=application.employee_id,
+                                start_at=max(application.start_at, previous_cutoff_start),
+                                end_at=min(application.end_at, previous_cutoff_end),
+                                paid_minutes=paid_minutes,
+                                unpaid_minutes=unpaid_minutes,
+                                days=previous_days,
+                                carry_forward=True,
+                            )
+                        )
 
                 overtime_result = await session.execute(
                     select(
@@ -603,6 +710,13 @@ class CalculateEmployeeCutoffResultsUseCase:
                     )
                     for request in business_result.all()
                 ]
+                scheduled_day_facts = await _scheduled_days_without_attendance(
+                    session,
+                    official_business_facts,
+                    attendance_facts,
+                    cutoff.period_start,
+                    cutoff.period_end,
+                )
 
                 exception_result = await session.execute(
                     select(UserModel.employee_id, PunchExceptionModel.id)
@@ -627,45 +741,61 @@ class CalculateEmployeeCutoffResultsUseCase:
                 exception_facts,
                 cutoff.period_start,
                 cutoff.period_end,
+                scheduled_day_facts,
             )
             calculated_at = datetime.now(timezone.utc)
+            existing_results = {
+                result.employee_id: result
+                for result in (
+                    await session.scalars(
+                        select(EmployeeCutoffResultModel)
+                        .where(EmployeeCutoffResultModel.cutoff_id == cutoff_id)
+                        .with_for_update()
+                    )
+                ).all()
+            }
             await session.execute(
-                delete(EmployeeCutoffResultModel).where(EmployeeCutoffResultModel.cutoff_id == cutoff_id)
-            )
-            models = [
-                EmployeeCutoffResultModel(
-                    cutoff_id=cutoff_id,
-                    employee_id=total.employee_id,
-                    scheduled_days=total.scheduled_days,
-                    paid_days=total.paid_days,
-                    required_work_minutes=total.required_work_minutes,
-                    regular_minutes=total.regular_minutes,
-                    late_minutes=total.late_minutes,
-                    undertime_minutes=total.undertime_minutes,
-                    absence_minutes=total.absence_minutes,
-                    paid_leave_minutes=total.paid_leave_minutes,
-                    unpaid_leave_minutes=total.unpaid_leave_minutes,
-                    ordinary_ot_minutes=total.ordinary_ot_minutes,
-                    rest_day_minutes=total.rest_day_minutes,
-                    rest_day_ot_minutes=total.rest_day_ot_minutes,
-                    special_day_minutes=total.special_day_minutes,
-                    special_day_ot_minutes=total.special_day_ot_minutes,
-                    holiday_minutes=total.holiday_minutes,
-                    holiday_ot_minutes=total.holiday_ot_minutes,
-                    night_regular_minutes=total.night_regular_minutes,
-                    night_ot_minutes=total.night_ot_minutes,
-                    official_business_minutes=total.official_business_minutes,
-                    exception_count=total.exception_count,
-                    incomplete_time_source_count=total.incomplete_time_source_count,
-                    employee_confirmation_status="PENDING",
-                    supervisor_status="PENDING",
-                    hr_status="PENDING",
-                    payroll_status="HOLD",
-                    calculated_at=calculated_at,
+                update(GrossPayRunModel)
+                .where(
+                    GrossPayRunModel.cutoff_id == cutoff_id,
+                    GrossPayRunModel.is_current.is_(True),
                 )
-                for total in totals
-            ]
-            session.add_all(models)
+                .values(is_current=False)
+            )
+            for total in totals:
+                result = existing_results.get(total.employee_id)
+                if result is None:
+                    result = EmployeeCutoffResultModel(
+                        cutoff_id=cutoff_id,
+                        employee_id=total.employee_id,
+                    )
+                    session.add(result)
+                result.scheduled_days = total.scheduled_days
+                result.paid_days = total.paid_days
+                result.required_work_minutes = total.required_work_minutes
+                result.regular_minutes = total.regular_minutes
+                result.late_minutes = total.late_minutes
+                result.undertime_minutes = total.undertime_minutes
+                result.absence_minutes = total.absence_minutes
+                result.paid_leave_minutes = total.paid_leave_minutes
+                result.unpaid_leave_minutes = total.unpaid_leave_minutes
+                result.ordinary_ot_minutes = total.ordinary_ot_minutes
+                result.rest_day_minutes = total.rest_day_minutes
+                result.rest_day_ot_minutes = total.rest_day_ot_minutes
+                result.special_day_minutes = total.special_day_minutes
+                result.special_day_ot_minutes = total.special_day_ot_minutes
+                result.holiday_minutes = total.holiday_minutes
+                result.holiday_ot_minutes = total.holiday_ot_minutes
+                result.night_regular_minutes = total.night_regular_minutes
+                result.night_ot_minutes = total.night_ot_minutes
+                result.official_business_minutes = total.official_business_minutes
+                result.exception_count = total.exception_count
+                result.incomplete_time_source_count = total.incomplete_time_source_count
+                result.employee_confirmation_status = "PENDING"
+                result.supervisor_status = "PENDING"
+                result.hr_status = "PENDING"
+                result.payroll_status = "HOLD"
+                result.calculated_at = calculated_at
             cutoff.calculation_version = "TIME_TOTALS_V1"
             cutoff.updated_at = calculated_at
             cutoff.updated_by = actor_id

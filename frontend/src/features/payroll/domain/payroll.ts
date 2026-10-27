@@ -50,7 +50,7 @@ export interface EarningRule {
 }
 
 export interface GrossPayLine {
-  componentCode: PayrollComponentCode
+  componentCode: PayrollComponentCode | 'MONTHLY_BASE' | 'UNPAID_TIME_DEDUCTION'
   minutes: number
   multiplier: number
   amount: number
@@ -85,6 +85,7 @@ export interface PayrollBenefitLine {
   benefitName: string
   category: BenefitCategory
   taxTreatment: BenefitTaxTreatment
+  withholdingTiming: BenefitWithholdingTiming
   amount: number
 }
 
@@ -135,6 +136,34 @@ export interface ContributionSchedule extends StatutoryScheduleBase {
 
 export interface WithholdingTaxSchedule extends StatutoryScheduleBase {
   taxExemptBenefitLimit: number
+  calculationBasis: 'ANNUAL_YTD' | 'SEMI_MONTHLY'
+}
+
+export interface PayrollSystemParameters {
+  yearEndWtaxReconciliationEnabled: boolean
+  thirteenthMonthEnabled: boolean
+  scheduleAssignmentApprovalRequired: boolean
+  statutoryContributionTiming: 'PER_CUTOFF' | 'FINAL_CUTOFF'
+}
+
+export interface ThirteenthMonthResult {
+  employeeId: string
+  employeeNo: string
+  employeeName: string
+  basicSalaryEarned: number
+  thirteenthMonthPay: number
+  taxExemptAmount: number
+  taxableAmount: number
+  sourcePayrollPeriods: number
+}
+
+export interface ThirteenthMonthRun {
+  id: string
+  taxYear: number
+  coveredPeriodFrom: string
+  coveredPeriodTo: string
+  calculatedAt: string
+  results: ThirteenthMonthResult[]
 }
 
 export interface ContributionBracket {
@@ -149,6 +178,8 @@ export interface ContributionBracket {
   employeeFixedAmount: number
   employerFixedAmount: number
   employerAdditionalFixedAmount: number
+  employeeContributionCap: number | null
+  employerContributionCap: number | null
 }
 
 export interface WithholdingTaxBracket {
@@ -180,6 +211,8 @@ export interface ContributionBracketInput {
   employeeFixedAmount: number
   employerFixedAmount: number
   employerAdditionalFixedAmount: number
+  employeeContributionCap: number | null
+  employerContributionCap: number | null
 }
 
 export interface WithholdingTaxScheduleInput {
@@ -187,6 +220,7 @@ export interface WithholdingTaxScheduleInput {
   effectiveFrom: string
   effectiveTo: string | null
   taxExemptBenefitLimit: number
+  calculationBasis: 'ANNUAL_YTD' | 'SEMI_MONTHLY'
   sourceReference: string
 }
 
@@ -207,6 +241,7 @@ export type BenefitCategory =
   | 'NON_CASH'
   | 'EMPLOYEE_DEDUCTION'
 export type BenefitTaxTreatment = 'TAXABLE' | 'EXEMPT' | 'EXEMPT_LIMITED'
+export type BenefitWithholdingTiming = 'PAY_PERIOD' | 'YEAR_END'
 export type BenefitPostingSchedule = 'FIRST_HALF' | 'SECOND_HALF' | 'EVERY_CUTOFF'
 
 export interface BenefitType {
@@ -216,6 +251,7 @@ export interface BenefitType {
   name: string
   category: BenefitCategory
   taxTreatment: BenefitTaxTreatment
+  withholdingTiming: BenefitWithholdingTiming
   attendanceBased: boolean
   deductForLate: boolean
   deductForUndertime: boolean
@@ -237,6 +273,7 @@ export interface CutoffBenefit {
   benefitName: string
   category: BenefitCategory
   taxTreatment: BenefitTaxTreatment
+  withholdingTiming: BenefitWithholdingTiming
   amount: number
   notes: string | null
   attendanceBased: boolean
@@ -250,6 +287,7 @@ export interface BenefitTypeInput {
   name: string
   category: BenefitCategory
   taxTreatment: BenefitTaxTreatment
+  withholdingTiming: BenefitWithholdingTiming
   attendanceBased: boolean
   deductForLate: boolean
   deductForUndertime: boolean
@@ -263,6 +301,7 @@ export interface EmployeeBenefitEntitlement {
   benefitCode: string
   benefitName: string
   amountPerOccurrence: number
+  schedule: BenefitPostingSchedule
   effectiveFrom: string
   effectiveTo: string | null
   isActive: boolean
@@ -272,6 +311,7 @@ export interface EmployeeBenefitEntitlementInput {
   employeeId: string
   benefitTypeId: string
   amountPerOccurrence: number
+  schedule: BenefitPostingSchedule
   effectiveFrom: string
   effectiveTo: string | null
 }
@@ -300,12 +340,71 @@ export interface EmployeeBenefitDeductionInput {
   effectiveTo: string | null
 }
 
+export type EmployeeLoanSchedule = 'FIRST_HALF' | 'SECOND_HALF' | 'EVERY_CUTOFF'
+export type EmployeeLoanStatus = 'ACTIVE' | 'RETIRED' | 'PAID_OFF'
+
+export interface EmployeeLoanRepayment {
+  id: string
+  loanId: string
+  cutoffId: string
+  grossPayRunId: string
+  amount: number
+  createdAt: string
+  cutoffCode: string
+}
+
+export interface EmployeeLoan {
+  id: string
+  employeeId: string
+  payrollGroupId: string
+  referenceNumber: string
+  principalAmount: number
+  installmentAmount: number
+  schedule: EmployeeLoanSchedule
+  effectiveFrom: string
+  outstandingBalance: number
+  status: EmployeeLoanStatus
+  previousLoanId: string | null
+  createdAt: string
+  repayments: EmployeeLoanRepayment[]
+}
+
+export interface EmployeeLoanInput {
+  employeeId: string
+  payrollGroupId: string
+  referenceNumber: string
+  principalAmount: number
+  installmentAmount: number
+  schedule: EmployeeLoanSchedule
+  effectiveFrom: string
+}
+
+export interface EmployeeLoanRestructureInput {
+  referenceNumber: string
+  additionalPrincipal: number
+  installmentAmount: number
+  schedule: EmployeeLoanSchedule
+  effectiveFrom: string
+}
+
 export interface CutoffBenefitInput {
   cutoffId: string
   employeeId: string
   benefitTypeId: string
   amount: number
   notes: string | null
+}
+
+export interface CutoffBenefitUploadRow {
+  employeeNo: string
+  benefitCode: string
+  amount: number
+  notes: string | null
+}
+
+export interface CutoffBenefitUploadResult {
+  created: number
+  updated: number
 }
 
 export interface EmployeeYtdTaxBalance {

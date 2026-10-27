@@ -23,6 +23,37 @@ class PayrollCutoffSchemaTests(unittest.TestCase):
         )
 
         self.assertEqual(cutoff.status, "SCHEDULED")
+        self.assertIsNone(cutoff.cutoff_half)
+
+    def test_cutoff_half_is_explicit_and_rejects_other_values(self) -> None:
+        cutoff = CreatePayrollCutoffSchema(
+            payroll_group_id=uuid4(),
+            cutoff_code="2026-10-A",
+            cutoff_half="FIRST_HALF",
+            period_start=date(2026, 9, 25),
+            period_end=date(2026, 10, 10),
+            pay_date=date(2026, 10, 15),
+        )
+        self.assertEqual(cutoff.cutoff_half, "FIRST_HALF")
+        second_cutoff = CreatePayrollCutoffSchema(
+            payroll_group_id=cutoff.payroll_group_id,
+            cutoff_code="2026-10-B",
+            cutoff_half="SECOND_HALF",
+            period_start=date(2026, 10, 11),
+            period_end=date(2026, 10, 26),
+            pay_date=date(2026, 10, 31),
+        )
+        self.assertEqual(second_cutoff.cutoff_half, "SECOND_HALF")
+
+        with self.assertRaises(ValidationError):
+            CreatePayrollCutoffSchema(
+                payroll_group_id=uuid4(),
+                cutoff_code="2026-10-A",
+                cutoff_half="THIRD_HALF",
+                period_start=date(2026, 9, 25),
+                period_end=date(2026, 10, 10),
+                pay_date=date(2026, 10, 15),
+            )
 
     def test_create_schema_rejects_period_end_before_start(self) -> None:
         with self.assertRaises(ValidationError):
@@ -34,15 +65,14 @@ class PayrollCutoffSchemaTests(unittest.TestCase):
                 pay_date=date(2026, 10, 20),
             )
 
-    def test_update_schema_allows_clearing_nullable_deadlines(self) -> None:
+    def test_update_schema_allows_clearing_attendance_deadline(self) -> None:
         payload = UpdatePayrollCutoffSchema(
             id=uuid4(),
-            employee_review_deadline=None,
-            supervisor_deadline=None,
-            hr_deadline=None,
+            attendance_deadline=None,
         )
 
-        self.assertIsNone(payload.hr_deadline)
+        self.assertIsNone(payload.attendance_deadline)
+        self.assertIn("attendance_deadline", payload.model_fields_set)
 
     def test_lock_metadata_is_not_client_writable(self) -> None:
         with self.assertRaises(ValidationError):

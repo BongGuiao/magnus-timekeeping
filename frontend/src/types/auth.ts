@@ -38,6 +38,7 @@ export interface UserSummary {
 export interface CurrentAuthorization {
   role_codes: string[]
   permission_codes: string[]
+  employee_code: string | null
 }
 
 export interface ApiSuccessEnvelope<T> {

@@ -81,6 +81,31 @@ def current_overtime_cutoff_statement(employee_id: UUID, today: date):
     )
 
 
+def latest_configured_overtime_cutoff_statement(employee_id: UUID, today: date):
+    return (
+        select(PayrollCutoffModel)
+        .join(
+            EmploymentAssignmentModel,
+            EmploymentAssignmentModel.payroll_group_id == PayrollCutoffModel.payroll_group_id,
+        )
+        .where(
+            EmploymentAssignmentModel.employee_id == employee_id,
+            EmploymentAssignmentModel.is_active.is_(True),
+            EmploymentAssignmentModel.status == "ACTIVE",
+            EmploymentAssignmentModel.effective_from <= today,
+            or_(EmploymentAssignmentModel.effective_to.is_(None), EmploymentAssignmentModel.effective_to >= today),
+            or_(EmploymentAssignmentModel.separation_date.is_(None), EmploymentAssignmentModel.separation_date >= today),
+            PayrollCutoffModel.is_active.is_(True),
+        )
+        .order_by(
+            PayrollCutoffModel.period_end.desc(),
+            PayrollCutoffModel.period_start.desc(),
+            PayrollCutoffModel.id,
+        )
+        .limit(1)
+    )
+
+
 def _record(row) -> OvertimeApplicationRecord:
     application, attendance, employee = row
     return OvertimeApplicationRecord(
@@ -128,6 +153,14 @@ class SqlAlchemyOvertimeRepository:
 
     async def get_current_cutoff(self, employee_id: UUID, today: date) -> Optional[OvertimeCutoff]:
         cutoff = await self._session.scalar(current_overtime_cutoff_statement(employee_id, today))
+        return _copy_fields(cutoff, OvertimeCutoff) if cutoff is not None else None
+
+    async def get_latest_configured_cutoff(
+        self, employee_id: UUID, today: date
+    ) -> Optional[OvertimeCutoff]:
+        cutoff = await self._session.scalar(
+            latest_configured_overtime_cutoff_statement(employee_id, today)
+        )
         return _copy_fields(cutoff, OvertimeCutoff) if cutoff is not None else None
 
     async def get_cutoff_for_employee_on_date(

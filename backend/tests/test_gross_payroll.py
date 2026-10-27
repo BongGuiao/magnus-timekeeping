@@ -11,6 +11,7 @@ from app.payroll.domain.entities.gross_payroll import (
     EarningRule,
     PayrollGroupPolicy,
     calculate_gross_pay,
+    compensation_period_basis,
     monthly_compensation_basis,
 )
 
@@ -32,15 +33,14 @@ class GrossPayrollTests(unittest.TestCase):
         self.policy = PayrollGroupPolicy(
             payroll_group_id=self.payroll_group_id,
             rate_type="HOURLY",
+            pay_frequency="SEMIMONTHLY",
             standard_minutes_per_day=480,
             annual_divisor=None,
         )
         self.time = CutoffEmployeeTime(
             employee_id=self.employee_id,
             cutoff_result_id=uuid4(),
-            employee_confirmation_status="ACKNOWLEDGED",
-            supervisor_status="ACKNOWLEDGED",
-            hr_status="ACKNOWLEDGED",
+            required_work_minutes=480,
             component_minutes={
                 "regular_minutes": 480,
                 "ordinary_ot_minutes": 60,
@@ -70,6 +70,23 @@ class GrossPayrollTests(unittest.TestCase):
         }
         params.update(overrides)
         return calculate_gross_pay(**params)
+
+    def test_compensation_bases_use_configured_annual_divisor(self) -> None:
+        for rate_type, base_rate, half_basis, month_basis in (
+            ("MONTHLY", "40000", "20000.00", "40000.00"),
+            ("DAILY", "850", "11085.42", "22170.83"),
+            ("HOURLY", "106.25", "11085.42", "22170.83"),
+            ("DAILY", "1", "13.04", "26.08"),
+            ("DAILY", "1.03", "13.43", "26.87"),
+        ):
+            with self.subTest(rate_type=rate_type, base_rate=base_rate):
+                policy = replace(self.policy, rate_type=rate_type, annual_divisor=Decimal("313"))
+                compensation = replace(self.compensation, base_rate=Decimal(base_rate))
+                self.assertEqual(
+                    compensation_period_basis(policy, compensation, periods_per_year=24),
+                    Decimal(half_basis),
+                )
+                self.assertEqual(monthly_compensation_basis(policy, compensation), Decimal(month_basis))
 
     def test_calculates_regular_overtime_and_incremental_night_premiums(self) -> None:
         result = self.calculate()
@@ -102,9 +119,6 @@ class GrossPayrollTests(unittest.TestCase):
         time = CutoffEmployeeTime(
             employee_id=self.employee_id,
             cutoff_result_id=uuid4(),
-            employee_confirmation_status="ACKNOWLEDGED",
-            supervisor_status="ACKNOWLEDGED",
-            hr_status="ACKNOWLEDGED",
             component_minutes={"regular_minutes": 0},
             incomplete_time_source_count=1,
         )
@@ -118,6 +132,7 @@ class GrossPayrollTests(unittest.TestCase):
         monthly_policy = PayrollGroupPolicy(
             payroll_group_id=self.payroll_group_id,
             rate_type="MONTHLY",
+            pay_frequency="SEMIMONTHLY",
             standard_minutes_per_day=480,
             annual_divisor=None,
         )
@@ -131,6 +146,7 @@ class GrossPayrollTests(unittest.TestCase):
         monthly_policy = PayrollGroupPolicy(
             payroll_group_id=self.payroll_group_id,
             rate_type="MONTHLY",
+            pay_frequency="SEMIMONTHLY",
             standard_minutes_per_day=480,
             annual_divisor=Decimal("260"),
         )
@@ -147,9 +163,6 @@ class GrossPayrollTests(unittest.TestCase):
         time = CutoffEmployeeTime(
             employee_id=self.employee_id,
             cutoff_result_id=uuid4(),
-            employee_confirmation_status="ACKNOWLEDGED",
-            supervisor_status="ACKNOWLEDGED",
-            hr_status="ACKNOWLEDGED",
             component_minutes={"regular_minutes": 480},
         )
         result = self.calculate(
@@ -159,12 +172,116 @@ class GrossPayrollTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "READY")
-        self.assertEqual(result.gross_amount, Decimal("1440.00"))
+        self.assertEqual(result.gross_amount, Decimal("15600.00"))
+        self.assertEqual(result.lines[0].component_code, "MONTHLY_BASE")
+        self.assertEqual(result.lines[0].amount, Decimal("15600.00"))
+
+    def test_monthly_semimonthly_salary_deducts_unpaid_scheduled_minutes(self) -> None:
+        monthly_policy = PayrollGroupPolicy(
+            payroll_group_id=self.payroll_group_id,
+            rate_type="MONTHLY",
+            pay_frequency="SEMIMONTHLY",
+            standard_minutes_per_day=480,
+            annual_divisor=Decimal("313"),
+        )
+        monthly_compensation = replace(
+            self.compensation,
+            base_rate=Decimal("20000.00"),
+        )
+        time = replace(
+            self.time,
+            required_work_minutes=480,
+            component_minutes={
+                "regular_minutes": 420,
+                "late_minutes": 30,
+                "undertime_minutes": 30,
+            },
+        )
+
+        result = self.calculate(
+            time=time,
+            compensation=monthly_compensation,
+            policy=monthly_policy,
+        )
+
+        self.assertEqual(result.gross_amount, Decimal("9904.15"))
+        unpaid_line = next(
+            line for line in result.lines if line.component_code == "UNPAID_TIME_DEDUCTION"
+        )
+        self.assertEqual(unpaid_line.minutes, 60)
+        self.assertEqual(unpaid_line.amount, Decimal("-95.85"))
+
+    def test_rest_day_work_does_not_cover_required_scheduled_minutes(self) -> None:
+        monthly_policy = PayrollGroupPolicy(
+            payroll_group_id=self.payroll_group_id,
+            rate_type="MONTHLY",
+            pay_frequency="SEMIMONTHLY",
+            standard_minutes_per_day=480,
+            annual_divisor=Decimal("313"),
+        )
+        time = replace(
+            self.time,
+            required_work_minutes=480,
+            component_minutes={
+                "regular_minutes": 420,
+                "rest_day_minutes": 480,
+            },
+        )
+
+        result = self.calculate(
+            time=time,
+            compensation=replace(self.compensation, base_rate=Decimal("20000.00")),
+            policy=monthly_policy,
+        )
+
+        unpaid_line = next(
+            line for line in result.lines if line.component_code == "UNPAID_TIME_DEDUCTION"
+        )
+        rest_day_line = next(line for line in result.lines if line.component_code == "REST_DAY")
+        self.assertEqual(unpaid_line.minutes, 60)
+        self.assertEqual(rest_day_line.minutes, 480)
+
+    def test_monthly_pay_frequency_sets_salary_period_amount(self) -> None:
+        monthly_policy = PayrollGroupPolicy(
+            payroll_group_id=self.payroll_group_id,
+            rate_type="MONTHLY",
+            pay_frequency="MONTHLY",
+            standard_minutes_per_day=480,
+            annual_divisor=Decimal("313"),
+        )
+        result = self.calculate(
+            policy=monthly_policy,
+            compensation=replace(self.compensation, base_rate=Decimal("20000")),
+            time=replace(self.time, component_minutes={"regular_minutes": 480}),
+        )
+
+        self.assertEqual(result.gross_amount, Decimal("20000.00"))
+
+    def test_monthly_salary_is_paid_for_cutoff_without_scheduled_days(self) -> None:
+        monthly_policy = PayrollGroupPolicy(
+            payroll_group_id=self.payroll_group_id,
+            rate_type="MONTHLY",
+            pay_frequency="SEMIMONTHLY",
+            standard_minutes_per_day=480,
+            annual_divisor=Decimal("313"),
+        )
+        result = self.calculate(
+            policy=monthly_policy,
+            compensation=replace(self.compensation, base_rate=Decimal("20000")),
+            time=replace(
+                self.time,
+                required_work_minutes=0,
+                component_minutes={"regular_minutes": 0},
+            ),
+        )
+
+        self.assertEqual(result.gross_amount, Decimal("10000.00"))
 
     def test_monthly_contribution_basis_uses_configured_annual_divisor(self) -> None:
         daily_policy = PayrollGroupPolicy(
             payroll_group_id=self.payroll_group_id,
             rate_type="DAILY",
+            pay_frequency="SEMIMONTHLY",
             standard_minutes_per_day=480,
             annual_divisor=Decimal("260"),
         )
@@ -177,21 +294,17 @@ class GrossPayrollTests(unittest.TestCase):
             )
         )
 
-    def test_unacknowledged_result_is_held_even_when_amount_is_calculated(self) -> None:
-        unacknowledged_time = CutoffEmployeeTime(
+    def test_result_is_ready_without_employee_or_supervisor_acknowledgment(self) -> None:
+        time = CutoffEmployeeTime(
             employee_id=self.employee_id,
             cutoff_result_id=uuid4(),
-            employee_confirmation_status="PENDING",
-            supervisor_status="ACKNOWLEDGED",
-            hr_status="ACKNOWLEDGED",
             component_minutes={"regular_minutes": 480},
         )
-        result = self.calculate(time=unacknowledged_time)
+        result = self.calculate(time=time)
 
-        self.assertEqual(result.status, "HOLD")
+        self.assertEqual(result.status, "READY")
+        self.assertIsNone(result.hold_reason)
         self.assertEqual(result.gross_amount, Decimal("80.00"))
-        self.assertIn("acknowledgments are required", result.hold_reason or "")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,7 @@ class StatutoryScheduleRepository(Protocol):
         effective_from: date,
         effective_to: date | None,
         tax_exempt_benefit_limit: Decimal,
+        calculation_basis: str,
         source_reference: str,
         actor_id: UUID,
     ) -> WithholdingTaxSchedule: ...
@@ -88,6 +89,7 @@ class StatutoryScheduleRepository(Protocol):
         effective_from: date,
         effective_to: date | None,
         tax_exempt_benefit_limit: Decimal,
+        calculation_basis: str,
         source_reference: str,
         actor_id: UUID,
     ) -> WithholdingTaxSchedule: ...

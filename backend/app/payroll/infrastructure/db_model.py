@@ -131,6 +131,12 @@ class BenefitTypeModel(Base):
             name="ck_payroll_benefit_type_posting_schedule",
         ),
         CheckConstraint(
+            "withholding_timing = 'PAY_PERIOD' OR "
+            "(withholding_timing = 'YEAR_END' AND category = 'ONE_TIME_BONUS' "
+            "AND tax_treatment = 'TAXABLE')",
+            name="ck_payroll_benefit_type_withholding_timing",
+        ),
+        CheckConstraint(
             "category != 'EMPLOYEE_DEDUCTION' OR tax_treatment = 'EXEMPT'",
             name="ck_payroll_benefit_deduction_tax_treatment",
         ),
@@ -156,6 +162,9 @@ class BenefitTypeModel(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
     tax_treatment: Mapped[str] = mapped_column(String(20), nullable=False)
+    withholding_timing: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'PAY_PERIOD'")
+    )
     attendance_based: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
@@ -189,6 +198,12 @@ class CutoffBenefitModel(Base):
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_payroll_cutoff_benefit_amount"),
         CheckConstraint(
+            "withholding_timing = 'PAY_PERIOD' OR "
+            "(withholding_timing = 'YEAR_END' AND category = 'ONE_TIME_BONUS' "
+            "AND tax_treatment = 'TAXABLE')",
+            name="ck_payroll_cutoff_benefit_withholding_timing",
+        ),
+        CheckConstraint(
             "category != 'EMPLOYEE_DEDUCTION' OR attendance_based = false",
             name="ck_payroll_cutoff_benefit_deduction_not_attendance_based",
         ),
@@ -221,6 +236,9 @@ class CutoffBenefitModel(Base):
     benefit_name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
     tax_treatment: Mapped[str] = mapped_column(String(20), nullable=False)
+    withholding_timing: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'PAY_PERIOD'")
+    )
     attendance_based: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false")
     )
@@ -307,6 +325,10 @@ class EmployeeBenefitEntitlementModel(Base):
             "effective_to IS NULL OR effective_to >= effective_from",
             name="ck_employee_benefit_entitlement_effective_dates",
         ),
+        CheckConstraint(
+            "schedule IN ('FIRST_HALF', 'SECOND_HALF', 'EVERY_CUTOFF')",
+            name="ck_employee_benefit_entitlement_schedule",
+        ),
         UniqueConstraint(
             "employee_id",
             "benefit_type_id",
@@ -325,6 +347,9 @@ class EmployeeBenefitEntitlementModel(Base):
         PGUUID(as_uuid=True), ForeignKey("payroll.benefit_types.id"), nullable=False
     )
     amount_per_occurrence: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    schedule: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'EVERY_CUTOFF'")
+    )
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
@@ -415,6 +440,11 @@ class StatutoryContributionBracketModel(Base):
             "AND employer_additional_fixed_amount >= 0",
             name="ck_payroll_contribution_fixed_amounts",
         ),
+        CheckConstraint(
+            "(employee_contribution_cap IS NULL OR employee_contribution_cap >= 0) "
+            "AND (employer_contribution_cap IS NULL OR employer_contribution_cap >= 0)",
+            name="ck_payroll_contribution_caps",
+        ),
         UniqueConstraint(
             "schedule_id", "bracket_number", name="uq_payroll_contribution_bracket_number"
         ),
@@ -459,6 +489,12 @@ class StatutoryContributionBracketModel(Base):
     employer_additional_fixed_amount: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, server_default=text("0")
     )
+    employee_contribution_cap: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
+    employer_contribution_cap: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2), nullable=True
+    )
 
 
 class WithholdingTaxScheduleModel(Base):
@@ -476,6 +512,10 @@ class WithholdingTaxScheduleModel(Base):
             "tax_exempt_benefit_limit >= 0",
             name="ck_payroll_tax_exempt_benefit_limit",
         ),
+        CheckConstraint(
+            "calculation_basis IN ('ANNUAL_YTD', 'SEMI_MONTHLY')",
+            name="ck_payroll_withholding_tax_calculation_basis",
+        ),
         UniqueConstraint("effective_from", name="uq_payroll_withholding_tax_period"),
         {"schema": "payroll"},
     )
@@ -487,6 +527,9 @@ class WithholdingTaxScheduleModel(Base):
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     tax_exempt_benefit_limit: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    calculation_basis: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'SEMI_MONTHLY'")
+    )
     source_reference: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'DRAFT'")
@@ -690,3 +733,224 @@ class PayrollOpeningYtdBalanceModel(Base):
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=False
     )
+
+
+class PayrollSystemParametersModel(Base):
+    __tablename__ = "company_system_parameters"
+    __table_args__ = (
+        CheckConstraint(
+            "statutory_contribution_timing IN ('PER_CUTOFF', 'FINAL_CUTOFF')",
+            name="ck_payroll_company_system_parameters_contribution_timing",
+        ),
+        {"schema": "payroll"},
+    )
+
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("core.companies.id"), primary_key=True
+    )
+    year_end_wtax_reconciliation_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    thirteenth_month_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    schedule_assignment_approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    statutory_contribution_timing: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'PER_CUTOFF'")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=True
+    )
+
+
+class ThirteenthMonthRunModel(Base):
+    __tablename__ = "thirteenth_month_runs"
+    __table_args__ = (
+        CheckConstraint("tax_year BETWEEN 1900 AND 9999", name="ck_payroll_thirteenth_month_year"),
+        Index(
+            "uq_payroll_thirteenth_month_current_year",
+            "company_id",
+            "tax_year",
+            unique=True,
+            postgresql_where=text("is_current AND company_id IS NOT NULL"),
+        ),
+        {"schema": "payroll"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("core.companies.id"), nullable=True
+    )
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_period_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    covered_period_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    calculated_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=False
+    )
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ThirteenthMonthResultModel(Base):
+    __tablename__ = "thirteenth_month_results"
+    __table_args__ = (
+        CheckConstraint(
+            "basic_salary_earned >= 0 AND thirteenth_month_pay >= 0 "
+            "AND tax_exempt_amount >= 0 AND taxable_amount >= 0 "
+            "AND source_payroll_periods >= 0",
+            name="ck_payroll_thirteenth_month_result_amounts",
+        ),
+        UniqueConstraint(
+            "run_id", "employee_id", name="uq_payroll_thirteenth_month_result_employee"
+        ),
+        {"schema": "payroll"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("payroll.thirteenth_month_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("hr.employees.id"), nullable=False
+    )
+    employee_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    basic_salary_earned: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    thirteenth_month_pay: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    tax_exempt_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    source_payroll_periods: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class OffCyclePayrollRunModel(Base):
+    __tablename__ = "off_cycle_payroll_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('DRAFT', 'PENDING', 'APPROVED', 'PAID', 'REJECTED')",
+            name="ck_off_cycle_payroll_run_status",
+        ),
+        CheckConstraint(
+            "(run_type = 'BENEFIT' AND benefit_type_id IS NOT NULL "
+            "AND thirteenth_month_run_id IS NULL) OR "
+            "(run_type = 'THIRTEENTH_MONTH' AND benefit_type_id IS NOT NULL "
+            "AND thirteenth_month_run_id IS NOT NULL)",
+            name="ck_off_cycle_payroll_run_source",
+        ),
+        Index(
+            "ix_off_cycle_payroll_run_paid_company_date",
+            "company_id",
+            "actual_payment_date",
+            postgresql_where=text("status = 'PAID'"),
+        ),
+        {"schema": "payroll"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    company_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("core.companies.id"), nullable=False
+    )
+    payroll_group_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("payroll.payroll_groups.id"), nullable=False
+    )
+    benefit_type_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("payroll.benefit_types.id"), nullable=False
+    )
+    thirteenth_month_run_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("payroll.thirteenth_month_runs.id"), nullable=True
+    )
+    run_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default=text("'BENEFIT'")
+    )
+    proposed_payment_date: Mapped[date] = mapped_column(Date, nullable=False)
+    actual_payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'DRAFT'")
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=False
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OffCyclePayrollLineModel(Base):
+    __tablename__ = "off_cycle_payroll_lines"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_off_cycle_payroll_line_amount"),
+        CheckConstraint(
+            "taxable_amount >= 0 AND exempt_limited_amount >= 0 "
+            "AND withholding_tax >= 0 AND net_amount >= 0",
+            name="ck_off_cycle_payroll_line_tax_amounts",
+        ),
+        UniqueConstraint(
+            "run_id", "employee_id", name="uq_off_cycle_payroll_line_run_employee"
+        ),
+        Index("ix_off_cycle_payroll_line_13m_result", "thirteenth_month_result_id"),
+        Index("ix_off_cycle_payroll_line_employee", "employee_id"),
+        {"schema": "payroll"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("payroll.off_cycle_payroll_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("hr.employees.id"), nullable=False
+    )
+    thirteenth_month_result_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("payroll.thirteenth_month_results.id"), nullable=True
+    )
+    employee_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    benefit_code: Mapped[str] = mapped_column(String(30), nullable=False)
+    benefit_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    tax_treatment: Mapped[str] = mapped_column(String(20), nullable=False)
+    withholding_timing: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'PAY_PERIOD'")
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    exempt_limited_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    withholding_tax: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    net_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), nullable=False, server_default=text("0")
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

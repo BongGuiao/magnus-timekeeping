@@ -114,6 +114,27 @@ class StatutoryScheduleUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.repository.create_contribution_bracket.assert_not_awaited()
 
+    async def test_pagibig_brackets_require_monthly_contribution_caps(self) -> None:
+        pagibig_schedule = schedule()
+        pagibig_schedule.program_code = "PAGIBIG"
+        self.repository.get_contribution_schedule.return_value = pagibig_schedule
+        bracket = ContributionBracketInput(
+            bracket_number=1,
+            compensation_min=Decimal("0"),
+            compensation_max=None,
+            contribution_base=Decimal("0"),
+            employee_rate=Decimal("0.01"),
+            employer_rate=Decimal("0.02"),
+            employee_fixed_amount=Decimal("0"),
+            employer_fixed_amount=Decimal("0"),
+            employer_additional_fixed_amount=Decimal("0"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "require employee and employer monthly"):
+            await self.use_cases.create_contribution_bracket(pagibig_schedule.id, bracket)
+
+        self.repository.create_contribution_bracket.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from app.core.generics.mapper import ResponseEnvelope
 from app.payroll.application.benefit_inputs import (
     BenefitTypeInput,
     CutoffBenefitInput,
+    CutoffBenefitUploadRow,
     EmployeeBenefitEntitlementInput,
     EmployeeBenefitDeductionInput,
 )
@@ -42,6 +43,7 @@ BenefitCategoryValue = Literal[
 TaxTreatmentValue = Literal["TAXABLE", "EXEMPT", "EXEMPT_LIMITED"]
 DeductionScheduleValue = Literal["FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"]
 BenefitPostingScheduleValue = Literal["FIRST_HALF", "SECOND_HALF", "EVERY_CUTOFF"]
+BenefitWithholdingTimingValue = Literal["PAY_PERIOD", "YEAR_END"]
 
 
 class BenefitTypeWriteSchema(BaseModel):
@@ -50,6 +52,7 @@ class BenefitTypeWriteSchema(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     category: BenefitCategoryValue
     tax_treatment: TaxTreatmentValue
+    withholding_timing: BenefitWithholdingTimingValue = "PAY_PERIOD"
     attendance_based: bool = False
     deduct_for_late: bool = False
     deduct_for_undertime: bool = False
@@ -80,6 +83,41 @@ class CutoffBenefitWriteSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CutoffBenefitUploadRowSchema(BaseModel):
+    employee_no: str = Field(min_length=1, max_length=30)
+    benefit_code: str = Field(min_length=1, max_length=30)
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    notes: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CutoffBenefitUploadSchema(BaseModel):
+    rows: list[CutoffBenefitUploadRowSchema] = Field(min_length=1, max_length=1000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CutoffDeductionUploadRowSchema(BaseModel):
+    employee_no: str = Field(min_length=1, max_length=30)
+    deduction_code: str = Field(min_length=1, max_length=30)
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    notes: str | None = Field(default=None, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CutoffDeductionUploadSchema(BaseModel):
+    rows: list[CutoffDeductionUploadRowSchema] = Field(min_length=1, max_length=1000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class CutoffBenefitUploadResultSchema(BaseModel):
+    created: int
+    updated: int
+
+
 class CutoffBenefitSchema(BaseModel):
     id: UUID
     cutoff_id: UUID
@@ -89,6 +127,7 @@ class CutoffBenefitSchema(BaseModel):
     benefit_name: str
     category: BenefitCategoryValue
     tax_treatment: TaxTreatmentValue
+    withholding_timing: BenefitWithholdingTimingValue
     amount: Decimal
     notes: str | None
     attendance_based: bool
@@ -122,6 +161,7 @@ class EmployeeBenefitEntitlementWriteSchema(BaseModel):
     employee_id: UUID
     benefit_type_id: UUID
     amount_per_occurrence: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    schedule: BenefitPostingScheduleValue
     effective_from: date
     effective_to: date | None = None
 
@@ -256,6 +296,7 @@ def _benefit_type_input(payload: BenefitTypeWriteSchema, actor_id: UUID) -> Bene
         name=payload.name,
         category=payload.category,
         tax_treatment=payload.tax_treatment,
+        withholding_timing=payload.withholding_timing,
         actor_id=actor_id,
         attendance_based=payload.attendance_based,
         deduct_for_late=payload.deduct_for_late,
@@ -298,6 +339,7 @@ def _employee_benefit_entitlement_input(
         employee_id=payload.employee_id,
         benefit_type_id=payload.benefit_type_id,
         amount_per_occurrence=payload.amount_per_occurrence,
+        schedule=payload.schedule,
         effective_from=payload.effective_from,
         effective_to=payload.effective_to,
         actor_id=actor_id,
@@ -413,6 +455,49 @@ async def list_employee_deductions(
     except ValueError as error:
         _raise_benefit_error(error)
     return ResponseEnvelope(status="success", data=deductions)
+
+
+@router.post(
+    "/cutoffs/{cutoff_id}/deductions/upload",
+    response_model=ResponseEnvelope[CutoffBenefitUploadResultSchema],
+)
+async def upload_cutoff_deductions(
+    cutoff_id: UUID,
+    payload: CutoffDeductionUploadSchema,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_cases: BenefitUseCases = Depends(get_benefit_use_cases),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    rows = tuple(
+        CutoffBenefitUploadRow(
+            employee_no=row.employee_no,
+            benefit_code=row.deduction_code,
+            amount=row.amount,
+            notes=row.notes,
+        )
+        for row in payload.rows
+    )
+    try:
+        created, updated = await use_cases.upload_cutoff_deductions(
+            cutoff_id, rows, actor_id
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ValueError as error:
+        _raise_benefit_error(error)
+    await _audit(
+        es_client,
+        actor_id=actor_id,
+        action="BULK_UPSERT",
+        resource="payroll_cutoff_deduction",
+        resource_id=cutoff_id,
+        after={"created": created, "updated": updated, "row_count": len(rows)},
+    )
+    return ResponseEnvelope(
+        status="success",
+        data=CutoffBenefitUploadResultSchema(created=created, updated=updated),
+    )
 
 
 @router.post(
@@ -613,6 +698,49 @@ async def list_cutoff_benefits(
     use_cases: BenefitUseCases = Depends(get_benefit_use_cases),
 ):
     return ResponseEnvelope(status="success", data=await use_cases.list_cutoff_benefits(cutoff_id))
+
+
+@router.post(
+    "/cutoffs/{cutoff_id}/upload",
+    response_model=ResponseEnvelope[CutoffBenefitUploadResultSchema],
+)
+async def upload_cutoff_benefits(
+    cutoff_id: UUID,
+    payload: CutoffBenefitUploadSchema,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_cases: BenefitUseCases = Depends(get_benefit_use_cases),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    rows = tuple(
+        CutoffBenefitUploadRow(
+            employee_no=row.employee_no,
+            benefit_code=row.benefit_code,
+            amount=row.amount,
+            notes=row.notes,
+        )
+        for row in payload.rows
+    )
+    try:
+        created, updated = await use_cases.upload_cutoff_benefits(
+            cutoff_id, rows, actor_id
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except ValueError as error:
+        _raise_benefit_error(error)
+    await _audit(
+        es_client,
+        actor_id=actor_id,
+        action="BULK_UPSERT",
+        resource="payroll_cutoff_benefit",
+        resource_id=cutoff_id,
+        after={"created": created, "updated": updated, "row_count": len(rows)},
+    )
+    return ResponseEnvelope(
+        status="success",
+        data=CutoffBenefitUploadResultSchema(created=created, updated=updated),
+    )
 
 
 @router.post(

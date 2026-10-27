@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from app.payroll.domain.entities.statutory_schedules import ContributionProgram
@@ -27,6 +28,8 @@ class ContributionBracketInput:
     employee_fixed_amount: Decimal
     employer_fixed_amount: Decimal
     employer_additional_fixed_amount: Decimal
+    employee_contribution_cap: Decimal | None = None
+    employer_contribution_cap: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class WithholdingTaxScheduleInput:
     tax_exempt_benefit_limit: Decimal
     source_reference: str
     actor_id: UUID
+    calculation_basis: Literal["ANNUAL_YTD", "SEMI_MONTHLY"] = "SEMI_MONTHLY"
 
 
 @dataclass(frozen=True)

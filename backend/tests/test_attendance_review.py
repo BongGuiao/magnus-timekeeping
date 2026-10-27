@@ -16,11 +16,12 @@ from app.attendance.domain.entities.attendance_review import (
     ReviewableAttendance,
     ReviewableAttendanceRecord,
 )
-from app.attendance.domain.exceptions import RecordNotFoundError, RuleViolationError
+from app.attendance.domain.exceptions import ConflictError, RecordNotFoundError, RuleViolationError
 from app.attendance.infrastructure.attendance_review_router import (
     approve_supervisor_invalid_attendance,
     get_supervisor_invalid_attendance,
 )
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import CutoffDeadlineError
 
 # 2026-10-12 17:00 UTC is already 2026-10-13 in Manila.
 NOW = datetime(2026, 10, 12, 17, tzinfo=timezone.utc)
@@ -45,6 +46,7 @@ class FakeReviewRepository:
         self.record = record
         self.calls = []
         self.saved = None
+        self.closed_error = None
 
     async def list_invalid(self, supervisor_employee_id, today):
         self.calls.append(("list", supervisor_employee_id, today))
@@ -56,6 +58,11 @@ class FakeReviewRepository:
 
     async def save_review(self, attendance):
         self.saved = attendance
+
+    async def require_attendance_open(self, employee_id, work_date, now):
+        self.calls.append(("require_open", employee_id, work_date))
+        if self.closed_error is not None:
+            raise self.closed_error
 
 
 class FakeUnitOfWork:
@@ -143,6 +150,14 @@ class ApproveInvalidAttendanceTests(unittest.IsolatedAsyncioTestCase):
         self.refresher.request_refresh.assert_not_called()
         self.audit.record.assert_not_awaited()
         self.assertIs(self.uow.exit_exception, RecordNotFoundError)
+
+    async def test_attendance_in_closed_cutoff_cannot_be_approved(self):
+        self.repository.closed_error = CutoffDeadlineError("deadline passed")
+        with self.assertRaisesRegex(ConflictError, "deadline passed"):
+            await self.approve()
+        self.assertIsNone(self.repository.saved)
+        self.assertEqual(self.record.attendance.record_status, "INVALID")
+        self.audit.record.assert_not_awaited()
 
 
 class ReviewRouterTests(unittest.IsolatedAsyncioTestCase):

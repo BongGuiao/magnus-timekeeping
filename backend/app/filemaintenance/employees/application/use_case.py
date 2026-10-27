@@ -1,9 +1,11 @@
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
+from sqlalchemy import or_, select
 
 from app.auth.application.accounts import (
     DEFAULT_EMPLOYEE_PASSWORD,
@@ -17,7 +19,12 @@ from app.core.generics.mapper import GenericMapper
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
-from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
+from app.filemaintenance.employees.infrastructure.db_model import (
+    EmployeeModel,
+    EmploymentAssignmentModel,
+)
+
+MANILA_TIMEZONE = ZoneInfo("Asia/Manila")
 
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_payload = payload.copy()
@@ -86,24 +93,64 @@ class CreateEmployeeUseCase(BaseUseCase[EmployeeEntity]):
             return employee
 
 
+def direct_report_conditions(supervisor_employee_id: UUID, current_date: date) -> tuple:
+    """Same 'current direct report' rule used by supervisor attendance views."""
+    return (
+        EmployeeModel.id.in_(
+            select(EmploymentAssignmentModel.employee_id).where(
+                EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
+                EmploymentAssignmentModel.is_active.is_(True),
+                EmploymentAssignmentModel.status == "ACTIVE",
+                EmploymentAssignmentModel.effective_from <= current_date,
+                or_(
+                    EmploymentAssignmentModel.effective_to.is_(None),
+                    EmploymentAssignmentModel.effective_to >= current_date,
+                ),
+                or_(
+                    EmploymentAssignmentModel.separation_date.is_(None),
+                    EmploymentAssignmentModel.separation_date >= current_date,
+                ),
+            )
+        ),
+    )
+
+
+def _manila_today() -> date:
+    return datetime.now(MANILA_TIMEZONE).date()
+
+
 class GetEmployeeUseCase(BaseUseCase[EmployeeEntity | None]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self, employee_id: UUID) -> EmployeeEntity | None:
+    async def _execute(
+        self,
+        employee_id: UUID,
+        supervisor_employee_id: UUID | None = None,
+    ) -> EmployeeEntity | None:
+        criteria = [EmployeeModel.id == employee_id]
+        if supervisor_employee_id is not None:
+            criteria.extend(direct_report_conditions(supervisor_employee_id, _manila_today()))
         async with self.uow as uow:
             repo = uow.get_repo(EmployeeEntity, EmployeeModel)
-            return await repo.find_one(EmployeeModel.id == employee_id)
+            return await repo.find_one(*criteria)
 
 
 class ListEmployeesUseCase(BaseUseCase[list[EmployeeEntity]]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self) -> list[EmployeeEntity]:
+    async def _execute(
+        self,
+        supervisor_employee_id: UUID | None = None,
+    ) -> list[EmployeeEntity]:
+        criteria = []
+        if supervisor_employee_id is not None:
+            criteria.extend(direct_report_conditions(supervisor_employee_id, _manila_today()))
         async with self.uow as uow:
             repo = uow.get_repo(EmployeeEntity, EmployeeModel)
             return await repo.find_all(
+                *criteria,
                 order_by=EmployeeModel.employee_no,
                 offset=0,
                 limit=1000,

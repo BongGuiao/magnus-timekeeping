@@ -14,12 +14,27 @@ import type { EmployeeWritePayload } from '../lib/employeeApi'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchOrgUnits } from '../lib/orgUnitApi'
 import { EMPLOYEE_CSV_HEADERS, parseEmployeeCsv } from '../lib/employeeCsv'
+import {
+  EMPLOYMENT_ASSIGNMENT_CSV_HEADERS,
+  parseEmploymentAssignmentCsv,
+} from '../lib/employmentAssignmentCsv'
+import {
+  createEmploymentAssignmentsBatch,
+  EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
+} from '../lib/employeeRelatedApi'
+import type { EmploymentAssignmentWritePayload } from '../types/employeeRelated'
+import { OPERATIONAL_GROUPS } from '../types/employeeRelated'
+import { fetchLocations } from '../lib/locationApi'
+import type { Location } from '../types/location'
+import { fetchPayrollGroups } from '../lib/payrollGroupApi'
+import type { PayrollGroup } from '../lib/payrollGroupApi'
 import { EmployeeSkillsPanel, EmploymentAssignmentsPanel } from '../features/employees/EmployeeRelatedPanels'
 import EmployeeEntitlementsPanel from '../features/employees/EmployeeEntitlementsPanel'
 import EmployeeScheduleAssignmentsPanel from '../features/employees/EmployeeScheduleAssignmentsPanel'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
 import EmployeeWfhPanel from '../features/employees/EmployeeWfhPanel'
 import EmployeeRolePanel from '../features/employees/EmployeeRolePanel'
+import { hasPermission } from '../types/role'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
 import type { OrgUnit } from '../types/orgUnit'
@@ -72,6 +87,14 @@ interface EmployeeCsvResult {
   employeeNo: string
   status: 'created' | 'skipped' | 'failed'
   message: string
+}
+
+interface EmploymentAssignmentCsvPreviewRow {
+  rowNumber: number
+  employeeNo: string
+  companyCode: string
+  payload: EmploymentAssignmentWritePayload | null
+  errors: string[]
 }
 
 const emptyEmployee: EmployeeFormValues = {
@@ -154,12 +177,27 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [csvResults, setCsvResults] = useState<EmployeeCsvResult[]>([])
   const [csvError, setCsvError] = useState('')
   const [isImportingCsv, setIsImportingCsv] = useState(false)
+  const [isAssignmentCsvImportOpen, setIsAssignmentCsvImportOpen] = useState(false)
+  const [assignmentCsvFileName, setAssignmentCsvFileName] = useState('')
+  const [assignmentCsvPreviewRows, setAssignmentCsvPreviewRows] = useState<EmploymentAssignmentCsvPreviewRow[]>([])
+  const [assignmentCsvError, setAssignmentCsvError] = useState('')
+  const [assignmentCsvMessage, setAssignmentCsvMessage] = useState('')
+  const [isImportingAssignmentCsv, setIsImportingAssignmentCsv] = useState(false)
+  const [assignmentLookups, setAssignmentLookups] = useState<{
+    locations: Location[]
+    payrollGroups: PayrollGroup[]
+    loaded: boolean
+    error: string
+  }>({ locations: [], payrollGroups: [], loaded: false, error: '' })
   const [companies, setCompanies] = useState<Company[]>([])
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([])
+  const canManageEmployees = hasPermission('employees.manage')
+  const canManageRoles = hasPermission('system.manage')
+  const canManagePayroll = hasPermission('payroll.manage')
   const visibleEmployeeTabs = employeeTabs.filter((tab) =>
     (tab.id !== 'entitlements' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'wfh' || localStorage.getItem('role') === 'admin')
-    && (tab.id !== 'role' || (localStorage.getItem('role') === 'admin' && Boolean(editingEmployee)))
+    && (tab.id !== 'role' || (canManageRoles && Boolean(editingEmployee)))
     && (tab.id !== 'schedule' || (localStorage.getItem('role') === 'admin' && Boolean(editingEmployee))),
   )
 
@@ -176,6 +214,27 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       .finally(() => { if (isCurrent) setIsLoading(false) })
     return () => { isCurrent = false }
   }, [])
+
+  useEffect(() => {
+    if (!canManageEmployees) return
+    let isCurrent = true
+    Promise.all([
+      fetchLocations(),
+      canManagePayroll ? fetchPayrollGroups() : Promise.resolve<PayrollGroup[]>([]),
+    ])
+      .then(([locations, payrollGroups]) => {
+        if (isCurrent) setAssignmentLookups({ locations, payrollGroups, loaded: true, error: '' })
+      })
+      .catch((error: unknown) => {
+        if (isCurrent) setAssignmentLookups({
+          locations: [],
+          payrollGroups: [],
+          loaded: true,
+          error: error instanceof Error ? error.message : 'Could not load assignment lookup data.',
+        })
+      })
+    return () => { isCurrent = false }
+  }, [canManageEmployees, canManagePayroll])
 
   useEffect(() => {
     if (!successMessage) return
@@ -424,6 +483,209 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     setIsImportingCsv(false)
   }
 
+  function downloadEmploymentAssignmentCsvTemplate() {
+    const example = [
+      'EMP-0002',
+      'COMPANY-CODE',
+      '',
+      '',
+      'REGULAR',
+      'RANK_AND_FILE',
+      '',
+      '',
+      '',
+      '2026-01-01',
+      '2026-01-01',
+      '',
+      '',
+      'ACTIVE',
+      'true',
+    ]
+    const contents = [EMPLOYMENT_ASSIGNMENT_CSV_HEADERS.join(','), example.join(',')].join('\r\n')
+    const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'employment-assignment-import-template.csv'
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function selectEmploymentAssignmentCsv(file: File | undefined) {
+    setAssignmentCsvError('')
+    setAssignmentCsvMessage('')
+    setAssignmentCsvPreviewRows([])
+    setAssignmentCsvFileName(file?.name ?? '')
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      setAssignmentCsvError('The CSV file must be 5 MB or smaller.')
+      return
+    }
+    if (!assignmentLookups.loaded) {
+      setAssignmentCsvError('Assignment lookup data is still loading. Please try again shortly.')
+      return
+    }
+    if (assignmentLookups.error) {
+      setAssignmentCsvError(`Cannot validate the assignment file: ${assignmentLookups.error}`)
+      return
+    }
+
+    try {
+      const parsedRows = parseEmploymentAssignmentCsv(await file.text())
+      const seenPairs = new Set<string>()
+      const previewRows = parsedRows.map(({ rowNumber, values }) => {
+        const errors: string[] = []
+        const employeeNo = values.employee_no.trim()
+        const companyCode = values.company_code.trim()
+        const employee = employees.find((item) => item.employee_no.trim().toLocaleLowerCase() === employeeNo.toLocaleLowerCase())
+        const company = companies.find((item) => item.company_code.trim().toLocaleLowerCase() === companyCode.toLocaleLowerCase())
+        if (!employee) errors.push(`Employee number "${employeeNo || '(blank)'}" was not found.`)
+        if (!company) errors.push(`Company code "${companyCode || '(blank)'}" was not found.`)
+
+        let orgUnitId: string | null = null
+        const orgUnitCode = values.org_unit_code.trim()
+        if (orgUnitCode) {
+          const orgUnit = orgUnits.find((item) =>
+            item.company_id === company?.id
+            && item.org_unit_code.trim().toLocaleLowerCase() === orgUnitCode.toLocaleLowerCase(),
+          )
+          if (!orgUnit) errors.push(`Org unit code "${orgUnitCode}" was not found for this company.`)
+          else orgUnitId = orgUnit.id
+        }
+
+        let supervisorEmployeeId: string | null = null
+        const supervisorNo = values.supervisor_employee_no.trim()
+        if (supervisorNo) {
+          const supervisor = employees.find((item) => item.employee_no.trim().toLocaleLowerCase() === supervisorNo.toLocaleLowerCase())
+          if (!supervisor) errors.push(`Supervisor employee number "${supervisorNo}" was not found.`)
+          else if (supervisor.id === employee?.id) errors.push('An employee cannot be their own supervisor.')
+          else supervisorEmployeeId = supervisor.id
+        }
+
+        let payrollGroupId: string | null = null
+        const payrollGroupCode = values.payroll_group_code.trim()
+        if (payrollGroupCode && !canManagePayroll) {
+          errors.push('Payroll group can only be set by HR payroll personnel. Leave payroll_group_code blank.')
+        } else if (payrollGroupCode) {
+          const payrollGroup = assignmentLookups.payrollGroups.find((item) =>
+            item.company_id === company?.id
+            && item.payroll_group_code.trim().toLocaleLowerCase() === payrollGroupCode.toLocaleLowerCase(),
+          )
+          if (!payrollGroup) errors.push(`Payroll group code "${payrollGroupCode}" was not found for this company.`)
+          else payrollGroupId = payrollGroup.id
+        }
+
+        const locationIds: string[] = []
+        const locationCodes = values.location_codes.split(';').map((code) => code.trim()).filter(Boolean)
+        for (const locationCode of locationCodes) {
+          const location = assignmentLookups.locations.find((item) =>
+            item.company_id === company?.id
+            && item.location_code.trim().toLocaleLowerCase() === locationCode.toLocaleLowerCase(),
+          )
+          if (!location) errors.push(`Location code "${locationCode}" was not found for this company.`)
+          else if (!locationIds.includes(location.id)) locationIds.push(location.id)
+        }
+
+        const employmentType = values.employment_type.trim()
+        const employeeCategory = values.employee_category.trim()
+        if (!employmentType) errors.push('Employment type is required.')
+        if (employmentType.length > 30) errors.push('Employment type must be 30 characters or fewer.')
+        if (!employeeCategory) errors.push('Employee category is required.')
+        if (employeeCategory.length > 30) errors.push('Employee category must be 30 characters or fewer.')
+
+        const operationalGroupInput = values.operational_group.trim().toUpperCase()
+        const operationalGroup = OPERATIONAL_GROUPS.find((group) => group === operationalGroupInput) ?? null
+        if (operationalGroupInput && !operationalGroup) {
+          errors.push(`Operational group must be one of: ${OPERATIONAL_GROUPS.join(', ')}.`)
+        }
+        const status = (values.status.trim() || 'ACTIVE').toUpperCase()
+        if (status !== 'ACTIVE' && status !== 'INACTIVE') errors.push('Status must be ACTIVE or INACTIVE.')
+        const activeInput = values.is_active.trim().toLocaleLowerCase()
+        let isActive: boolean | null = true
+        if (activeInput && ['true', 'yes', '1', 'active', 'enabled'].includes(activeInput)) isActive = true
+        else if (activeInput && ['false', 'no', '0', 'inactive', 'disabled'].includes(activeInput)) isActive = false
+        else if (activeInput) isActive = null
+        if (isActive === null) errors.push('is_active must be true/false, yes/no, or 1/0.')
+
+        const hireDate = values.hire_date.trim()
+        const effectiveFrom = values.effective_from.trim()
+        const effectiveTo = values.effective_to.trim() || null
+        const separationDate = values.separation_date.trim() || null
+        for (const [label, dateValue, required] of [
+          ['hire_date', hireDate, true],
+          ['effective_from', effectiveFrom, true],
+          ['effective_to', effectiveTo ?? '', false],
+          ['separation_date', separationDate ?? '', false],
+        ] as const) {
+          if (required && !dateValue) errors.push(`${label} is required.`)
+          else if (dateValue && !z.iso.date().safeParse(dateValue).success) errors.push(`${label} must be a valid date in YYYY-MM-DD format.`)
+        }
+        if (effectiveTo && effectiveFrom && effectiveTo < effectiveFrom) errors.push('effective_to must be on or after effective_from.')
+        if (separationDate && hireDate && separationDate < hireDate) errors.push('separation_date must be on or after hire_date.')
+
+        if (employee && company) {
+          const pair = `${employee.id}:${company.id}`
+          if (seenPairs.has(pair)) errors.push('The employee and company combination is duplicated in this file.')
+          seenPairs.add(pair)
+        }
+
+        const payload = employee && company && isActive !== null
+          ? {
+              employee_id: employee.id,
+              company_id: company.id,
+              org_unit_id: orgUnitId,
+              position_id: null,
+              supervisor_employee_id: supervisorEmployeeId,
+              employment_type: employmentType,
+              employee_category: employeeCategory,
+              operational_group: operationalGroup,
+              payroll_group_id: payrollGroupId,
+              primary_location_id: locationIds[0] ?? null,
+              location_ids: locationIds,
+              authorized_geofence_ids: [],
+              hire_date: hireDate,
+              effective_from: effectiveFrom,
+              effective_to: effectiveTo,
+              separation_date: separationDate,
+              status,
+              is_active: isActive,
+            } satisfies EmploymentAssignmentWritePayload
+          : null
+        return { rowNumber, employeeNo, companyCode, payload, errors: [...new Set(errors)] }
+      })
+      setAssignmentCsvPreviewRows(previewRows)
+    } catch (error) {
+      setAssignmentCsvError(error instanceof Error ? error.message : 'Could not read the assignment CSV file.')
+    }
+  }
+
+  async function importEmploymentAssignmentCsv() {
+    if (isImportingAssignmentCsv || assignmentCsvPreviewRows.length === 0) return
+    const invalidRows = assignmentCsvPreviewRows.filter((row) => row.errors.length > 0 || row.payload === null)
+    if (invalidRows.length > 0) {
+      setAssignmentCsvError('The entire file was rejected. Fix every highlighted row before importing.')
+      return
+    }
+
+    setIsImportingAssignmentCsv(true)
+    setAssignmentCsvError('')
+    setAssignmentCsvMessage('')
+    try {
+      const batchRows = assignmentCsvPreviewRows.map((row) => {
+        if (!row.payload) throw new Error(`CSV row ${row.rowNumber} has no valid assignment payload.`)
+        return { row_number: row.rowNumber, assignment: row.payload }
+      })
+      const created = await createEmploymentAssignmentsBatch(batchRows)
+      window.dispatchEvent(new Event(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT))
+      setAssignmentCsvMessage(`${created.length} employment assignment${created.length === 1 ? '' : 's'} imported successfully.`)
+    } catch (error) {
+      setAssignmentCsvError(error instanceof Error
+        ? `The entire file was rejected. ${error.message}`
+        : 'The entire file was rejected. Could not import employment assignments.')
+    } finally {
+      setIsImportingAssignmentCsv(false)
+    }
+  }
+
   const columns: DataTableColumn<Employee>[] = [
     {
       key: 'employee',
@@ -465,11 +727,11 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       value: () => '',
       sortable: false,
       searchable: false,
-      render: (employee) => (
+      render: (employee) => canManageEmployees ? (
         <button type="button" onClick={() => openEdit(employee)} disabled={loadingEditId === employee.id} aria-label={`Edit ${employee.employee_no}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
           <Pencil className="h-4 w-4" />
         </button>
-      ),
+      ) : null,
     },
   ]
 
@@ -484,27 +746,44 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
           <div>
             <p className="text-xs font-bold uppercase text-indigo-600">Maintenance</p>
             <h1 className="mt-1 text-2xl font-extrabold text-slate-900">Employees</h1>
-            <p className="mt-1 text-sm text-slate-500">Maintain employee identity, contact details, and record status.</p>
+            <p className="mt-1 text-sm text-slate-500">
+              {canManageEmployees || hasPermission('employees.read')
+                ? 'Maintain employee identity, contact details, and record status.'
+                : 'Employees currently assigned to you as their supervisor.'}
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          {canManageEmployees && <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setIsAssignmentCsvImportOpen((current) => !current)
+                setAssignmentCsvError('')
+              }}
+              disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+              aria-expanded={isAssignmentCsvImportOpen}
+            >
+              <FileUp className="h-4 w-4" />
+              Import Assignments
+            </button>
             <button
               type="button"
               onClick={() => {
                 setIsCsvImportOpen((current) => !current)
                 setCsvError('')
               }}
-              disabled={isLoading || isImportingCsv}
+              disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
               className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
               aria-expanded={isCsvImportOpen}
             >
               <FileUp className="h-4 w-4" />
               Import CSV
             </button>
-            <button type="button" onClick={openCreate} disabled={isLoading || isImportingCsv} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={openCreate} disabled={isLoading || isImportingCsv || isImportingAssignmentCsv} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
               <Plus className="h-4 w-4" />
               New employee
             </button>
-          </div>
+          </div>}
         </div>
 
         {errorMessage && !isFormOpen && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
@@ -589,6 +868,82 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                 <p className="text-[11px] text-slate-500">
                   Rows are created one at a time. If a row fails, other valid rows continue; check each row result before closing this panel.
                 </p>
+              </>
+            )}
+          </section>
+        )}
+
+        {isAssignmentCsvImportOpen && (
+          <section aria-label="Import employment assignments from CSV" className="mb-5 space-y-4 rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
+                <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+                  Imports assignments for existing employees. The whole file is rejected if a row is invalid, duplicates another row, or matches an existing employee/company assignment. No rows are imported unless every row passes validation.
+                </p>
+              </div>
+              <button type="button" onClick={downloadEmploymentAssignmentCsvTemplate} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                <Download className="h-4 w-4" />
+                Download template
+              </button>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Assignment CSV file
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={isImportingAssignmentCsv || !assignmentLookups.loaded || Boolean(assignmentLookups.error)}
+                onChange={(event) => void selectEmploymentAssignmentCsv(event.target.files?.[0])}
+                className="mt-1.5 block w-full rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-emerald-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-emerald-700 disabled:opacity-50"
+              />
+            </label>
+            <p className="text-[11px] leading-5 text-slate-500">
+              Required: employee_no, company_code, employment_type, employee_category, hire_date, effective_from. Optional: org_unit_code, supervisor_employee_no, operational_group, payroll_group_code, location_codes (separate multiple codes with semicolons), effective_to, separation_date, status (defaults to ACTIVE), is_active (defaults to true). Dates must use YYYY-MM-DD. Maximum file size 5 MB and 500 rows.
+            </p>
+            {assignmentLookups.error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">Could not load data needed to validate assignments: {assignmentLookups.error}</p>}
+            {assignmentCsvFileName && <p className="text-xs font-medium text-slate-600">Selected: {assignmentCsvFileName}</p>}
+            {assignmentCsvError && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{assignmentCsvError}</p>}
+            {assignmentCsvMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{assignmentCsvMessage}</p>}
+            {assignmentCsvPreviewRows.length > 0 && (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-slate-600">
+                    {assignmentCsvPreviewRows.filter((row) => row.errors.length === 0).length} ready · {assignmentCsvPreviewRows.filter((row) => row.errors.length > 0).length} row(s) with errors
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void importEmploymentAssignmentCsv()}
+                    disabled={isImportingAssignmentCsv || assignmentCsvPreviewRows.some((row) => row.errors.length > 0 || row.payload === null)}
+                    className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <FileUp className="h-4 w-4" />
+                    {isImportingAssignmentCsv ? 'Importing all assignments…' : 'Import all assignments'}
+                  </button>
+                </div>
+                <div className="max-h-72 overflow-auto rounded-md border border-slate-200">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">CSV row</th>
+                        <th className="px-3 py-2">Employee number</th>
+                        <th className="px-3 py-2">Company code</th>
+                        <th className="px-3 py-2">Validation</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {assignmentCsvPreviewRows.map((row) => (
+                        <tr key={row.rowNumber}>
+                          <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.rowNumber}</td>
+                          <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-800">{row.employeeNo || '(blank)'}</td>
+                          <td className="whitespace-nowrap px-3 py-2 text-slate-700">{row.companyCode || '(blank)'}</td>
+                          <td className={`px-3 py-2 ${row.errors.length ? 'text-rose-700' : 'text-emerald-700'}`}>
+                            {row.errors.length ? row.errors.join(' ') : 'Ready'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </>
             )}
           </section>

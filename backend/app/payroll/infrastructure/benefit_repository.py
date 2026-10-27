@@ -10,9 +10,11 @@ from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollC
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
+from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 from app.payroll.application.benefit_inputs import (
     BenefitTypeInput,
     CutoffBenefitInput,
+    CutoffBenefitUploadRow,
     EmployeeBenefitEntitlementInput,
     EmployeeBenefitDeductionInput,
 )
@@ -38,6 +40,7 @@ def _benefit_type_entity(model: BenefitTypeModel) -> BenefitType:
         name=model.name,
         category=model.category,
         tax_treatment=model.tax_treatment,
+        withholding_timing=model.withholding_timing,
         is_active=model.is_active,
         created_at=model.created_at,
         created_by=model.created_by,
@@ -61,6 +64,7 @@ def _cutoff_benefit_entity(model: CutoffBenefitModel) -> CutoffBenefit:
         benefit_name=model.benefit_name,
         category=model.category,
         tax_treatment=model.tax_treatment,
+        withholding_timing=model.withholding_timing,
         amount=Decimal(model.amount),
         notes=model.notes,
         attendance_based=model.attendance_based,
@@ -98,6 +102,7 @@ def _employee_benefit_entitlement_entity(
         benefit_code=benefit_type.code,
         benefit_name=benefit_type.name,
         amount_per_occurrence=Decimal(model.amount_per_occurrence),
+        schedule=model.schedule,
         effective_from=model.effective_from,
         effective_to=model.effective_to,
         is_active=model.is_active,
@@ -131,6 +136,7 @@ class SqlAlchemyBenefitRepository:
                 name=data.name,
                 category=data.category,
                 tax_treatment=data.tax_treatment,
+                withholding_timing=data.withholding_timing,
                 attendance_based=data.attendance_based,
                 deduct_for_late=data.deduct_for_late,
                 deduct_for_undertime=data.deduct_for_undertime,
@@ -165,6 +171,7 @@ class SqlAlchemyBenefitRepository:
             model.name = data.name
             model.category = data.category
             model.tax_treatment = data.tax_treatment
+            model.withholding_timing = data.withholding_timing
             model.attendance_based = data.attendance_based
             model.deduct_for_late = data.deduct_for_late
             model.deduct_for_undertime = data.deduct_for_undertime
@@ -271,6 +278,7 @@ class SqlAlchemyBenefitRepository:
             model.benefit_name = benefit_type.name
             model.category = benefit_type.category
             model.tax_treatment = benefit_type.tax_treatment
+            model.withholding_timing = benefit_type.withholding_timing
             model.attendance_based = benefit_type.attendance_based
             model.deduct_for_late = benefit_type.deduct_for_late
             model.deduct_for_undertime = benefit_type.deduct_for_undertime
@@ -287,6 +295,139 @@ class SqlAlchemyBenefitRepository:
                     "This employee already has an entry for that benefit in this cutoff."
                 ) from error
             return _cutoff_benefit_entity(model)
+
+    async def upload_cutoff_benefits(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]:
+        return await self._upload_cutoff_entries(
+            cutoff_id, rows, actor_id, "benefit", False
+        )
+
+    async def upload_cutoff_deductions(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]:
+        return await self._upload_cutoff_entries(
+            cutoff_id, rows, actor_id, "deduction", True
+        )
+
+    async def _upload_cutoff_entries(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+        category: str,
+        is_deduction: bool,
+    ) -> tuple[int, int]:
+        error_name = "deductions" if is_deduction else "benefits"
+        async with self._uow as uow:
+            session = uow.session
+            if session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            cutoff = await session.scalar(
+                select(PayrollCutoffModel)
+                .where(PayrollCutoffModel.id == cutoff_id)
+                .with_for_update()
+            )
+            if cutoff is None or not cutoff.is_active:
+                raise LookupError("Payroll cutoff not found.")
+            if cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED":
+                raise ValueError(
+                    f"{error_name.capitalize()} cannot be changed for a locked payroll cutoff."
+                )
+
+            employee_rows = await session.execute(
+                select(EmployeeModel.id, EmployeeModel.employee_no)
+                .join(
+                    EmployeeCutoffResultModel,
+                    EmployeeCutoffResultModel.employee_id == EmployeeModel.id,
+                )
+                .where(EmployeeCutoffResultModel.cutoff_id == cutoff_id)
+            )
+            employees_by_no = {
+                employee_no.strip().upper(): employee_id
+                for employee_id, employee_no in employee_rows
+            }
+            type_query = select(BenefitTypeModel).where(
+                BenefitTypeModel.payroll_group_id == cutoff.payroll_group_id,
+                BenefitTypeModel.is_active.is_(True),
+            )
+            if is_deduction:
+                type_query = type_query.where(
+                    BenefitTypeModel.category == "EMPLOYEE_DEDUCTION"
+                )
+            else:
+                type_query = type_query.where(
+                    BenefitTypeModel.category != "EMPLOYEE_DEDUCTION"
+                )
+            benefit_models = list((await session.scalars(type_query)).all())
+            benefits_by_code = {item.code.strip().upper(): item for item in benefit_models}
+
+            resolved_rows: list[tuple[UUID, BenefitTypeModel, CutoffBenefitUploadRow]] = []
+            for row_number, row in enumerate(rows, start=2):
+                employee_id = employees_by_no.get(row.employee_no.strip().upper())
+                if employee_id is None:
+                    raise ValueError(
+                        f"Row {row_number}: employee {row.employee_no!r} does not have a time result in this cutoff."
+                    )
+                benefit_type = benefits_by_code.get(row.benefit_code.strip().upper())
+                if benefit_type is None:
+                    raise ValueError(
+                        f"Row {row_number}: {category} type "
+                        f"{row.benefit_code!r} is not active for this payroll group."
+                    )
+                resolved_rows.append((employee_id, benefit_type, row))
+
+            existing_models = list(
+                (
+                    await session.scalars(
+                        select(CutoffBenefitModel)
+                        .where(CutoffBenefitModel.cutoff_id == cutoff_id)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            existing_by_key = {
+                (item.employee_id, item.benefit_type_id): item
+                for item in existing_models
+            }
+            created_count = 0
+            updated_count = 0
+            now = datetime.now(timezone.utc)
+            for employee_id, benefit_type, row in resolved_rows:
+                model = existing_by_key.get((employee_id, benefit_type.id))
+                if model is None:
+                    model = CutoffBenefitModel(
+                        cutoff_id=cutoff_id,
+                        employee_id=employee_id,
+                        benefit_type_id=benefit_type.id,
+                        created_by=actor_id,
+                        row_version=1,
+                    )
+                    session.add(model)
+                    created_count += 1
+                else:
+                    model.row_version += 1
+                    updated_count += 1
+                model.benefit_code = benefit_type.code
+                model.benefit_name = benefit_type.name
+                model.category = benefit_type.category
+                model.tax_treatment = benefit_type.tax_treatment
+                model.withholding_timing = benefit_type.withholding_timing
+                model.attendance_based = benefit_type.attendance_based
+                model.deduct_for_late = benefit_type.deduct_for_late
+                model.deduct_for_undertime = benefit_type.deduct_for_undertime
+                model.amount = row.amount
+                model.notes = row.notes
+                model.updated_by = actor_id
+                model.updated_at = now
+            await session.flush()
+            return created_count, updated_count
 
     async def delete_cutoff_benefit(self, entry_id: UUID) -> None:
         async with self._uow as uow:
@@ -487,6 +628,7 @@ class SqlAlchemyBenefitRepository:
             model.employee_id = data.employee_id
             model.benefit_type_id = benefit_type.id
             model.amount_per_occurrence = data.amount_per_occurrence
+            model.schedule = data.schedule
             model.effective_from = data.effective_from
             model.effective_to = data.effective_to
             model.is_active = True

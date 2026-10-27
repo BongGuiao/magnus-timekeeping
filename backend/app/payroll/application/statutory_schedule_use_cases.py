@@ -126,6 +126,7 @@ class StatutoryScheduleUseCases:
         schedule = await self._repository.get_contribution_schedule(schedule_id)
         self._require_draft(schedule.status)
         self._validate_contribution_bracket(data)
+        self._validate_program_contribution_fields(schedule.program_code, data)
         return await self._repository.create_contribution_bracket(
             schedule_id=schedule_id, values=data
         )
@@ -137,6 +138,7 @@ class StatutoryScheduleUseCases:
         schedule = await self._repository.get_contribution_schedule(bracket.schedule_id)
         self._require_draft(schedule.status)
         self._validate_contribution_bracket(data)
+        self._validate_program_contribution_fields(schedule.program_code, data)
         return await self._repository.update_contribution_bracket(bracket_id, data)
 
     async def delete_contribution_bracket(self, bracket_id: UUID) -> None:
@@ -160,6 +162,7 @@ class StatutoryScheduleUseCases:
             effective_from=data.effective_from,
             effective_to=data.effective_to,
             tax_exempt_benefit_limit=data.tax_exempt_benefit_limit,
+            calculation_basis=data.calculation_basis,
             source_reference=data.source_reference.strip(),
             actor_id=data.actor_id,
         )
@@ -176,6 +179,7 @@ class StatutoryScheduleUseCases:
             effective_from=data.effective_from,
             effective_to=data.effective_to,
             tax_exempt_benefit_limit=data.tax_exempt_benefit_limit,
+            calculation_basis=data.calculation_basis,
             source_reference=data.source_reference.strip(),
             actor_id=data.actor_id,
         )
@@ -282,7 +286,25 @@ class StatutoryScheduleUseCases:
             employee_fixed_amount=data.employee_fixed_amount,
             employer_fixed_amount=data.employer_fixed_amount,
             employer_additional_fixed_amount=data.employer_additional_fixed_amount,
+            employee_contribution_cap=data.employee_contribution_cap,
+            employer_contribution_cap=data.employer_contribution_cap,
         )
+
+    @staticmethod
+    def _validate_program_contribution_fields(
+        program_code: ContributionProgram, data: ContributionBracketInput
+    ) -> None:
+        has_caps = (
+            data.employee_contribution_cap is not None
+            and data.employer_contribution_cap is not None
+        )
+        if program_code == "PAGIBIG" and not has_caps:
+            raise ValueError("Pag-IBIG brackets require employee and employer monthly contribution caps.")
+        if program_code != "PAGIBIG" and (
+            data.employee_contribution_cap is not None
+            or data.employer_contribution_cap is not None
+        ):
+            raise ValueError("Contribution caps are only valid for Pag-IBIG brackets.")
 
     @staticmethod
     def _validate_tax_schedule(data: WithholdingTaxScheduleInput) -> None:
@@ -294,6 +316,8 @@ class StatutoryScheduleUseCases:
         )
         if data.tax_exempt_benefit_limit < Decimal(0):
             raise ValueError("tax_exempt_benefit_limit cannot be negative.")
+        if data.calculation_basis not in {"ANNUAL_YTD", "SEMI_MONTHLY"}:
+            raise ValueError("Unsupported withholding-tax calculation basis.")
 
     @staticmethod
     def _validate_tax_bracket(data: WithholdingTaxBracketInput) -> None:

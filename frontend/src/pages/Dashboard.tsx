@@ -1638,8 +1638,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                     >
                       <StatCard
                         label="Payroll Review"
-                        value="Review now"
-                        hint="Acknowledge your payroll calculations"
+                        value="View"
+                        hint="View your payroll calculations"
                         icon="📊"
                         accent="emerald"
                         compact

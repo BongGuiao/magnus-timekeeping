@@ -11,6 +11,7 @@ from app.audit.service import log_entity_action
 from app.auth.domain.entities.user import RoleEntity, UserRoleEntity
 from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.roles.application.payroll_access import PayrollAccessViolationError
 from app.filemaintenance.roles.application.use_case import (
     CreateUserRoleUseCase,
     GetUserRoleUseCase,
@@ -124,6 +125,8 @@ async def create_user_role(
     values["assigned_by"] = actor_id
     try:
         result = await use_case.execute(values)
+    except PayrollAccessViolationError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except UserRoleReferenceError as error:
         _raise_reference_http_error(error)
     await log_entity_action(
@@ -156,7 +159,9 @@ async def update_user_role(
     if before is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User role not found.")
     try:
-        result = await use_case.execute(payload.id, values)
+        result = await use_case.execute(payload.id, values, actor_id)
+    except PayrollAccessViolationError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except UserRoleReferenceError as error:
         _raise_reference_http_error(error)
     if result is None:

@@ -4,6 +4,7 @@ from uuid import UUID
 from app.payroll.application.benefit_inputs import (
     BenefitTypeInput,
     CutoffBenefitInput,
+    CutoffBenefitUploadRow,
     EmployeeBenefitEntitlementInput,
     EmployeeBenefitDeductionInput,
 )
@@ -33,6 +34,20 @@ class BenefitRepository(Protocol):
     async def save_cutoff_benefit(
         self, data: CutoffBenefitInput, entry_id: UUID | None = None
     ) -> CutoffBenefit: ...
+
+    async def upload_cutoff_benefits(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]: ...
+
+    async def upload_cutoff_deductions(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]: ...
 
     async def delete_cutoff_benefit(self, entry_id: UUID) -> None: ...
 

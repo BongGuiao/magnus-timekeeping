@@ -1,6 +1,7 @@
-from datetime import date, datetime, timezone
-from typing import Literal, Protocol
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,52 +9,61 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.filemaintenance.employees.infrastructure.db_model import EmploymentAssignmentModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 
-CutoffPhase = Literal["EMPLOYEE", "SUPERVISOR", "HR"]
+PH_TIMEZONE = ZoneInfo("Asia/Manila")
 
 
 class CutoffDeadlineSource(Protocol):
     cutoff_code: str
-    employee_review_deadline: datetime | None
-    supervisor_deadline: datetime | None
-    hr_deadline: datetime | None
-
-
-_DEADLINE_FIELDS: dict[CutoffPhase, str] = {
-    "EMPLOYEE": "employee_review_deadline",
-    "SUPERVISOR": "supervisor_deadline",
-    "HR": "hr_deadline",
-}
+    attendance_deadline: datetime | None
 
 
 class CutoffDeadlineError(ValueError):
     pass
 
 
-def require_cutoff_phase_open(
+def validate_attendance_deadline(period_end: date, deadline: datetime | None) -> None:
+    """The deadline cannot close the cutoff before its last day has ended."""
+    if deadline is None:
+        return
+    last_day_end = datetime.combine(period_end + timedelta(days=1), time.min, tzinfo=PH_TIMEZONE)
+    if deadline < last_day_end:
+        raise ValueError("attendance_deadline must be after the last day of the cutoff period.")
+
+
+def is_cutoff_closed(cutoff: CutoffDeadlineSource, now: datetime | None = None) -> bool:
+    if getattr(cutoff, "locked_at", None) is not None:
+        return True
+    if str(getattr(cutoff, "status", "") or "").upper() == "LOCKED":
+        return True
+    deadline = cutoff.attendance_deadline
+    return deadline is not None and (now or datetime.now(timezone.utc)) > deadline
+
+
+def require_cutoff_open(
     cutoff: CutoffDeadlineSource | None,
-    phase: CutoffPhase,
     now: datetime | None = None,
 ) -> None:
-    if cutoff is None:
+    """Attendance covered by a lapsed or approved cutoff cannot be filed, changed or approved."""
+    if cutoff is None or not is_cutoff_closed(cutoff, now):
         return
-    deadline = getattr(cutoff, _DEADLINE_FIELDS[phase])
-    current_time = now or datetime.now(timezone.utc)
-    if deadline is not None and current_time > deadline:
-        phase_name = "employee filing" if phase == "EMPLOYEE" else (
-            "supervisor review" if phase == "SUPERVISOR" else "HR processing"
-        )
+    deadline = cutoff.attendance_deadline
+    if deadline is not None and (now or datetime.now(timezone.utc)) > deadline:
         raise CutoffDeadlineError(
-            f"The {phase_name} deadline for payroll cutoff {cutoff.cutoff_code} "
-            f"has passed ({deadline.isoformat()})."
+            f"The attendance deadline for payroll cutoff {cutoff.cutoff_code} passed on "
+            f"{deadline.astimezone(PH_TIMEZONE):%b %d, %Y %I:%M %p}. "
+            "Attendance covered by this cutoff can no longer be changed."
         )
+    raise CutoffDeadlineError(
+        f"Payroll cutoff {cutoff.cutoff_code} is already approved. "
+        "Attendance covered by this cutoff can no longer be changed."
+    )
 
 
-async def require_employee_phase_open(
+async def require_attendance_open(
     session: AsyncSession,
     employee_id: UUID,
     start_date: date,
     end_date: date,
-    phase: CutoffPhase,
     now: datetime | None = None,
 ) -> None:
     if end_date < start_date:
@@ -99,4 +109,4 @@ async def require_employee_phase_open(
             applicable[cutoff.id] = cutoff
 
     for cutoff in applicable.values():
-        require_cutoff_phase_open(cutoff, phase, now)
+        require_cutoff_open(cutoff, now)

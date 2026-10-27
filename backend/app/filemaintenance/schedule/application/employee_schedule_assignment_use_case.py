@@ -16,6 +16,7 @@ from app.filemaintenance.schedule.infrastructure.db_model import (
     RestDayPatternModel,
     ScheduleTemplateModel,
 )
+from app.payroll.infrastructure.db_model import PayrollSystemParametersModel
 
 
 class EmployeeScheduleAssignmentReferenceError(ValueError):
@@ -79,6 +80,22 @@ async def _validate_references(
             raise EmployeeScheduleAssignmentReferenceError("Rest day pattern not found.")
 
 
+async def _schedule_approval_required(
+    uow: GenUnitOfWork,
+    schedule_template_id: UUID,
+) -> bool:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    template = await uow.session.get(ScheduleTemplateModel, schedule_template_id)
+    if template is None:
+        raise EmployeeScheduleAssignmentReferenceError("Schedule template not found.")
+    parameters = await uow.session.get(
+        PayrollSystemParametersModel,
+        template.company_id,
+    )
+    return parameters is None or parameters.schedule_assignment_approval_required
+
+
 def _translate_integrity_error(error: IntegrityError) -> NoReturn:
     constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
     if constraint_name in (
@@ -114,11 +131,16 @@ class CreateEmployeeScheduleAssignmentUseCase(
                 )
                 if uow.session is None:
                     raise RuntimeError("UnitOfWork session is not active.")
+                approval_required = await _schedule_approval_required(
+                    uow,
+                    payload["schedule_template_id"],
+                )
+                now = datetime.now(timezone.utc)
                 model = EmployeeScheduleAssignmentModel(
                     **payload,
-                    status="DRAFT",
-                    approved_by=None,
-                    approved_at=None,
+                    status="DRAFT" if approval_required else "APPROVED",
+                    approved_by=None if approval_required else payload["created_by"],
+                    approved_at=None if approval_required else now,
                 )
                 uow.session.add(model)
                 await uow.session.flush()
@@ -240,9 +262,16 @@ class UpdateEmployeeScheduleAssignmentUseCase(
                     "reason",
                 }
                 if model.status == "APPROVED" and substantive_fields.intersection(payload):
-                    model.status = "DRAFT"
-                    model.approved_by = None
-                    model.approved_at = None
+                    if await _schedule_approval_required(
+                        uow,
+                        values["schedule_template_id"],
+                    ):
+                        model.status = "DRAFT"
+                        model.approved_by = None
+                        model.approved_at = None
+                    else:
+                        model.approved_by = payload.get("updated_by")
+                        model.approved_at = datetime.now(timezone.utc)
                 for key, value in payload.items():
                     setattr(model, key, value)
                 model.row_version = (model.row_version or 0) + 1

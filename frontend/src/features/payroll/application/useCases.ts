@@ -6,6 +6,9 @@ import type {
   EmployeeBenefitEntitlementInput,
   EmployeeBenefitDeduction,
   EmployeeBenefitDeductionInput,
+  EmployeeLoan,
+  EmployeeLoanInput,
+  EmployeeLoanRestructureInput,
   CompensationInput,
   ContributionBracket,
   ContributionBracketInput,
@@ -19,9 +22,13 @@ import type {
   PayrollCutoffOption,
   PayrollEmployeeOption,
   PayrollGroupOption,
+  PayrollSystemParameters,
   CutoffBenefit,
   CutoffBenefitInput,
+  CutoffBenefitUploadRow,
+  CutoffBenefitUploadResult,
   StatutoryProgram,
+  ThirteenthMonthRun,
   WithholdingTaxBracket,
   WithholdingTaxBracketInput,
   WithholdingTaxSchedule,
@@ -105,6 +112,16 @@ export class PayrollUseCases {
     return this.repository.getCurrentGrossPayRun(cutoffId)
   }
 
+  approvePayrollCutoff(cutoffId: string): Promise<void> {
+    if (!cutoffId) throw new Error('Select a cutoff before approving payroll.')
+    return this.repository.approvePayrollCutoff(cutoffId)
+  }
+
+  unlockPayrollCutoff(cutoffId: string): Promise<void> {
+    if (!cutoffId) throw new Error('Select a cutoff before unlocking payroll.')
+    return this.repository.unlockPayrollCutoff(cutoffId)
+  }
+
   listBenefitTypes(payrollGroupId: string): Promise<BenefitType[]> {
     if (!payrollGroupId) throw new Error('Select a payroll group before loading its benefit types.')
     return this.repository.listBenefitTypes(payrollGroupId)
@@ -142,6 +159,51 @@ export class PayrollUseCases {
     return this.repository.updateCutoffBenefit(entryId, input)
   }
 
+  uploadCutoffBenefits(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult> {
+    this.validateCutoffUpload(cutoffId, rows, 'benefit')
+    return this.repository.uploadCutoffBenefits(cutoffId, rows)
+  }
+
+  uploadCutoffDeductions(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult> {
+    this.validateCutoffUpload(cutoffId, rows, 'deduction')
+    return this.repository.uploadCutoffDeductions(cutoffId, rows)
+  }
+
+  private validateCutoffUpload(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+    entryName: string,
+  ): void {
+    if (!cutoffId) throw new Error(`Select a cutoff before uploading ${entryName}s.`)
+    if (rows.length === 0) throw new Error(`The upload must contain at least one ${entryName} row.`)
+    if (rows.length > 1000) throw new Error(`A ${entryName} upload cannot contain more than 1,000 rows.`)
+    const seen = new Set<string>()
+    for (const [index, row] of rows.entries()) {
+      const employeeNo = row.employeeNo.trim().toUpperCase()
+      const benefitCode = row.benefitCode.trim().toUpperCase()
+      if (!employeeNo || !benefitCode) {
+        throw new Error(`Row ${index + 2}: employee number and ${entryName} code are required.`)
+      }
+      if (!Number.isFinite(row.amount) || row.amount <= 0) {
+        throw new Error(`Row ${index + 2}: amount must be greater than zero.`)
+      }
+      if (row.notes && row.notes.length > 500) {
+        throw new Error(`Row ${index + 2}: notes cannot exceed 500 characters.`)
+      }
+      const key = `${employeeNo}\u0000${benefitCode}`
+      if (seen.has(key)) {
+        throw new Error(`Row ${index + 2}: duplicate employee number and ${entryName} code in the upload.`)
+      }
+      seen.add(key)
+    }
+  }
+
   deleteCutoffBenefit(entryId: string): Promise<void> {
     if (!entryId) throw new Error('Select a cutoff benefit entry to delete.')
     return this.repository.deleteCutoffBenefit(entryId)
@@ -176,6 +238,59 @@ export class PayrollUseCases {
     return this.repository.setEmployeeBenefitDeductionActive(deductionId, isActive)
   }
 
+  listEmployeeLoans(payrollGroupId: string): Promise<EmployeeLoan[]> {
+    if (!payrollGroupId) throw new Error('Select a payroll group before loading employee loans.')
+    return this.repository.listEmployeeLoans(payrollGroupId)
+  }
+
+  createEmployeeLoan(input: EmployeeLoanInput): Promise<EmployeeLoan> {
+    this.validateEmployeeLoan(input)
+    return this.repository.createEmployeeLoan(input)
+  }
+
+  retireEmployeeLoan(loanId: string): Promise<EmployeeLoan> {
+    if (!loanId) throw new Error('Select a loan to retire.')
+    return this.repository.retireEmployeeLoan(loanId)
+  }
+
+  restructureEmployeeLoan(
+    loanId: string,
+    input: EmployeeLoanRestructureInput,
+  ): Promise<EmployeeLoan> {
+    if (!loanId) throw new Error('Select a loan to restructure.')
+    if (!input.referenceNumber.trim() || input.referenceNumber.trim().length > 50) {
+      throw new Error('Loan reference number must contain 1 to 50 characters.')
+    }
+    if (!Number.isFinite(input.additionalPrincipal) || input.additionalPrincipal < 0) {
+      throw new Error('Additional principal must be zero or greater.')
+    }
+    if (!Number.isFinite(input.installmentAmount) || input.installmentAmount <= 0) {
+      throw new Error('Loan installment must be greater than zero.')
+    }
+    if (!['FIRST_HALF', 'SECOND_HALF', 'EVERY_CUTOFF'].includes(input.schedule)) {
+      throw new Error('Select a valid loan deduction schedule.')
+    }
+    return this.repository.restructureEmployeeLoan(loanId, input)
+  }
+
+  private validateEmployeeLoan(input: EmployeeLoanInput): void {
+    if (!input.employeeId || !input.payrollGroupId) {
+      throw new Error('Select an employee and payroll group.')
+    }
+    if (!input.referenceNumber.trim() || input.referenceNumber.trim().length > 50) {
+      throw new Error('Loan reference number must contain 1 to 50 characters.')
+    }
+    if (!Number.isFinite(input.principalAmount) || input.principalAmount <= 0) {
+      throw new Error('Loan principal must be greater than zero.')
+    }
+    if (!Number.isFinite(input.installmentAmount) || input.installmentAmount <= 0) {
+      throw new Error('Loan installment must be greater than zero.')
+    }
+    if (!['FIRST_HALF', 'SECOND_HALF', 'EVERY_CUTOFF'].includes(input.schedule)) {
+      throw new Error('Select a valid loan deduction schedule.')
+    }
+  }
+
   getEmployeeYtdTaxBalance(
     employeeId: string,
     taxYear: number,
@@ -207,6 +322,12 @@ export class PayrollUseCases {
     }
     if (!['FIRST_HALF', 'SECOND_HALF', 'EVERY_CUTOFF'].includes(input.postingSchedule)) {
       throw new Error('Select a valid benefit posting schedule.')
+    }
+    if (
+      input.withholdingTiming === 'YEAR_END'
+      && (input.category !== 'ONE_TIME_BONUS' || input.taxTreatment !== 'TAXABLE')
+    ) {
+      throw new Error('Year-end withholding is available only for taxable one-time bonuses.')
     }
     if (input.category === 'EMPLOYEE_DEDUCTION' && input.taxTreatment !== 'EXEMPT') {
       throw new Error('Employee benefit deductions must use exempt tax treatment.')
@@ -351,6 +472,43 @@ export class PayrollUseCases {
     return this.repository.listWithholdingTaxSchedules()
   }
 
+  getPayrollSystemParameters(companyId: string): Promise<PayrollSystemParameters> {
+    return this.repository.getPayrollSystemParameters(companyId)
+  }
+
+  updatePayrollSystemParameters(
+    companyId: string,
+    parameters: PayrollSystemParameters,
+  ): Promise<PayrollSystemParameters> {
+    return this.repository.updatePayrollSystemParameters(companyId, parameters)
+  }
+
+  calculateThirteenthMonth(
+    companyId: string,
+    taxYear: number,
+    coveredPeriodFrom: string,
+    coveredPeriodTo: string,
+  ): Promise<ThirteenthMonthRun> {
+    if (!Number.isInteger(taxYear) || taxYear < 1900 || taxYear > 9999) {
+      throw new Error('Enter a valid tax year.')
+    }
+    if (!coveredPeriodFrom || !coveredPeriodTo || coveredPeriodFrom > coveredPeriodTo) {
+      throw new Error('Enter the start and end dates of the last covered payroll cutoff.')
+    }
+    if (
+      !coveredPeriodFrom.startsWith(`${taxYear}-`)
+      || !coveredPeriodTo.startsWith(`${taxYear}-`)
+    ) {
+      throw new Error('The covered payroll cutoff dates must be in the selected tax year.')
+    }
+    return this.repository.calculateThirteenthMonth(
+      companyId,
+      taxYear,
+      coveredPeriodFrom,
+      coveredPeriodTo,
+    )
+  }
+
   getWithholdingTaxSchedule(scheduleId: string): Promise<WithholdingTaxSchedule> {
     return this.repository.getWithholdingTaxSchedule(scheduleId)
   }
@@ -437,6 +595,8 @@ export class PayrollUseCases {
       input.employeeFixedAmount,
       input.employerFixedAmount,
       input.employerAdditionalFixedAmount,
+      input.employeeContributionCap,
+      input.employerContributionCap,
     ]
     if (amounts.some((amount) => amount !== null && (!Number.isFinite(amount) || amount < 0))) {
       throw new Error('Contribution bracket amounts must be valid and nonnegative.')
@@ -459,7 +619,7 @@ export class PayrollUseCases {
       throw new Error('Withholding tax bracket amounts must be valid and nonnegative.')
     }
     if (input.annualIncomeMax !== null && input.annualIncomeMax < input.annualIncomeMin) {
-      throw new Error('Maximum annual income must be on or above minimum annual income.')
+      throw new Error('Maximum taxable income must be on or above minimum taxable income.')
     }
     if (!Number.isFinite(input.marginalRate) || input.marginalRate < 0 || input.marginalRate > 1) {
       throw new Error('Marginal tax rate must be between zero and one.')

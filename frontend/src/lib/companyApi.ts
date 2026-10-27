@@ -22,6 +22,20 @@ export async function fetchCompanies(): Promise<Company[]> {
   }
 }
 
+export async function fetchPayrollParameterCompanies(): Promise<Company[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<Company[]>>('/payroll/system-parameters/companies')
+    return response.data.data
+  } catch (error) {
+    if (error instanceof AxiosError && error.response?.status === 404) {
+      throw new Error(
+        'The System Parameters company endpoint was not found. Restart or redeploy the backend so it loads the latest payroll routes.',
+      )
+    }
+    return rethrowApiError(error, 'Could not load companies available for payroll parameters.')
+  }
+}
+
 export async function fetchCompany(companyId: string): Promise<Company> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<Company>>(`/companies/${companyId}`)

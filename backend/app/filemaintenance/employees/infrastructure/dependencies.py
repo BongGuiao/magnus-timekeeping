@@ -3,6 +3,7 @@ from fastapi import Depends
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.application.related_use_case import (
     CreateEmployeeSkillUseCase,
+    CreateEmploymentAssignmentsBatchUseCase,
     CreateEmploymentAssignmentUseCase,
     GetEmployeeSkillUseCase,
     GetEmploymentAssignmentUseCase,
@@ -45,6 +46,12 @@ def get_list_employees_use_case(
 
 def get_create_assignment_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> CreateEmploymentAssignmentUseCase:
     return CreateEmploymentAssignmentUseCase(uow)
+
+
+def get_create_assignments_batch_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> CreateEmploymentAssignmentsBatchUseCase:
+    return CreateEmploymentAssignmentsBatchUseCase(uow)
 
 
 def get_update_assignment_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> UpdateEmploymentAssignmentUseCase:

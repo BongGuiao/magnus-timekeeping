@@ -18,9 +18,8 @@ class OvertimeCutoff:
     cutoff_code: str
     period_start: date
     period_end: date
-    employee_review_deadline: datetime | None = None
-    supervisor_deadline: datetime | None = None
-    hr_deadline: datetime | None = None
+    attendance_deadline: datetime | None = None
+    locked_at: datetime | None = None
 
 
 @dataclass

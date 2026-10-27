@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Protocol
 from uuid import UUID
 
@@ -20,6 +20,10 @@ class AttendanceReviewRepository(Protocol):
     ) -> Optional[ReviewableAttendanceRecord]: ...
 
     async def save_review(self, attendance: ReviewableAttendance) -> None: ...
+
+    async def require_attendance_open(self, employee_id: UUID, work_date: date, now: datetime) -> None:
+        """Raises CutoffDeadlineError when the work date belongs to a closed payroll cutoff."""
+        ...
 
 
 class AttendanceReviewUnitOfWork(Protocol):

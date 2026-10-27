@@ -103,6 +103,8 @@ WITH role_grants (role_code, permission_code) AS (
     CROSS JOIN identity.permissions AS permission
     WHERE upper(role_row.role_code) IN ('SYSTEM_ADMIN', 'SYSTEM_ADMINISTRATOR')
       AND permission.is_active
+      -- Payroll is restricted to HR personnel by management directive.
+      AND permission.permission_code NOT LIKE 'payroll.%'
     UNION ALL
     SELECT *
     FROM (VALUES

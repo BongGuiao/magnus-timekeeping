@@ -3,12 +3,12 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import {
-  acknowledgePayrollCutoffResult,
+  fetchOrganizationPayrollCutoffResults,
   fetchMyPayrollCutoffResults,
   fetchMyTeamPayrollCutoffResults,
 } from '../lib/payrollCutoffApi'
 import type { EmployeeCutoffResult } from '../lib/payrollCutoffApi'
-import { hasPermission } from '../types/role'
+import { getSelectedDashboardRole } from '../types/role'
 
 interface Props {
   employeeName: string
@@ -23,23 +23,13 @@ function formatMinutes(minutes: number) {
   })} hr`
 }
 
-function ResultTable({
-  rows,
-  section,
-  pendingId,
-  onAcknowledge,
-}: {
-  rows: EmployeeCutoffResult[]
-  section: 'own' | 'team'
-  pendingId: string | null
-  onAcknowledge: (result: EmployeeCutoffResult) => void
-}) {
+function ResultTable({ rows }: { rows: EmployeeCutoffResult[] }) {
   if (rows.length === 0) {
     return <p className="px-5 py-6 text-sm text-slate-500">No payroll calculations to review.</p>
   }
   return (
     <div className="overflow-x-auto">
-      <table className="min-w-[2250px] w-full text-left text-xs">
+      <table className="min-w-[1900px] w-full text-left text-xs">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
             <th className="px-3 py-3">Employee</th>
@@ -62,19 +52,11 @@ function ResultTable({
             <th className="px-3 py-3">Night regular</th>
             <th className="px-3 py-3">Night OT</th>
             <th className="px-3 py-3">Exceptions</th>
-            <th className="px-3 py-3">Employee</th>
-            <th className="px-3 py-3">Supervisor</th>
-            <th className="px-3 py-3">HR</th>
             <th className="px-3 py-3">Payroll</th>
-            <th className="px-3 py-3">Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
           {rows.map((row) => {
-            const stagePending = section === 'own'
-              ? row.employee_confirmation_status === 'PENDING'
-              : row.employee_confirmation_status === 'ACKNOWLEDGED' && row.supervisor_status === 'PENDING'
-            const stage = section === 'own' ? 'Employee' : 'Supervisor'
             return (
               <tr key={row.id}>
                 <td className="whitespace-nowrap px-3 py-3">
@@ -105,32 +87,7 @@ function ResultTable({
                 <td className="px-3 py-3">{formatMinutes(row.night_regular_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.night_ot_minutes)}</td>
                 <td className="px-3 py-3">{row.exception_count}</td>
-                <td className="px-3 py-3">{row.employee_confirmation_status}</td>
-                <td className="px-3 py-3">{row.supervisor_status}</td>
-                <td className="px-3 py-3">{row.hr_status}</td>
                 <td className="px-3 py-3">{row.payroll_status}</td>
-                <td className="px-3 py-3">
-                  {stagePending ? (
-                    <button
-                      type="button"
-                      onClick={() => onAcknowledge(row)}
-                      disabled={pendingId === row.id}
-                      className="whitespace-nowrap rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-                    >
-                      {pendingId === row.id ? 'Saving…' : `Acknowledge as ${stage}`}
-                    </button>
-                  ) : (
-                    <span className="whitespace-nowrap text-xs text-slate-500">
-                      {row.employee_confirmation_status === 'PENDING'
-                        ? 'Awaiting employee acknowledgment'
-                        : row.supervisor_status === 'PENDING'
-                          ? 'Awaiting supervisor acknowledgment'
-                          : row.hr_status === 'PENDING'
-                            ? 'Awaiting HR acknowledgment'
-                            : 'Acknowledgment complete'}
-                    </span>
-                  )}
-                </td>
               </tr>
             )
           })}
@@ -142,55 +99,41 @@ function ResultTable({
 
 export default function PayrollResultsReview({ employeeName, onNavigate, onLoggedOut }: Props) {
   const { logout } = useLogout({ onLoggedOut })
-  const canReviewOwn = hasPermission('payroll.read_own')
-  const canReviewTeam = hasPermission('payroll.acknowledge_team')
-  const [ownResults, setOwnResults] = useState<EmployeeCutoffResult[]>([])
-  const [teamResults, setTeamResults] = useState<EmployeeCutoffResult[]>([])
+  const selectedRole = getSelectedDashboardRole()
+  const reportScope = selectedRole === 'employee'
+    ? 'own'
+    : selectedRole === 'supervisor'
+      ? 'team'
+      : 'organization'
+  const scopeTitle = reportScope === 'own'
+    ? 'My calculations'
+    : reportScope === 'team'
+      ? 'My team’s calculations'
+      : 'Organization calculations'
+  const [results, setResults] = useState<EmployeeCutoffResult[]>([])
   const [loading, setLoading] = useState(true)
-  const [pendingId, setPendingId] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
 
   const loadResults = useCallback(async () => {
     setLoading(true)
     setError('')
-    const requests: Promise<void>[] = []
-    if (canReviewOwn) {
-      requests.push(fetchMyPayrollCutoffResults().then(setOwnResults))
-    }
-    if (canReviewTeam) {
-      requests.push(fetchMyTeamPayrollCutoffResults().then(setTeamResults))
-    }
     try {
-      await Promise.all(requests)
+      const data = reportScope === 'own'
+        ? await fetchMyPayrollCutoffResults()
+        : reportScope === 'team'
+          ? await fetchMyTeamPayrollCutoffResults()
+          : await fetchOrganizationPayrollCutoffResults()
+      setResults(data)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load payroll results for review.')
     } finally {
       setLoading(false)
     }
-  }, [canReviewOwn, canReviewTeam])
+  }, [reportScope])
 
   useEffect(() => {
     void loadResults()
   }, [loadResults])
-
-  async function acknowledge(result: EmployeeCutoffResult) {
-    setError('')
-    setSuccess('')
-    setPendingId(result.id)
-    try {
-      const updated = await acknowledgePayrollCutoffResult(result.cutoff_id, result.id)
-      setOwnResults((current) => current.map((row) => row.id === updated.id ? updated : row))
-      setTeamResults((current) => current.map((row) => row.id === updated.id ? updated : row))
-      const role = updated.employee_confirmation_status === 'ACKNOWLEDGED'
-        && updated.supervisor_status === 'PENDING' ? 'employee' : 'supervisor'
-      setSuccess(`${role === 'employee' ? 'Employee' : 'Supervisor'} acknowledgment recorded. Please verify the displayed cutoff totals before acknowledging them.`)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not acknowledge this payroll calculation.')
-    } finally {
-      setPendingId(null)
-    }
-  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -199,7 +142,7 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-slate-900">Payroll Calculation Review</h1>
-            <p className="mt-1 text-xs text-slate-600">Review cutoff totals and acknowledge that the calculation is correct. The workflow is employee, supervisor, then HR.</p>
+            <p className="mt-1 text-xs text-slate-600">View-only cutoff totals. Attendance is frozen once the cutoff's attendance deadline passes, and HR approves the final payroll.</p>
           </div>
           <button
             type="button"
@@ -210,29 +153,15 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
           </button>
         </header>
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
-        {success && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}
-        {canReviewOwn && (
-          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-3">
-              <h2 className="text-sm font-bold text-slate-900">My calculations</h2>
-              <p className="text-xs text-slate-500">Acknowledge only after reviewing the values for correctness.</p>
-            </div>
-            {loading ? <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading results…</p> : (
-              <ResultTable rows={ownResults} section="own" pendingId={pendingId} onAcknowledge={(row) => void acknowledge(row)} />
-            )}
-          </section>
-        )}
-        {canReviewTeam && (
-          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-5 py-3">
-              <h2 className="text-sm font-bold text-slate-900">My team’s calculations</h2>
-              <p className="text-xs text-slate-500">Supervisor acknowledgment is available after the employee confirms their calculation.</p>
-            </div>
-            {loading ? <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading team results…</p> : (
-              <ResultTable rows={teamResults} section="team" pendingId={pendingId} onAcknowledge={(row) => void acknowledge(row)} />
-            )}
-          </section>
-        )}
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-5 py-3">
+            <h2 className="text-sm font-bold text-slate-900">{scopeTitle}</h2>
+            <p className="text-xs text-slate-500">View-only cutoff totals. Raise corrections with HR before the cutoff's attendance deadline.</p>
+          </div>
+          {loading ? <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading results…</p> : (
+            <ResultTable rows={results} />
+          )}
+        </section>
       </main>
     </div>
   )

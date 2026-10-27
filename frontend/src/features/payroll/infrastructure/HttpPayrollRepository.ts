@@ -16,6 +16,9 @@ import type {
   EmployeeBenefitEntitlementInput,
   EmployeeBenefitDeduction,
   EmployeeBenefitDeductionInput,
+  EmployeeLoan,
+  EmployeeLoanInput,
+  EmployeeLoanRestructureInput,
   CompensationInput,
   EmployeeCompensation,
   EmployeeYtdTaxBalance,
@@ -25,6 +28,8 @@ import type {
   ContributionScheduleInput,
   CutoffBenefit,
   CutoffBenefitInput,
+  CutoffBenefitUploadRow,
+  CutoffBenefitUploadResult,
   EarningRule,
   GrossPayRun,
   PayrollBenefitLine,
@@ -33,7 +38,9 @@ import type {
   PayrollCutoffOption,
   PayrollEmployeeOption,
   PayrollGroupOption,
+  PayrollSystemParameters,
   StatutoryProgram,
+  ThirteenthMonthRun,
   WithholdingTaxBracket,
   WithholdingTaxBracketInput,
   WithholdingTaxSchedule,
@@ -58,7 +65,7 @@ interface BackendEarningRule {
 }
 
 interface BackendGrossPayLine {
-  component_code: PayrollComponentCode
+  component_code: GrossPayRun['results'][number]['lines'][number]['componentCode']
   minutes: number
   multiplier: number | string
   amount: number | string
@@ -89,6 +96,7 @@ interface BackendGrossPayResult {
     benefit_name: string
     category: PayrollBenefitLine['category']
     tax_treatment: PayrollBenefitLine['taxTreatment']
+    withholding_timing: PayrollBenefitLine['withholdingTiming']
     amount: number | string
   }[]
   contribution_lines?: {
@@ -127,6 +135,34 @@ interface BackendContributionSchedule extends BackendSchedule {
 
 interface BackendTaxSchedule extends BackendSchedule {
   tax_exempt_benefit_limit: number | string
+  calculation_basis: 'ANNUAL_YTD' | 'SEMI_MONTHLY'
+}
+
+interface BackendPayrollSystemParameters {
+  company_id: string
+  year_end_wtax_reconciliation_enabled: boolean
+  thirteenth_month_enabled: boolean
+  schedule_assignment_approval_required: boolean
+  statutory_contribution_timing: 'PER_CUTOFF' | 'FINAL_CUTOFF'
+}
+
+interface BackendThirteenthMonthRun {
+  id: string
+  tax_year: number
+  covered_period_from: string
+  covered_period_to: string
+  calculated_at: string
+  calculated_by: string
+  results: {
+    employee_id: string
+    employee_no: string
+    employee_name: string
+    basic_salary_earned: number | string
+    thirteenth_month_pay: number | string
+    tax_exempt_amount: number | string
+    taxable_amount: number | string
+    source_payroll_periods: number
+  }[]
 }
 
 interface BackendContributionBracket {
@@ -141,6 +177,8 @@ interface BackendContributionBracket {
   employee_fixed_amount: number | string
   employer_fixed_amount: number | string
   employer_additional_fixed_amount: number | string
+  employee_contribution_cap: number | string | null
+  employer_contribution_cap: number | string | null
 }
 
 interface BackendTaxBracket {
@@ -161,6 +199,7 @@ interface BackendBenefitType {
   name: string
   category: BenefitType['category']
   tax_treatment: BenefitType['taxTreatment']
+  withholding_timing: BenefitType['withholdingTiming']
   attendance_based: boolean
   deduct_for_late: boolean
   deduct_for_undertime: boolean
@@ -182,6 +221,7 @@ interface BackendCutoffBenefit {
   benefit_name: string
   category: BenefitType['category']
   tax_treatment: BenefitType['taxTreatment']
+  withholding_timing: BenefitType['withholdingTiming']
   amount: number | string
   notes: string | null
   attendance_based: boolean
@@ -202,6 +242,30 @@ interface BackendEmployeeBenefitDeduction {
   is_active: boolean
 }
 
+interface BackendEmployeeLoan {
+  id: string
+  employee_id: string
+  payroll_group_id: string
+  reference_number: string
+  principal_amount: number | string
+  installment_amount: number | string
+  schedule: EmployeeLoan['schedule']
+  effective_from: string
+  outstanding_balance: number | string
+  status: EmployeeLoan['status']
+  previous_loan_id: string | null
+  created_at: string
+  repayments: {
+    id: string
+    loan_id: string
+    cutoff_id: string
+    gross_pay_run_id: string
+    amount: number | string
+    created_at: string
+    cutoff_code: string
+  }[]
+}
+
 interface BackendEmployeeBenefitEntitlement {
   id: string
   employee_id: string
@@ -209,6 +273,7 @@ interface BackendEmployeeBenefitEntitlement {
   benefit_code: string
   benefit_name: string
   amount_per_occurrence: number | string
+  schedule: EmployeeBenefitEntitlement['schedule']
   effective_from: string
   effective_to: string | null
   is_active: boolean
@@ -240,6 +305,7 @@ function toBenefitType(value: BackendBenefitType): BenefitType {
     name: value.name,
     category: value.category,
     taxTreatment: value.tax_treatment,
+    withholdingTiming: value.withholding_timing,
     attendanceBased: value.attendance_based,
     deductForLate: value.deduct_for_late,
     deductForUndertime: value.deduct_for_undertime,
@@ -263,6 +329,7 @@ function toEmployeeBenefitEntitlement(
     benefitCode: value.benefit_code,
     benefitName: value.benefit_name,
     amountPerOccurrence: toNumber(value.amount_per_occurrence),
+    schedule: value.schedule,
     effectiveFrom: value.effective_from,
     effectiveTo: value.effective_to,
     isActive: value.is_active,
@@ -286,6 +353,32 @@ function toEmployeeBenefitDeduction(
   }
 }
 
+function toEmployeeLoan(value: BackendEmployeeLoan): EmployeeLoan {
+  return {
+    id: value.id,
+    employeeId: value.employee_id,
+    payrollGroupId: value.payroll_group_id,
+    referenceNumber: value.reference_number,
+    principalAmount: toNumber(value.principal_amount),
+    installmentAmount: toNumber(value.installment_amount),
+    schedule: value.schedule,
+    effectiveFrom: value.effective_from,
+    outstandingBalance: toNumber(value.outstanding_balance),
+    status: value.status,
+    previousLoanId: value.previous_loan_id,
+    createdAt: value.created_at,
+    repayments: value.repayments.map((repayment) => ({
+      id: repayment.id,
+      loanId: repayment.loan_id,
+      cutoffId: repayment.cutoff_id,
+      grossPayRunId: repayment.gross_pay_run_id,
+      amount: toNumber(repayment.amount),
+      createdAt: repayment.created_at,
+      cutoffCode: repayment.cutoff_code,
+    })),
+  }
+}
+
 function toCutoffBenefit(value: BackendCutoffBenefit): CutoffBenefit {
   return {
     id: value.id,
@@ -296,6 +389,7 @@ function toCutoffBenefit(value: BackendCutoffBenefit): CutoffBenefit {
     benefitName: value.benefit_name,
     category: value.category,
     taxTreatment: value.tax_treatment,
+    withholdingTiming: value.withholding_timing,
     amount: toNumber(value.amount),
     notes: value.notes,
     attendanceBased: value.attendance_based,
@@ -328,6 +422,7 @@ function toWithholdingTaxSchedule(schedule: BackendTaxSchedule): WithholdingTaxS
     effectiveFrom: schedule.effective_from,
     effectiveTo: schedule.effective_to,
     taxExemptBenefitLimit: toNumber(schedule.tax_exempt_benefit_limit),
+    calculationBasis: schedule.calculation_basis,
     sourceReference: schedule.source_reference,
     status: schedule.status,
     createdAt: schedule.created_at,
@@ -351,6 +446,8 @@ function toContributionBracket(bracket: BackendContributionBracket): Contributio
     employeeFixedAmount: toNumber(bracket.employee_fixed_amount),
     employerFixedAmount: toNumber(bracket.employer_fixed_amount),
     employerAdditionalFixedAmount: toNumber(bracket.employer_additional_fixed_amount),
+    employeeContributionCap: bracket.employee_contribution_cap === null ? null : toNumber(bracket.employee_contribution_cap),
+    employerContributionCap: bracket.employer_contribution_cap === null ? null : toNumber(bracket.employer_contribution_cap),
   }
 }
 
@@ -378,6 +475,8 @@ function toBackendContributionBracket(input: ContributionBracketInput) {
     employee_fixed_amount: input.employeeFixedAmount,
     employer_fixed_amount: input.employerFixedAmount,
     employer_additional_fixed_amount: input.employerAdditionalFixedAmount,
+    employee_contribution_cap: input.employeeContributionCap,
+    employer_contribution_cap: input.employerContributionCap,
   }
 }
 
@@ -392,13 +491,13 @@ function toBackendTaxBracket(input: WithholdingTaxBracketInput) {
   }
 }
 
-function toNumber(value: number | string): number {
+export function toNumber(value: number | string): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) throw new Error('The payroll API returned an invalid numeric value.')
   return parsed
 }
 
-function requireArray<T>(value: T[] | undefined, message: string): T[] {
+export function requireArray<T>(value: T[] | undefined, message: string): T[] {
   if (!Array.isArray(value)) throw new Error(message)
   return value
 }
@@ -466,7 +565,7 @@ function formatApiErrorBody(body: unknown): string | null {
   return serialized && serialized !== '{}' ? serialized : null
 }
 
-function rethrowApiError(error: unknown, fallback: string): never {
+export function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
     if (error.response) {
       const detail = formatApiErrorBody(error.response.data)
@@ -567,6 +666,7 @@ function toGrossPayRun(run: BackendGrossPayRun): GrossPayRun {
         benefitName: line.benefit_name,
         category: line.category,
         taxTreatment: line.tax_treatment,
+        withholdingTiming: line.withholding_timing,
         amount: toNumber(line.amount),
       })),
       contributionLines: (result.contribution_lines ?? []).map((line) => ({
@@ -702,6 +802,22 @@ export class HttpPayrollRepository implements PayrollRepository {
       return response.data.data ? toGrossPayRun(response.data.data) : null
     } catch (error) {
       return rethrowApiError(error, 'Could not load gross-pay results.')
+    }
+  }
+
+  async approvePayrollCutoff(cutoffId: string): Promise<void> {
+    try {
+      await apiClient.post(`/payroll/cutoffs/${encodeURIComponent(cutoffId)}/approve`)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not approve payroll.')
+    }
+  }
+
+  async unlockPayrollCutoff(cutoffId: string): Promise<void> {
+    try {
+      await apiClient.post(`/payroll/cutoffs/${encodeURIComponent(cutoffId)}/unlock`)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not unlock payroll.')
     }
   }
 
@@ -871,6 +987,97 @@ export class HttpPayrollRepository implements PayrollRepository {
     }
   }
 
+  async getPayrollSystemParameters(companyId: string): Promise<PayrollSystemParameters> {
+    try {
+      const response = await apiClient.get<ApiSuccessEnvelope<BackendPayrollSystemParameters>>(
+        '/payroll/system-parameters',
+        { params: { company_id: companyId } },
+      )
+      return {
+        yearEndWtaxReconciliationEnabled:
+          response.data.data.year_end_wtax_reconciliation_enabled,
+        thirteenthMonthEnabled: response.data.data.thirteenth_month_enabled,
+        scheduleAssignmentApprovalRequired:
+          response.data.data.schedule_assignment_approval_required,
+        statutoryContributionTiming: response.data.data.statutory_contribution_timing,
+      }
+    } catch (error) {
+      return rethrowApiError(error, 'Could not load payroll system parameters.')
+    }
+  }
+
+  async updatePayrollSystemParameters(
+    companyId: string,
+    parameters: PayrollSystemParameters,
+  ): Promise<PayrollSystemParameters> {
+    try {
+      const response = await apiClient.put<ApiSuccessEnvelope<BackendPayrollSystemParameters>>(
+        '/payroll/system-parameters',
+        {
+          year_end_wtax_reconciliation_enabled:
+            parameters.yearEndWtaxReconciliationEnabled,
+          thirteenth_month_enabled: parameters.thirteenthMonthEnabled,
+          schedule_assignment_approval_required:
+            parameters.scheduleAssignmentApprovalRequired,
+          statutory_contribution_timing: parameters.statutoryContributionTiming,
+        },
+        { params: { company_id: companyId } },
+      )
+      return {
+        yearEndWtaxReconciliationEnabled:
+          response.data.data.year_end_wtax_reconciliation_enabled,
+        thirteenthMonthEnabled: response.data.data.thirteenth_month_enabled,
+        scheduleAssignmentApprovalRequired:
+          response.data.data.schedule_assignment_approval_required,
+        statutoryContributionTiming: response.data.data.statutory_contribution_timing,
+      }
+    } catch (error) {
+      return rethrowApiError(error, 'Could not update payroll system parameters.')
+    }
+  }
+
+  async calculateThirteenthMonth(
+    companyId: string,
+    taxYear: number,
+    coveredPeriodFrom: string,
+    coveredPeriodTo: string,
+  ): Promise<ThirteenthMonthRun> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<BackendThirteenthMonthRun>>(
+        '/payroll/thirteenth-month-runs/calculate',
+        {
+          company_id: companyId,
+          tax_year: taxYear,
+          covered_period_from: coveredPeriodFrom,
+          covered_period_to: coveredPeriodTo,
+        },
+      )
+      const run = response.data.data
+      return {
+        id: run.id,
+        taxYear: run.tax_year,
+        coveredPeriodFrom: run.covered_period_from,
+        coveredPeriodTo: run.covered_period_to,
+        calculatedAt: run.calculated_at,
+        results: requireArray(
+          run.results,
+          'Payroll API returned an invalid 13th-month calculation.',
+        ).map((result) => ({
+          employeeId: result.employee_id,
+          employeeNo: result.employee_no,
+          employeeName: result.employee_name,
+          basicSalaryEarned: Number(result.basic_salary_earned),
+          thirteenthMonthPay: Number(result.thirteenth_month_pay),
+          taxExemptAmount: Number(result.tax_exempt_amount),
+          taxableAmount: Number(result.taxable_amount),
+          sourcePayrollPeriods: result.source_payroll_periods,
+        })),
+      }
+    } catch (error) {
+      return rethrowApiError(error, 'Could not calculate 13th-month pay.')
+    }
+  }
+
   async getWithholdingTaxSchedule(scheduleId: string): Promise<WithholdingTaxSchedule> {
     try {
       const response = await apiClient.get<ApiSuccessEnvelope<BackendTaxSchedule>>(
@@ -891,6 +1098,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           effective_from: input.effectiveFrom,
           effective_to: input.effectiveTo,
           tax_exempt_benefit_limit: input.taxExemptBenefitLimit,
+          calculation_basis: input.calculationBasis,
           source_reference: input.sourceReference,
         },
       )
@@ -912,6 +1120,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           effective_from: input.effectiveFrom,
           effective_to: input.effectiveTo,
           tax_exempt_benefit_limit: input.taxExemptBenefitLimit,
+          calculation_basis: input.calculationBasis,
           source_reference: input.sourceReference,
         },
       )
@@ -1035,6 +1244,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           name: input.name,
           category: input.category,
           tax_treatment: input.taxTreatment,
+          withholding_timing: input.withholdingTiming,
           attendance_based: input.attendanceBased,
           deduct_for_late: input.deductForLate,
           deduct_for_undertime: input.deductForUndertime,
@@ -1060,6 +1270,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           name: input.name,
           category: input.category,
           tax_treatment: input.taxTreatment,
+          withholding_timing: input.withholdingTiming,
           attendance_based: input.attendanceBased,
           deduct_for_late: input.deductForLate,
           deduct_for_undertime: input.deductForUndertime,
@@ -1111,6 +1322,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           employee_id: input.employeeId,
           benefit_type_id: input.benefitTypeId,
           amount_per_occurrence: input.amountPerOccurrence,
+          schedule: input.schedule,
           effective_from: input.effectiveFrom,
           effective_to: input.effectiveTo,
         },
@@ -1132,6 +1344,7 @@ export class HttpPayrollRepository implements PayrollRepository {
           employee_id: input.employeeId,
           benefit_type_id: input.benefitTypeId,
           amount_per_occurrence: input.amountPerOccurrence,
+          schedule: input.schedule,
           effective_from: input.effectiveFrom,
           effective_to: input.effectiveTo,
         },
@@ -1205,6 +1418,50 @@ export class HttpPayrollRepository implements PayrollRepository {
       return toCutoffBenefit(response.data.data)
     } catch (error) {
       return rethrowApiError(error, 'Could not update the cutoff benefit entry.')
+    }
+  }
+
+  async uploadCutoffBenefits(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<CutoffBenefitUploadResult>>(
+        `/payroll/benefits/cutoffs/${encodeURIComponent(cutoffId)}/upload`,
+        {
+          rows: rows.map((row) => ({
+            employee_no: row.employeeNo,
+            benefit_code: row.benefitCode,
+            amount: row.amount,
+            notes: row.notes,
+          })),
+        },
+      )
+      return response.data.data
+    } catch (error) {
+      return rethrowApiError(error, 'Could not upload cutoff benefits.')
+    }
+  }
+
+  async uploadCutoffDeductions(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<CutoffBenefitUploadResult>>(
+        `/payroll/benefits/cutoffs/${encodeURIComponent(cutoffId)}/deductions/upload`,
+        {
+          rows: rows.map((row) => ({
+            employee_no: row.employeeNo,
+            deduction_code: row.benefitCode,
+            amount: row.amount,
+            notes: row.notes,
+          })),
+        },
+      )
+      return response.data.data
+    } catch (error) {
+      return rethrowApiError(error, 'Could not upload cutoff deductions.')
     }
   }
 
@@ -1288,6 +1545,71 @@ export class HttpPayrollRepository implements PayrollRepository {
       return toEmployeeBenefitDeduction(response.data.data)
     } catch (error) {
       return rethrowApiError(error, 'Could not change the recurring deduction status.')
+    }
+  }
+
+  async listEmployeeLoans(payrollGroupId: string): Promise<EmployeeLoan[]> {
+    try {
+      const response = await apiClient.get<ApiSuccessEnvelope<BackendEmployeeLoan[]>>(
+        '/payroll/loans',
+        { params: { payroll_group_id: payrollGroupId } },
+      )
+      return requireArray(response.data?.data, 'Payroll API returned an invalid employee-loan list.')
+        .map(toEmployeeLoan)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not load employee loans.')
+    }
+  }
+
+  async createEmployeeLoan(input: EmployeeLoanInput): Promise<EmployeeLoan> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<BackendEmployeeLoan>>(
+        '/payroll/loans',
+        {
+          employee_id: input.employeeId,
+          payroll_group_id: input.payrollGroupId,
+          reference_number: input.referenceNumber,
+          principal_amount: input.principalAmount,
+          installment_amount: input.installmentAmount,
+          schedule: input.schedule,
+          effective_from: input.effectiveFrom,
+        },
+      )
+      return toEmployeeLoan(response.data.data)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not create the employee loan.')
+    }
+  }
+
+  async retireEmployeeLoan(loanId: string): Promise<EmployeeLoan> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<BackendEmployeeLoan>>(
+        `/payroll/loans/${encodeURIComponent(loanId)}/retire`,
+      )
+      return toEmployeeLoan(response.data.data)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not retire the employee loan.')
+    }
+  }
+
+  async restructureEmployeeLoan(
+    loanId: string,
+    input: EmployeeLoanRestructureInput,
+  ): Promise<EmployeeLoan> {
+    try {
+      const response = await apiClient.post<ApiSuccessEnvelope<BackendEmployeeLoan>>(
+        `/payroll/loans/${encodeURIComponent(loanId)}/restructure`,
+        {
+          reference_number: input.referenceNumber,
+          additional_principal: input.additionalPrincipal,
+          installment_amount: input.installmentAmount,
+          schedule: input.schedule,
+          effective_from: input.effectiveFrom,
+        },
+      )
+      return toEmployeeLoan(response.data.data)
+    } catch (error) {
+      return rethrowApiError(error, 'Could not restructure the employee loan.')
     }
   }
 

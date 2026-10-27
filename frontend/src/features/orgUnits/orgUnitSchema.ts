@@ -35,7 +35,7 @@ export const emptyOrgUnit: OrgUnitFormValues = {
   parent_org_unit_id: '',
   org_unit_code: '',
   org_unit_name: '',
-  org_unit_type: 'DEPARTMENT',
+  org_unit_type: '',
   manager_employee_id: '',
   cost_center_code: '',
   effective_from: new Date().toISOString().slice(0, 10),

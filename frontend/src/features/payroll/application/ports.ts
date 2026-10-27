@@ -6,8 +6,13 @@ import type {
   EmployeeBenefitEntitlementInput,
   EmployeeBenefitDeduction,
   EmployeeBenefitDeductionInput,
+  EmployeeLoan,
+  EmployeeLoanInput,
+  EmployeeLoanRestructureInput,
   CutoffBenefit,
   CutoffBenefitInput,
+  CutoffBenefitUploadRow,
+  CutoffBenefitUploadResult,
   ContributionBracket,
   ContributionBracketInput,
   ContributionSchedule,
@@ -20,7 +25,9 @@ import type {
   PayrollCutoffOption,
   PayrollEmployeeOption,
   PayrollGroupOption,
+  PayrollSystemParameters,
   StatutoryProgram,
+  ThirteenthMonthRun,
   WithholdingTaxBracket,
   WithholdingTaxBracketInput,
   WithholdingTaxSchedule,
@@ -44,6 +51,8 @@ export interface PayrollRepository {
   ): Promise<EarningRule>
   calculateGrossPay(cutoffId: string): Promise<GrossPayRun>
   getCurrentGrossPayRun(cutoffId: string): Promise<GrossPayRun | null>
+  approvePayrollCutoff(cutoffId: string): Promise<void>
+  unlockPayrollCutoff(cutoffId: string): Promise<void>
   listContributionSchedules(programCode?: StatutoryProgram): Promise<ContributionSchedule[]>
   getContributionSchedule(scheduleId: string): Promise<ContributionSchedule>
   createContributionSchedule(input: ContributionScheduleInput): Promise<ContributionSchedule>
@@ -57,6 +66,17 @@ export interface PayrollRepository {
   updateContributionBracket(bracketId: string, input: ContributionBracketInput): Promise<ContributionBracket>
   deleteContributionBracket(bracketId: string): Promise<void>
   listWithholdingTaxSchedules(): Promise<WithholdingTaxSchedule[]>
+  getPayrollSystemParameters(companyId: string): Promise<PayrollSystemParameters>
+  updatePayrollSystemParameters(
+    companyId: string,
+    parameters: PayrollSystemParameters,
+  ): Promise<PayrollSystemParameters>
+  calculateThirteenthMonth(
+    companyId: string,
+    taxYear: number,
+    coveredPeriodFrom: string,
+    coveredPeriodTo: string,
+  ): Promise<ThirteenthMonthRun>
   getWithholdingTaxSchedule(scheduleId: string): Promise<WithholdingTaxSchedule>
   createWithholdingTaxSchedule(input: WithholdingTaxScheduleInput): Promise<WithholdingTaxSchedule>
   updateWithholdingTaxSchedule(scheduleId: string, input: WithholdingTaxScheduleInput): Promise<WithholdingTaxSchedule>
@@ -85,6 +105,14 @@ export interface PayrollRepository {
   listCutoffBenefits(cutoffId: string): Promise<CutoffBenefit[]>
   createCutoffBenefit(input: CutoffBenefitInput): Promise<CutoffBenefit>
   updateCutoffBenefit(entryId: string, input: CutoffBenefitInput): Promise<CutoffBenefit>
+  uploadCutoffBenefits(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult>
+  uploadCutoffDeductions(
+    cutoffId: string,
+    rows: CutoffBenefitUploadRow[],
+  ): Promise<CutoffBenefitUploadResult>
   deleteCutoffBenefit(entryId: string): Promise<void>
   listEmployeeBenefitDeductions(payrollGroupId: string): Promise<EmployeeBenefitDeduction[]>
   createEmployeeBenefitDeduction(input: EmployeeBenefitDeductionInput): Promise<EmployeeBenefitDeduction>
@@ -96,6 +124,13 @@ export interface PayrollRepository {
     deductionId: string,
     isActive: boolean,
   ): Promise<EmployeeBenefitDeduction>
+  listEmployeeLoans(payrollGroupId: string): Promise<EmployeeLoan[]>
+  createEmployeeLoan(input: EmployeeLoanInput): Promise<EmployeeLoan>
+  retireEmployeeLoan(loanId: string): Promise<EmployeeLoan>
+  restructureEmployeeLoan(
+    loanId: string,
+    input: EmployeeLoanRestructureInput,
+  ): Promise<EmployeeLoan>
   getEmployeeYtdTaxBalance(employeeId: string, taxYear: number): Promise<EmployeeYtdTaxBalance | null>
   saveEmployeeYtdTaxBalance(balance: EmployeeYtdTaxBalance): Promise<EmployeeYtdTaxBalance>
 }

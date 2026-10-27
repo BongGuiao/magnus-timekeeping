@@ -55,6 +55,10 @@ def init_db_models():
         WithholdingTaxBracketModel,
         WithholdingTaxScheduleModel,
     )
+    from app.payroll.infrastructure.loan_db_model import (  # noqa: F401
+        EmployeeLoanModel,
+        EmployeeLoanRepaymentModel,
+    )
     from app.filemaintenance.schedule.infrastructure.db_model import (  # noqa: F401
         EmployeeScheduleAssignmentModel,
         RestDayPatternDayModel,
@@ -85,7 +89,8 @@ def init_db_models():
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost/dbname")
 
-engine = create_async_engine(DATABASE_URL, echo=True, future=True)
+SQL_ECHO = os.getenv("SQL_ECHO", "").strip().lower() in {"1", "true", "yes", "on"}
+engine = create_async_engine(DATABASE_URL, echo=SQL_ECHO, future=True)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 async def get_db() -> AsyncSession:

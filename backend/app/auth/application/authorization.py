@@ -10,6 +10,7 @@ from app.auth.infrastructure.db_model import RoleModel
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
+from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 from app.filemaintenance.roles.infrastructure.db_model import UserRoleModel
 from app.filemaintenance.roles.infrastructure.permission_db_model import PermissionModel
 from app.filemaintenance.roles.infrastructure.role_permission_db_model import RolePermissionModel
@@ -21,6 +22,7 @@ PH_TIMEZONE = ZoneInfo("Asia/Manila")
 class CurrentAuthorization:
     role_codes: list[str]
     permission_codes: list[str]
+    employee_code: str | None
 
 
 class GetCurrentAuthorizationUseCase(BaseUseCase[CurrentAuthorization]):
@@ -65,7 +67,17 @@ class GetCurrentAuthorizationUseCase(BaseUseCase[CurrentAuthorization]):
                 )
                 .order_by(PermissionModel.permission_code)
             )
+            employee_code = await uow.session.scalar(
+                select(EmployeeModel.employee_no)
+                .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+                .where(
+                    UserModel.id == user_id,
+                    UserModel.is_active.is_(True),
+                    UserModel.account_status == AccountStatus.ACTIVE.value,
+                )
+            )
             return CurrentAuthorization(
                 role_codes=list(role_codes),
                 permission_codes=list(permission_codes),
+                employee_code=employee_code,
             )

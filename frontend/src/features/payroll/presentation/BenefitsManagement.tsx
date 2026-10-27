@@ -7,7 +7,9 @@ import type {
   BenefitPostingSchedule,
   BenefitType,
   BenefitTypeInput,
+  BenefitWithholdingTiming,
   CutoffBenefit,
+  CutoffBenefitUploadRow,
   EmployeeBenefitEntitlement,
   EmployeeBenefitEntitlementInput,
   EmployeeBenefitDeduction,
@@ -44,6 +46,7 @@ const initialType: BenefitTypeInput = {
   name: '',
   category: 'CASH_ALLOWANCE',
   taxTreatment: 'TAXABLE',
+  withholdingTiming: 'PAY_PERIOD',
   attendanceBased: false,
   deductForLate: false,
   deductForUndertime: false,
@@ -73,8 +76,173 @@ const postingSchedules: { value: BenefitPostingSchedule; label: string }[] = [
 
 const inputClass = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100'
 
+interface SearchableOption {
+  id: string
+  label: string
+}
+
+function SearchableSelect({
+  id,
+  label,
+  value,
+  options,
+  onChange,
+  placeholder,
+  emptyMessage,
+}: {
+  id: string
+  label: string
+  value: string
+  options: SearchableOption[]
+  onChange: (value: string) => void
+  placeholder: string
+  emptyMessage: string
+}) {
+  const [query, setQuery] = useState('')
+  const [isOpen, setIsOpen] = useState(false)
+  const selected = options.find((option) => option.id === value)
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const matches = options
+    .filter((option) => !normalizedQuery || option.label.toLocaleLowerCase().includes(normalizedQuery))
+    .slice(0, 50)
+
+  return (
+    <div className="relative">
+      <label htmlFor={id} className="text-xs font-semibold text-slate-600">{label}</label>
+      <input
+        id={id}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={isOpen}
+        aria-controls={`${id}-options`}
+        aria-label={`Search ${label.toLocaleLowerCase()}`}
+        required
+        autoComplete="off"
+        value={query || selected?.label || ''}
+        onFocus={(event) => {
+          event.currentTarget.select()
+          setIsOpen(true)
+        }}
+        onBlur={() => setIsOpen(false)}
+        onChange={(event) => {
+          setQuery(event.target.value)
+          onChange('')
+          setIsOpen(true)
+        }}
+        placeholder={options.length ? placeholder : emptyMessage}
+        className={inputClass}
+      />
+      {isOpen && options.length > 0 && (
+        <div
+          id={`${id}-options`}
+          role="listbox"
+          aria-label={`Matching ${label.toLocaleLowerCase()}`}
+          className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          {matches.length ? matches.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="option"
+              aria-selected={option.id === value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(option.id)
+                setQuery('')
+                setIsOpen(false)
+              }}
+              className="block w-full px-3 py-2 text-left text-sm text-slate-800 hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
+            >
+              {option.label}
+            </button>
+          )) : (
+            <p className="px-3 py-2 text-sm text-slate-500">No matches found.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function formatMoney(value: number): string {
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'PHP' }).format(value)
+}
+
+function withLoadContext<T>(resource: string, request: Promise<T>): Promise<T> {
+  return request.catch((cause: unknown) => {
+    const detail = cause instanceof Error ? cause.message : 'Unknown error.'
+    throw new Error(`Could not load ${resource}: ${detail}`)
+  })
+}
+
+function parseCutoffCsv(
+  contents: string,
+  codeHeader: 'benefit_code' | 'deduction_code',
+  entryName: 'benefit' | 'deduction',
+): CutoffBenefitUploadRow[] {
+  const records: string[][] = []
+  let record: string[] = []
+  let field = ''
+  let quoted = false
+  const text = contents.replace(/^\uFEFF/, '')
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (character === '"') {
+      if (quoted && text[index + 1] === '"') {
+        field += '"'
+        index += 1
+      } else {
+        quoted = !quoted
+      }
+    } else if (character === ',' && !quoted) {
+      record.push(field)
+      field = ''
+    } else if ((character === '\n' || character === '\r') && !quoted) {
+      if (character === '\r' && text[index + 1] === '\n') index += 1
+      record.push(field)
+      if (record.some((value) => value.trim())) records.push(record)
+      record = []
+      field = ''
+    } else {
+      field += character
+    }
+  }
+  if (quoted) throw new Error('The CSV contains an unclosed quoted field.')
+  if (field || record.length) {
+    record.push(field)
+    if (record.some((value) => value.trim())) records.push(record)
+  }
+  if (records.length < 2) throw new Error(`The CSV must contain a header and at least one ${entryName} row.`)
+
+  const headers = records[0].map((value) => value.trim().toLowerCase())
+  const employeeNoIndex = headers.indexOf('employee_no')
+  const benefitCodeIndex = headers.indexOf(codeHeader)
+  const amountIndex = headers.indexOf('amount')
+  const notesIndex = headers.indexOf('notes')
+  if (employeeNoIndex < 0 || benefitCodeIndex < 0 || amountIndex < 0) {
+    throw new Error(`Required CSV columns are employee_no, ${codeHeader}, and amount. notes is optional.`)
+  }
+  if (new Set(headers).size !== headers.length) throw new Error('The CSV contains duplicate column headers.')
+  if (records.length - 1 > 1000) throw new Error(`The CSV can contain no more than 1,000 ${entryName} rows.`)
+
+  return records.slice(1).map((values, index) => {
+    const rowNumber = index + 2
+    if (values.length !== headers.length) {
+      throw new Error(`Row ${rowNumber}: the number of values does not match the header.`)
+    }
+    const employeeNo = values[employeeNoIndex].trim()
+    const benefitCode = values[benefitCodeIndex].trim()
+    const amount = Number(values[amountIndex].trim())
+    const notes = notesIndex >= 0 ? values[notesIndex].trim() : ''
+    if (!employeeNo || !benefitCode) {
+      throw new Error(`Row ${rowNumber}: employee_no and benefit_code are required.`)
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || !/^\d+(\.\d{1,2})?$/.test(values[amountIndex].trim())) {
+      throw new Error(`Row ${rowNumber}: amount must be a positive value with no more than two decimals.`)
+    }
+    if (notes.length > 500) throw new Error(`Row ${rowNumber}: notes cannot exceed 500 characters.`)
+    return { employeeNo, benefitCode, amount, notes: notes || null }
+  })
 }
 
 export default function BenefitsManagement({
@@ -104,12 +272,19 @@ export default function BenefitsManagement({
     employeeId: '',
     benefitTypeId: '',
     amountPerOccurrence: '',
+    schedule: 'FIRST_HALF' as BenefitPostingSchedule,
     effectiveFrom: new Date().toISOString().slice(0, 10),
     effectiveTo: '',
   })
   const [editingEntitlementId, setEditingEntitlementId] = useState('')
   const [entryDraft, setEntryDraft] = useState({ employeeId: '', benefitTypeId: '', amount: '', notes: '' })
   const [editingEntryId, setEditingEntryId] = useState('')
+  const [benefitUploadFileName, setBenefitUploadFileName] = useState('')
+  const [benefitUploadRows, setBenefitUploadRows] = useState<CutoffBenefitUploadRow[]>([])
+  const [uploadingBenefits, setUploadingBenefits] = useState(false)
+  const [deductionUploadFileName, setDeductionUploadFileName] = useState('')
+  const [deductionUploadRows, setDeductionUploadRows] = useState<CutoffBenefitUploadRow[]>([])
+  const [uploadingDeductions, setUploadingDeductions] = useState(false)
   const [ytdEmployeeId, setYtdEmployeeId] = useState('')
   const [ytdDraft, setYtdDraft] = useState({ taxableIncome: '', taxWithheld: '', exemptLimitedBenefits: '' })
   const [ytdFound, setYtdFound] = useState(false)
@@ -123,6 +298,7 @@ export default function BenefitsManagement({
   const selectedCutoff = cutoffs.find((cutoff) => cutoff.id === selectedCutoffId)
   const taxYear = selectedCutoff ? Number(selectedCutoff.periodStart.slice(0, 4)) : new Date().getFullYear()
   const canEditEntries = Boolean(selectedCutoff && !selectedCutoff.locked)
+  const isPerCutoffDeduction = mode === 'payroll-deductions'
   const activeTypes = types.filter((benefit) => (
     benefit.isActive && benefit.category !== 'EMPLOYEE_DEDUCTION'
   ))
@@ -133,16 +309,29 @@ export default function BenefitsManagement({
   const deductionTypesForForm = deductionTypes.filter((benefit) => (
     benefit.isActive || benefit.id === deductionDraft.benefitTypeId
   ))
+  const cutoffDeductionTypesForForm = deductionTypes.filter((benefit) => (
+    benefit.isActive || benefit.id === entryDraft.benefitTypeId
+  ))
   const entryTypes = activeTypes.filter(
     (benefit) => benefit.isActive || benefit.id === entryDraft.benefitTypeId,
   )
+  const cutoffEntryTypes = isPerCutoffDeduction ? cutoffDeductionTypesForForm : entryTypes
   const entitlementTypesForForm = activeTypes.filter((benefit) => (
     benefit.id === entitlementDraft.benefitTypeId || benefit.isActive
   ))
-  const selectedEntryType = entryTypes.find((benefit) => benefit.id === entryDraft.benefitTypeId)
+  const employeeSearchOptions = employees.map((employee) => ({
+    id: employee.id,
+    label: `${employee.employeeNo} — ${employee.fullName}`,
+  }))
+  const entitlementTypeSearchOptions = entitlementTypesForForm.map((benefit) => ({
+    id: benefit.id,
+    label: `${benefit.code} — ${benefit.name}`,
+  }))
+  const selectedEntryType = cutoffEntryTypes.find((benefit) => benefit.id === entryDraft.benefitTypeId)
   const selectedEntryEmployee = employees.find((employee) => employee.id === entryDraft.employeeId)
   const visibleCutoffEntries = entries.filter(
-    (entry) => entry.employeeId === entryDraft.employeeId && entry.category !== 'EMPLOYEE_DEDUCTION',
+    (entry) => entry.employeeId === entryDraft.employeeId
+      && (entry.category === 'EMPLOYEE_DEDUCTION') === isPerCutoffDeduction,
   )
   const selectedDeductionEmployee = employees.find(
     (employee) => employee.id === deductionDraft.employeeId,
@@ -156,7 +345,6 @@ export default function BenefitsManagement({
   const selectedEntitlementType = entitlementTypesForForm.find(
     (benefit) => benefit.id === entitlementDraft.benefitTypeId,
   )
-
   useEffect(() => {
     setTypeDraft(emptyTypeDraft(payrollGroupId, mode))
   }, [mode, payrollGroupId])
@@ -165,15 +353,23 @@ export default function BenefitsManagement({
     let current = true
     setLoading(true)
     Promise.all([
-      useCases.listBenefitTypes(payrollGroupId),
-      mode === 'all' || mode === 'entries'
-        ? useCases.listCutoffs(payrollGroupId)
+      withLoadContext('benefit types', useCases.listBenefitTypes(payrollGroupId)),
+      mode === 'all' || mode === 'entries' || mode === 'payroll-deductions'
+        ? withLoadContext('payroll cutoffs', useCases.listCutoffs(payrollGroupId))
         : Promise.resolve([]),
-      useCases.listEmployees(),
-      mode === 'types' ? Promise.resolve([]) : useCases.listEmployeeBenefitDeductions(payrollGroupId),
-      mode === 'deductions' || mode === 'payroll-deductions'
+      withLoadContext('employee list', useCases.listEmployees()),
+      mode === 'types'
         ? Promise.resolve([])
-        : useCases.listEmployeeBenefitEntitlements(payrollGroupId),
+        : withLoadContext(
+          'recurring employee deductions',
+          useCases.listEmployeeBenefitDeductions(payrollGroupId),
+        ),
+      mode === 'all' || mode === 'entries'
+        ? withLoadContext(
+          'recurring employee benefits',
+          useCases.listEmployeeBenefitEntitlements(payrollGroupId),
+        )
+        : Promise.resolve([]),
     ])
       .then(([nextTypes, nextCutoffs, nextEmployees, nextDeductions, nextEntitlements]) => {
         if (!current) return
@@ -198,7 +394,12 @@ export default function BenefitsManagement({
   useEffect(() => {
     let current = true
     setEntries([])
-    if ((mode !== 'all' && mode !== 'entries') || !selectedCutoffId) return () => { current = false }
+    if (
+      mode !== 'all'
+      && mode !== 'entries'
+      && mode !== 'payroll-deductions'
+    ) return () => { current = false }
+    if (!selectedCutoffId) return () => { current = false }
     useCases.listCutoffBenefits(selectedCutoffId)
       .then((nextEntries) => {
         if (current) setEntries(nextEntries)
@@ -259,6 +460,7 @@ export default function BenefitsManagement({
       employeeId: preserveEmployee ? current.employeeId : '',
       benefitTypeId: '',
       amountPerOccurrence: '',
+      schedule: 'FIRST_HALF',
       effectiveFrom: new Date().toISOString().slice(0, 10),
       effectiveTo: '',
     }))
@@ -283,6 +485,7 @@ export default function BenefitsManagement({
       name: benefit.name,
       category: benefit.category,
       taxTreatment: benefit.taxTreatment,
+      withholdingTiming: benefit.withholdingTiming,
       attendanceBased: benefit.attendanceBased,
       deductForLate: benefit.deductForLate,
       deductForUndertime: benefit.deductForUndertime,
@@ -381,6 +584,7 @@ export default function BenefitsManagement({
       employeeId: entitlement.employeeId,
       benefitTypeId: entitlement.benefitTypeId,
       amountPerOccurrence: String(entitlement.amountPerOccurrence),
+      schedule: entitlement.schedule,
       effectiveFrom: entitlement.effectiveFrom,
       effectiveTo: entitlement.effectiveTo ?? '',
     })
@@ -393,6 +597,7 @@ export default function BenefitsManagement({
       employeeId: entitlementDraft.employeeId,
       benefitTypeId: entitlementDraft.benefitTypeId,
       amountPerOccurrence: Number(entitlementDraft.amountPerOccurrence),
+      schedule: entitlementDraft.schedule,
       effectiveFrom: entitlementDraft.effectiveFrom,
       effectiveTo: entitlementDraft.effectiveTo || null,
     }
@@ -406,10 +611,10 @@ export default function BenefitsManagement({
         await useCases.createEmployeeBenefitEntitlement(input)
       }
       resetEntitlement(true)
-      setNotice(editingEntitlementId ? 'Employee benefit entitlement updated.' : 'Employee benefit entitlement saved.')
+      setNotice(editingEntitlementId ? 'Recurring benefit updated.' : 'Recurring benefit saved.')
       setRefreshKey((key) => key + 1)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save the employee benefit entitlement.')
+      setError(cause instanceof Error ? cause.message : 'Could not save the recurring benefit.')
     } finally {
       setSaving(false)
     }
@@ -420,10 +625,10 @@ export default function BenefitsManagement({
     setNotice('')
     try {
       await useCases.setEmployeeBenefitEntitlementActive(entitlement.id, !entitlement.isActive)
-      setNotice(entitlement.isActive ? 'Employee benefit entitlement deactivated.' : 'Employee benefit entitlement activated.')
+      setNotice(entitlement.isActive ? 'Recurring benefit deactivated.' : 'Recurring benefit activated.')
       setRefreshKey((key) => key + 1)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not update the employee benefit entitlement.')
+      setError(cause instanceof Error ? cause.message : 'Could not update the recurring benefit.')
     }
   }
 
@@ -435,6 +640,122 @@ export default function BenefitsManagement({
       amount: String(entry.amount),
       notes: entry.notes ?? '',
     })
+  }
+
+  function downloadBenefitCsvTemplate() {
+    const contents = [
+      'employee_no,benefit_code,amount,notes',
+      'EMP-0001,PERFORMANCE-BONUS,15000,Annual performance bonus',
+    ].join('\r\n')
+    const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'cutoff-benefit-upload-template.csv'
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function selectBenefitCsv(file: File | undefined) {
+    setError('')
+    setNotice('')
+    setBenefitUploadFileName(file?.name ?? '')
+    setBenefitUploadRows([])
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      setError('The benefit CSV must be 5 MB or smaller.')
+      return
+    }
+    try {
+      const rows = parseCutoffCsv(await file.text(), 'benefit_code', 'benefit')
+      const seen = new Set<string>()
+      rows.forEach((row, index) => {
+        const key = `${row.employeeNo.toUpperCase()}\u0000${row.benefitCode.toUpperCase()}`
+        if (seen.has(key)) {
+          throw new Error(`Row ${index + 2}: duplicate employee number and benefit code in the CSV.`)
+        }
+        seen.add(key)
+      })
+      setBenefitUploadRows(rows)
+    } catch (cause) {
+      setBenefitUploadFileName('')
+      setError(cause instanceof Error ? cause.message : 'Could not read the benefit CSV.')
+    }
+  }
+
+  async function uploadBenefits() {
+    if (!selectedCutoffId || benefitUploadRows.length === 0) return
+    setUploadingBenefits(true)
+    setError('')
+    setNotice('')
+    try {
+      const result = await useCases.uploadCutoffBenefits(selectedCutoffId, benefitUploadRows)
+      setNotice(`Benefit upload complete: ${result.created} created and ${result.updated} updated.`)
+      setBenefitUploadFileName('')
+      setBenefitUploadRows([])
+      setRefreshKey((key) => key + 1)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not upload cutoff benefits.')
+    } finally {
+      setUploadingBenefits(false)
+    }
+  }
+
+  function downloadDeductionCsvTemplate() {
+    const contents = [
+      'employee_no,deduction_code,amount,notes',
+      'EMP-0001,UNIFORM,500,Uniform replacement',
+    ].join('\r\n')
+    const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'cutoff-deduction-upload-template.csv'
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function selectDeductionCsv(file: File | undefined) {
+    setError('')
+    setNotice('')
+    setDeductionUploadFileName(file?.name ?? '')
+    setDeductionUploadRows([])
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) {
+      setError('The deduction CSV must be 5 MB or smaller.')
+      return
+    }
+    try {
+      const rows = parseCutoffCsv(await file.text(), 'deduction_code', 'deduction')
+      const seen = new Set<string>()
+      rows.forEach((row, index) => {
+        const key = `${row.employeeNo.toUpperCase()}\u0000${row.benefitCode.toUpperCase()}`
+        if (seen.has(key)) {
+          throw new Error(`Row ${index + 2}: duplicate employee number and deduction code in the CSV.`)
+        }
+        seen.add(key)
+      })
+      setDeductionUploadRows(rows)
+    } catch (cause) {
+      setDeductionUploadFileName('')
+      setError(cause instanceof Error ? cause.message : 'Could not read the deduction CSV.')
+    }
+  }
+
+  async function uploadDeductions() {
+    if (!selectedCutoffId || deductionUploadRows.length === 0) return
+    setUploadingDeductions(true)
+    setError('')
+    setNotice('')
+    try {
+      const result = await useCases.uploadCutoffDeductions(selectedCutoffId, deductionUploadRows)
+      setNotice(`Deduction upload complete: ${result.created} created and ${result.updated} updated.`)
+      setDeductionUploadFileName('')
+      setDeductionUploadRows([])
+      setRefreshKey((key) => key + 1)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not upload cutoff deductions.')
+    } finally {
+      setUploadingDeductions(false)
+    }
   }
 
   async function saveEntry(event: FormEvent<HTMLFormElement>) {
@@ -454,10 +775,13 @@ export default function BenefitsManagement({
       if (editingEntryId) await useCases.updateCutoffBenefit(editingEntryId, input)
       else await useCases.createCutoffBenefit(input)
       resetEntry(true)
-      setNotice(editingEntryId ? 'Cutoff benefit updated.' : 'Cutoff benefit recorded.')
+      const entryName = isPerCutoffDeduction ? 'Cutoff deduction' : 'Cutoff benefit'
+      setNotice(`${entryName} ${editingEntryId ? 'updated' : 'recorded'}.`)
       setRefreshKey((key) => key + 1)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save the cutoff benefit.')
+      setError(cause instanceof Error
+        ? cause.message
+        : `Could not save the cutoff ${isPerCutoffDeduction ? 'deduction' : 'benefit'}.`)
     } finally {
       setSaving(false)
     }
@@ -469,7 +793,7 @@ export default function BenefitsManagement({
     setNotice('')
     try {
       await useCases.deleteCutoffBenefit(entry.id)
-      setNotice('Cutoff benefit deleted.')
+      setNotice(`Cutoff ${isPerCutoffDeduction ? 'deduction' : 'benefit'} deleted.`)
       setRefreshKey((key) => key + 1)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not delete the cutoff benefit.')
@@ -537,6 +861,10 @@ export default function BenefitsManagement({
                 ...typeDraft,
                 category,
                 taxTreatment: category === 'EMPLOYEE_DEDUCTION' ? 'EXEMPT' : typeDraft.taxTreatment,
+                withholdingTiming: category === 'ONE_TIME_BONUS'
+                  && typeDraft.taxTreatment === 'TAXABLE'
+                  ? typeDraft.withholdingTiming
+                  : 'PAY_PERIOD',
                 attendanceBased: category === 'EMPLOYEE_DEDUCTION' ? false : typeDraft.attendanceBased,
                 deductForLate: category === 'EMPLOYEE_DEDUCTION' ? false : typeDraft.deductForLate,
                 deductForUndertime: category === 'EMPLOYEE_DEDUCTION' ? false : typeDraft.deductForUndertime,
@@ -558,15 +886,46 @@ export default function BenefitsManagement({
               required
               disabled={typeDraft.category === 'EMPLOYEE_DEDUCTION'}
               value={typeDraft.taxTreatment}
-              onChange={(event) => setTypeDraft({ ...typeDraft, taxTreatment: event.target.value as BenefitTaxTreatment })}
+              onChange={(event) => {
+                const taxTreatment = event.target.value as BenefitTaxTreatment
+                setTypeDraft({
+                  ...typeDraft,
+                  taxTreatment,
+                  withholdingTiming: taxTreatment === 'TAXABLE'
+                    && typeDraft.category === 'ONE_TIME_BONUS'
+                    ? typeDraft.withholdingTiming
+                    : 'PAY_PERIOD',
+                })
+              }}
               className={inputClass}
             >
               {treatments.map((treatment) => <option key={treatment.value} value={treatment.value}>{treatment.label}</option>)}
             </select>
           </label>}
+          {mode !== 'deductions'
+            && typeDraft.category === 'ONE_TIME_BONUS'
+            && typeDraft.taxTreatment === 'TAXABLE' && (
+              <label className="text-xs font-semibold text-slate-600">
+                Tax withholding timing
+                <select
+                  value={typeDraft.withholdingTiming}
+                  onChange={(event) => setTypeDraft({
+                    ...typeDraft,
+                    withholdingTiming: event.target.value as BenefitWithholdingTiming,
+                  })}
+                  className={inputClass}
+                >
+                  <option value="PAY_PERIOD">Withhold when paid</option>
+                  <option value="YEAR_END">Settle at year-end</option>
+                </select>
+                <span className="mt-1 block font-normal text-slate-500">
+                  Year-end settlement requires year-end WTAX reconciliation and a semi-monthly tax schedule.
+                </span>
+              </label>
+            )}
           {mode !== 'deductions' && (
             <label className="text-xs font-semibold text-slate-600">
-              Payroll schedule
+              Default recurring schedule
               <select
                 required
                 value={typeDraft.postingSchedule}
@@ -632,9 +991,9 @@ export default function BenefitsManagement({
 
         {managedTypes.length === 0 ? <p className="text-sm text-slate-500">No {mode === 'deductions' ? 'deduction' : 'benefit'} types defined for this payroll group.</p> : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[42rem] text-left text-sm">
+            <table className="w-full min-w-[48rem] text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr><th className="px-3 py-2">Code / name</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Tax treatment</th><th className="px-3 py-2">Payroll schedule</th><th className="px-3 py-2">Attendance rule</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Actions</th></tr>
+                <tr><th className="px-3 py-2">Code / name</th><th className="px-3 py-2">Category</th><th className="px-3 py-2">Tax treatment</th><th className="px-3 py-2">Tax timing</th><th className="px-3 py-2">Default recurring schedule</th><th className="px-3 py-2">Attendance rule</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Actions</th></tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {managedTypes.map((benefit) => (
@@ -642,6 +1001,7 @@ export default function BenefitsManagement({
                     <td className="px-3 py-3"><span className="font-semibold text-slate-900">{benefit.code}</span><span className="block text-xs text-slate-500">{benefit.name}</span></td>
                     <td className="px-3 py-3 text-xs text-slate-700">{categories.find((item) => item.value === benefit.category)?.label}</td>
                     <td className="px-3 py-3 text-xs text-slate-700">{treatments.find((item) => item.value === benefit.taxTreatment)?.label}</td>
+                    <td className="px-3 py-3 text-xs text-slate-700">{benefit.withholdingTiming === 'YEAR_END' ? 'Year-end' : 'When paid'}</td>
                     <td className="px-3 py-3 text-xs text-slate-700">{postingSchedules.find((item) => item.value === benefit.postingSchedule)?.label}</td>
                     <td className="px-3 py-3 text-xs text-slate-700">
                       {benefit.attendanceBased
@@ -663,12 +1023,12 @@ export default function BenefitsManagement({
         )}
       </section>}
 
-      {(mode === 'all' || mode === 'types') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      {(mode === 'all' || mode === 'entries') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Employee benefit entitlements</h2>
+            <h2 className="text-lg font-bold text-slate-900">Recurring employee benefits</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Active entitlements are automatically included when payroll is calculated according to the benefit type’s posting schedule. A manual cutoff entry for the same employee and benefit takes precedence for that cutoff.
+              Assign an amount per occurrence, payroll schedule, and effective period to an employee. Active benefits are included in each eligible payroll cutoff; a manual cutoff entry for the same employee and benefit takes precedence.
             </p>
           </div>
           <button
@@ -676,32 +1036,56 @@ export default function BenefitsManagement({
             onClick={() => resetEntitlement(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
           >
-            <Plus className="h-4 w-4" aria-hidden="true" /> New entitlement
+            <Plus className="h-4 w-4" aria-hidden="true" /> New recurring benefit
           </button>
         </div>
         <form onSubmit={(event) => void saveEntitlement(event)} className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <SearchableSelect
+            id="recurring-benefit-employee"
+            label="Employee"
+            value={entitlementDraft.employeeId}
+            options={employeeSearchOptions}
+            onChange={(employeeId) => setEntitlementDraft({ ...entitlementDraft, employeeId })}
+            placeholder="Search by employee number or name"
+            emptyMessage="No active employees available"
+          />
+          <div>
+            <SearchableSelect
+              id="recurring-benefit-type"
+              label="Benefit type"
+              value={entitlementDraft.benefitTypeId}
+              options={entitlementTypeSearchOptions}
+              onChange={(benefitTypeId) => {
+                const benefitType = entitlementTypesForForm.find((item) => item.id === benefitTypeId)
+                setEntitlementDraft({
+                  ...entitlementDraft,
+                  benefitTypeId,
+                  schedule: benefitType?.postingSchedule ?? entitlementDraft.schedule,
+                })
+              }}
+              placeholder="Search benefit type by code or name"
+              emptyMessage="No active benefit types configured"
+            />
+            {entitlementTypesForForm.length === 0 && (
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                Add an active benefit type on the Benefit Types page before assigning recurring benefits.
+              </span>
+            )}
+          </div>
           <label className="text-xs font-semibold text-slate-600">
-            Employee
-            <select required value={entitlementDraft.employeeId} onChange={(event) => setEntitlementDraft({ ...entitlementDraft, employeeId: event.target.value })} className={inputClass}>
-              <option value="">Select employee</option>
-              {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNo} — {employee.fullName}</option>)}
-            </select>
+            Amount per occurrence (PHP)
+            <input required type="number" min="0.01" step="0.01" value={entitlementDraft.amountPerOccurrence} onChange={(event) => setEntitlementDraft({ ...entitlementDraft, amountPerOccurrence: event.target.value })} className={inputClass} />
           </label>
           <label className="text-xs font-semibold text-slate-600">
-            Benefit type
-            <select required value={entitlementDraft.benefitTypeId} onChange={(event) => setEntitlementDraft({ ...entitlementDraft, benefitTypeId: event.target.value })} className={inputClass}>
-              <option value="">Select benefit type</option>
-              {entitlementTypesForForm.map((benefit) => <option key={benefit.id} value={benefit.id}>{benefit.code} — {benefit.name}</option>)}
+            Payroll schedule
+            <select required value={entitlementDraft.schedule} onChange={(event) => setEntitlementDraft({ ...entitlementDraft, schedule: event.target.value as BenefitPostingSchedule })} className={inputClass}>
+              {postingSchedules.map((schedule) => <option key={schedule.value} value={schedule.value}>{schedule.label}</option>)}
             </select>
             {selectedEntitlementType && (
               <span className="mt-1 block font-normal text-slate-500">
-                Schedule: {postingSchedules.find((schedule) => schedule.value === selectedEntitlementType.postingSchedule)?.label}
+                Defaults from the benefit type; change it here for this employee if needed.
               </span>
             )}
-          </label>
-          <label className="text-xs font-semibold text-slate-600">
-            Amount per posting (PHP)
-            <input required type="number" min="0.01" step="0.01" value={entitlementDraft.amountPerOccurrence} onChange={(event) => setEntitlementDraft({ ...entitlementDraft, amountPerOccurrence: event.target.value })} className={inputClass} />
           </label>
           <label className="text-xs font-semibold text-slate-600">
             Effective from
@@ -713,15 +1097,15 @@ export default function BenefitsManagement({
           </label>
           <div className="flex items-end gap-2">
             <button disabled={saving || entitlementTypesForForm.length === 0} type="submit" className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
-              <Save className="h-4 w-4" aria-hidden="true" /> {saving ? 'Saving…' : editingEntitlementId ? 'Update entitlement' : 'Save entitlement'}
+            <Save className="h-4 w-4" aria-hidden="true" /> {saving ? 'Saving…' : editingEntitlementId ? 'Update benefit' : 'Save benefit'}
             </button>
             {editingEntitlementId && <button type="button" onClick={() => resetEntitlement(true)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"><X className="h-4 w-4" aria-hidden="true" /> Cancel</button>}
           </div>
         </form>
         {!entitlementDraft.employeeId ? (
-          <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">Select an employee above to view their benefit entitlements.</p>
+          <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">Select an employee above to view their recurring benefits.</p>
         ) : visibleEmployeeEntitlements.length === 0 ? (
-          <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No benefit entitlements found for {employees.find((employee) => employee.id === entitlementDraft.employeeId)?.fullName ?? 'the selected employee'}.</p>
+          <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No recurring benefits found for {employees.find((employee) => employee.id === entitlementDraft.employeeId)?.fullName ?? 'the selected employee'}.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[54rem] text-left text-sm">
@@ -731,8 +1115,7 @@ export default function BenefitsManagement({
               <tbody className="divide-y divide-slate-100">
                 {visibleEmployeeEntitlements.map((entitlement) => {
                   const employee = employees.find((person) => person.id === entitlement.employeeId)
-                  const benefitType = types.find((benefit) => benefit.id === entitlement.benefitTypeId)
-                  const scheduleLabel = postingSchedules.find((schedule) => schedule.value === benefitType?.postingSchedule)?.label ?? 'Unavailable'
+                  const scheduleLabel = postingSchedules.find((schedule) => schedule.value === entitlement.schedule)?.label ?? 'Unavailable'
                   return (
                     <tr key={entitlement.id}>
                       <td className="px-3 py-3"><span className="font-medium text-slate-900">{employee?.fullName ?? 'Employee record'}</span><span className="block text-xs text-slate-500">{employee?.employeeNo ?? entitlement.employeeId}</span></td>
@@ -741,7 +1124,7 @@ export default function BenefitsManagement({
                       <td className="px-3 py-3 text-xs text-slate-600">{entitlement.effectiveFrom} → {entitlement.effectiveTo ?? 'No end date'}</td>
                       <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${entitlement.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>{entitlement.isActive ? 'ACTIVE' : 'INACTIVE'}</span></td>
                       <td className="px-3 py-3"><div className="flex gap-1.5">
-                        <button type="button" aria-label={`Edit ${entitlement.benefitName} entitlement`} onClick={() => startEntitlementEdit(entitlement)} className="rounded border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50"><Pencil className="h-4 w-4" aria-hidden="true" /></button>
+                        <button type="button" aria-label={`Edit ${entitlement.benefitName} recurring benefit`} onClick={() => startEntitlementEdit(entitlement)} className="rounded border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50"><Pencil className="h-4 w-4" aria-hidden="true" /></button>
                         <button type="button" onClick={() => void toggleEntitlement(entitlement)} className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">{entitlement.isActive ? 'Deactivate' : 'Activate'}</button>
                       </div></td>
                     </tr>
@@ -753,7 +1136,7 @@ export default function BenefitsManagement({
         )}
       </section>}
 
-      {(mode === 'all' || mode === 'deductions' || mode === 'payroll-deductions') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      {(mode === 'all' || mode === 'payroll-deductions') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Recurring employee deductions</h2>
@@ -770,13 +1153,15 @@ export default function BenefitsManagement({
           </button>
         </div>
         <form onSubmit={(event) => void saveDeduction(event)} className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="text-xs font-semibold text-slate-600">
-            Employee
-            <select required value={deductionDraft.employeeId} onChange={(event) => setDeductionDraft({ ...deductionDraft, employeeId: event.target.value })} className={inputClass}>
-              <option value="">Select employee</option>
-              {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNo} — {employee.fullName}</option>)}
-            </select>
-          </label>
+          <SearchableSelect
+            id="recurring-deduction-employee"
+            label="Employee"
+            value={deductionDraft.employeeId}
+            options={employeeSearchOptions}
+            onChange={(employeeId) => setDeductionDraft({ ...deductionDraft, employeeId })}
+            placeholder="Search by employee number or name"
+            emptyMessage="No active employees available"
+          />
           <label className="text-xs font-semibold text-slate-600">
             Deduction type
             <select required disabled={deductionTypesForForm.length === 0} value={deductionDraft.benefitTypeId} onChange={(event) => setDeductionDraft({ ...deductionDraft, benefitTypeId: event.target.value })} className={inputClass}>
@@ -851,35 +1236,69 @@ export default function BenefitsManagement({
         )}
       </section>}
 
-      {(mode === 'all' || mode === 'entries') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      {(mode === 'all' || mode === 'entries' || mode === 'payroll-deductions') && <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div>
-          <h2 className="text-lg font-bold text-slate-900">Per-cutoff employee benefits</h2>
-          <p className="mt-1 text-sm text-slate-500">Enter amounts for the selected cutoff. Entries are immutable after the cutoff is locked.</p>
+          <h2 className="text-lg font-bold text-slate-900">
+            {isPerCutoffDeduction ? 'Per-cutoff employee deductions' : 'Per-cutoff employee benefits'}
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {isPerCutoffDeduction
+              ? 'Record incidental deductions for this cutoff. These are added to any recurring deduction; entries are immutable after the cutoff is locked.'
+              : 'Enter amounts for the selected cutoff. Entries are immutable after the cutoff is locked.'}
+          </p>
         </div>
         <label className="block max-w-xl text-xs font-semibold text-slate-600">
           Payroll cutoff
-          <select value={selectedCutoffId} onChange={(event) => { setSelectedCutoffId(event.target.value); resetEntry() }} className={inputClass}>
+          <select value={selectedCutoffId} onChange={(event) => {
+            setSelectedCutoffId(event.target.value)
+            setBenefitUploadFileName('')
+            setBenefitUploadRows([])
+            setDeductionUploadFileName('')
+            setDeductionUploadRows([])
+            resetEntry()
+          }} className={inputClass}>
             <option value="">Select cutoff</option>
             {cutoffs.map((cutoff) => <option key={cutoff.id} value={cutoff.id}>{cutoff.code} · {cutoff.periodStart} to {cutoff.periodEnd}{cutoff.locked ? ' · LOCKED' : ''}</option>)}
           </select>
         </label>
-        {selectedCutoff?.locked && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">This cutoff is locked, so benefit entries are read-only.</p>}
+        {selectedCutoff?.locked && (
+          <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
+            This cutoff is locked, so {isPerCutoffDeduction ? 'deduction' : 'benefit'} entries are read-only.
+          </p>
+        )}
 
         {canEditEntries && (
           <form onSubmit={(event) => void saveEntry(event)} className="grid gap-3 rounded-lg bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4">
+            {isPerCutoffDeduction ? (
+              <SearchableSelect
+                id="per-cutoff-deduction-employee"
+                label="Employee"
+                value={entryDraft.employeeId}
+                options={employeeSearchOptions}
+                onChange={(employeeId) => setEntryDraft({ ...entryDraft, employeeId })}
+                placeholder="Search by employee number or name"
+                emptyMessage="No active employees available"
+              />
+            ) : (
+              <label className="text-xs font-semibold text-slate-600">
+                Employee
+                <select required value={entryDraft.employeeId} onChange={(event) => setEntryDraft({ ...entryDraft, employeeId: event.target.value })} className={inputClass}>
+                  <option value="">Select employee</option>
+                  {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNo} — {employee.fullName}</option>)}
+                </select>
+              </label>
+            )}
             <label className="text-xs font-semibold text-slate-600">
-              Employee
-              <select required value={entryDraft.employeeId} onChange={(event) => setEntryDraft({ ...entryDraft, employeeId: event.target.value })} className={inputClass}>
-                <option value="">Select employee</option>
-                {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.employeeNo} — {employee.fullName}</option>)}
-              </select>
-            </label>
-            <label className="text-xs font-semibold text-slate-600">
-              Benefit
+              {isPerCutoffDeduction ? 'Deduction' : 'Benefit'}
               <select required value={entryDraft.benefitTypeId} onChange={(event) => setEntryDraft({ ...entryDraft, benefitTypeId: event.target.value })} className={inputClass}>
-                <option value="">Select benefit</option>
-                {entryTypes.map((benefit) => <option key={benefit.id} value={benefit.id}>{benefit.code} — {benefit.name}</option>)}
+                <option value="">Select {isPerCutoffDeduction ? 'deduction' : 'benefit'}</option>
+                {cutoffEntryTypes.map((benefit) => <option key={benefit.id} value={benefit.id}>{benefit.code} — {benefit.name}</option>)}
               </select>
+              {isPerCutoffDeduction && cutoffEntryTypes.length === 0 && (
+                <span className="mt-1 block font-normal text-slate-500">
+                  Add an active Employee Deduction type under Settings → Company Setup → Deduction Types.
+                </span>
+              )}
             </label>
             <label className="text-xs font-semibold text-slate-600">
               Amount (PHP)
@@ -893,21 +1312,85 @@ export default function BenefitsManagement({
               <input maxLength={500} value={entryDraft.notes} onChange={(event) => setEntryDraft({ ...entryDraft, notes: event.target.value })} className={inputClass} />
             </label>
             <div className="flex gap-2 sm:col-span-2 lg:col-span-4">
-              <button disabled={saving || entryTypes.length === 0} type="submit" className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
-                <Save className="h-4 w-4" aria-hidden="true" /> {saving ? 'Saving…' : editingEntryId ? 'Update entry' : 'Record benefit'}
+              <button disabled={saving || cutoffEntryTypes.length === 0} type="submit" className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">
+                <Save className="h-4 w-4" aria-hidden="true" /> {saving ? 'Saving…' : editingEntryId ? 'Update entry' : `Record ${isPerCutoffDeduction ? 'deduction' : 'benefit'}`}
               </button>
               {editingEntryId && <button type="button" onClick={() => resetEntry()} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"><X className="h-4 w-4" aria-hidden="true" /> Cancel</button>}
             </div>
           </form>
         )}
 
-        {selectedCutoffId && !entryDraft.employeeId && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">Select an employee above to view their benefits for this cutoff.</p>}
-        {entryDraft.employeeId && visibleCutoffEntries.length === 0 && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No benefit entries found for {selectedEntryEmployee?.fullName ?? 'the selected employee'} in this cutoff.</p>}
+        {canEditEntries && (
+          <div className="space-y-3 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Upload {isPerCutoffDeduction ? 'deductions' : 'benefits'} for this cutoff
+                </h3>
+                <p className="mt-1 max-w-3xl text-xs text-slate-600">
+                  Upload a CSV with employee_no, {isPerCutoffDeduction ? 'deduction_code' : 'benefit_code'},
+                  amount, and optional notes. Existing entries for the same employee and type are updated;
+                  new entries are created. The import is all-or-nothing if any row is invalid. Recalculate
+                  payroll after importing so the new {isPerCutoffDeduction ? 'deduction' : 'benefit'} amounts are included.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={isPerCutoffDeduction ? downloadDeductionCsvTemplate : downloadBenefitCsvTemplate}
+                className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+              >
+                Download CSV template
+              </button>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-xs font-semibold text-slate-600">
+                CSV file
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  disabled={isPerCutoffDeduction ? uploadingDeductions : uploadingBenefits}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0]
+                    event.currentTarget.value = ''
+                    if (isPerCutoffDeduction) void selectDeductionCsv(file)
+                    else void selectBenefitCsv(file)
+                  }}
+                  className="mt-1 block max-w-full text-xs file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:font-semibold file:text-indigo-700"
+                />
+              </label>
+              {(isPerCutoffDeduction ? deductionUploadFileName : benefitUploadFileName) && (
+                <p className="text-xs text-slate-600">
+                  {isPerCutoffDeduction ? deductionUploadFileName : benefitUploadFileName}
+                  {(isPerCutoffDeduction ? deductionUploadRows : benefitUploadRows).length > 0
+                    && ` · ${(isPerCutoffDeduction ? deductionUploadRows : benefitUploadRows).length} rows ready`}
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={isPerCutoffDeduction
+                  ? uploadingDeductions || deductionUploadRows.length === 0
+                  : uploadingBenefits || benefitUploadRows.length === 0}
+                onClick={() => {
+                  if (isPerCutoffDeduction) void uploadDeductions()
+                  else void uploadBenefits()
+                }}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {(isPerCutoffDeduction ? uploadingDeductions : uploadingBenefits)
+                  ? 'Uploading…'
+                  : `Upload ${isPerCutoffDeduction ? 'deductions' : 'benefits'}`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {selectedCutoffId && !entryDraft.employeeId && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">Select an employee above to view their {isPerCutoffDeduction ? 'deductions' : 'benefits'} for this cutoff.</p>}
+        {entryDraft.employeeId && visibleCutoffEntries.length === 0 && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No {isPerCutoffDeduction ? 'deduction' : 'benefit'} entries found for {selectedEntryEmployee?.fullName ?? 'the selected employee'} in this cutoff.</p>}
         {entryDraft.employeeId && visibleCutoffEntries.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[46rem] text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr><th className="px-3 py-2">Employee</th><th className="px-3 py-2">Benefit</th><th className="px-3 py-2">Tax treatment</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Notes</th>{canEditEntries && <th className="px-3 py-2">Actions</th>}</tr>
+                <tr><th className="px-3 py-2">Employee</th><th className="px-3 py-2">{isPerCutoffDeduction ? 'Deduction' : 'Benefit'}</th><th className="px-3 py-2">Tax treatment</th><th className="px-3 py-2">Amount</th><th className="px-3 py-2">Notes</th>{canEditEntries && <th className="px-3 py-2">Actions</th>}</tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {visibleCutoffEntries.map((entry) => {

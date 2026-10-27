@@ -84,6 +84,14 @@ def _contribution_bracket_entity(
         employee_fixed_amount=Decimal(model.employee_fixed_amount),
         employer_fixed_amount=Decimal(model.employer_fixed_amount),
         employer_additional_fixed_amount=Decimal(model.employer_additional_fixed_amount),
+        employee_contribution_cap=(
+            Decimal(model.employee_contribution_cap)
+            if model.employee_contribution_cap is not None else None
+        ),
+        employer_contribution_cap=(
+            Decimal(model.employer_contribution_cap)
+            if model.employer_contribution_cap is not None else None
+        ),
     )
 
 
@@ -94,6 +102,7 @@ def _tax_schedule_entity(model: WithholdingTaxScheduleModel) -> WithholdingTaxSc
         effective_from=model.effective_from,
         effective_to=model.effective_to,
         tax_exempt_benefit_limit=Decimal(model.tax_exempt_benefit_limit),
+        calculation_basis=model.calculation_basis,
         source_reference=model.source_reference,
         status=model.status,
         created_at=model.created_at,
@@ -396,6 +405,7 @@ class SqlAlchemyStatutoryScheduleRepository:
         effective_from: date,
         effective_to: date | None,
         tax_exempt_benefit_limit: Decimal,
+        calculation_basis: str,
         source_reference: str,
         actor_id: UUID,
     ) -> WithholdingTaxSchedule:
@@ -408,6 +418,7 @@ class SqlAlchemyStatutoryScheduleRepository:
                 effective_from=effective_from,
                 effective_to=effective_to,
                 tax_exempt_benefit_limit=tax_exempt_benefit_limit,
+                calculation_basis=calculation_basis,
                 source_reference=source_reference,
                 status="DRAFT",
                 created_by=actor_id,
@@ -426,6 +437,7 @@ class SqlAlchemyStatutoryScheduleRepository:
         effective_from: date,
         effective_to: date | None,
         tax_exempt_benefit_limit: Decimal,
+        calculation_basis: str,
         source_reference: str,
         actor_id: UUID,
     ) -> WithholdingTaxSchedule:
@@ -445,6 +457,7 @@ class SqlAlchemyStatutoryScheduleRepository:
             model.effective_from = effective_from
             model.effective_to = effective_to
             model.tax_exempt_benefit_limit = tax_exempt_benefit_limit
+            model.calculation_basis = calculation_basis
             model.source_reference = source_reference
             self._stamp_update(model, actor_id)
             await session.flush()

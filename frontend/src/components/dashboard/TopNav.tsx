@@ -26,7 +26,7 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react'
-import { fetchCompanies } from '../../lib/companyApi'
+import { fetchCompanies, fetchPayrollParameterCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
 import {
@@ -42,6 +42,7 @@ export type NavView =
   | 'dashboard'
   | 'enrollment'
   | 'attendance'
+  | 'attendance-detail-report'
   | 'attendance-recalculation'
   | 'my-schedule'
   | 'schedule-uploads'
@@ -60,9 +61,13 @@ export type NavView =
   | 'payroll-gross'
   | 'payroll-benefits'
   | 'payroll-deductions'
+  | 'payroll-loans'
   | 'company-benefit-types'
   | 'company-deduction-types'
   | 'payroll-statutory'
+  | 'payroll-thirteenth-month'
+  | 'payroll-off-cycle'
+  | 'payroll-system-parameters'
   | 'payroll-review'
   | 'schedule-templates'
   | 'rest-day-patterns'
@@ -98,11 +103,15 @@ const payrollManagementViews: NavView[] = [
   'payroll-gross',
   'payroll-benefits',
   'payroll-deductions',
-  'payroll-statutory',
+  'payroll-loans',
+  'payroll-thirteenth-month',
+  'payroll-off-cycle',
 ]
 
 const companyContextViews: NavView[] = [
   ...companySetupTabViews,
+  'payroll-statutory',
+  'payroll-system-parameters',
   'payroll-groups',
   'payroll-cutoffs',
   'payroll-compensation',
@@ -111,8 +120,11 @@ const companyContextViews: NavView[] = [
   'payroll-gross',
   'payroll-benefits',
   'payroll-deductions',
+  'payroll-loans',
   'company-benefit-types',
   'company-deduction-types',
+  'payroll-thirteenth-month',
+  'payroll-off-cycle',
 ]
 
 interface NavLink {
@@ -127,10 +139,10 @@ interface NavLink {
 const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   dashboard: LayoutDashboard,
   attendance: ClipboardCheck,
+  'attendance-detail-report': ChartColumn,
   'attendance-recalculation': RefreshCw,
   'my-schedule': CalendarDays,
   'schedule-uploads': Upload,
-  'schedule-upload-approvals': BadgeCheck,
   'emergency-schedule-approvals': Clock3,
   companies: Building2,
   'org-units': Building2,
@@ -145,9 +157,13 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   'payroll-gross': Calculator,
   'payroll-benefits': Gift,
   'payroll-deductions': Wallet,
+  'payroll-loans': Landmark,
   'company-benefit-types': Gift,
   'company-deduction-types': Wallet,
   'payroll-statutory': Landmark,
+  'payroll-thirteenth-month': Calculator,
+  'payroll-off-cycle': Gift,
+  'payroll-system-parameters': SlidersHorizontal,
   'payroll-review': FileClock,
   'schedule-templates': CalendarDays,
   'rest-day-patterns': CalendarRange,
@@ -190,23 +206,36 @@ const navLinks: NavLink[] = [
       {
         label: 'Attendance Recalculation',
         view: 'attendance-recalculation',
-        adminOnly: true,
+        permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
       },
-      { label: 'My Schedule', view: 'my-schedule', permission: 'schedule.read_own' },
+      { label: 'Emergency CWS', view: 'my-schedule', permission: 'schedule.read_own' },
       {
         label: 'Emergency Schedule Approvals',
         view: 'emergency-schedule-approvals',
         permission: 'schedule.approve_emergency',
       },
       { label: 'Team Schedule Upload', view: 'schedule-uploads', permission: 'schedule.upload_team' },
-      { label: 'Schedule Approvals', view: 'schedule-upload-approvals', permission: 'schedule.approve' },
     ],
   },
-  { label: 'Reports', hasDropdown: true },
+  {
+    label: 'Reports',
+    children: [
+      {
+        label: 'Attendance Detail',
+        view: 'attendance-detail-report',
+        permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+      },
+      {
+        label: 'Payroll Calculation Review',
+        view: 'payroll-review',
+        permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+      },
+    ],
+  },
   {
     label: 'People',
     children: [
-      { label: 'Employees', view: 'employees', permission: 'employees.read' },
+      { label: 'Employees', view: 'employees', permission: ['employees.read', 'employees.read_team'] },
     ],
   },
   {
@@ -236,12 +265,19 @@ const navLinks: NavLink[] = [
           {
             label: 'Payroll Setup',
             children: [
-              { label: 'Benefit Types', view: 'company-benefit-types', permission: 'payroll.manage' },
-              { label: 'Deduction Types', view: 'company-deduction-types', permission: 'payroll.manage' },
-              { label: 'Calendar', view: 'calendar', permission: 'leave.manage' },
-              { label: 'Announcements', view: 'announcements', permission: 'system.manage' },
+            { label: 'Benefit Types', view: 'company-benefit-types', permission: 'payroll.manage' },
+            { label: 'Deduction Types', view: 'company-deduction-types', permission: 'payroll.manage' },
+            { label: 'Calendar', view: 'calendar', permission: 'leave.manage' },
+            { label: 'Announcements', view: 'announcements', permission: 'system.manage' },
             ],
           },
+        ],
+      },
+      {
+        label: 'Statutory Setup',
+        children: [
+          { label: 'Contribution & Tax Schedules', view: 'payroll-statutory', permission: 'payroll.company_parameters.manage' },
+          { label: 'Company Parameters', view: 'payroll-system-parameters', permission: 'payroll.company_parameters.manage' },
         ],
       },
     ],
@@ -252,7 +288,9 @@ const navLinks: NavLink[] = [
       { label: 'Payroll Cutoffs', view: 'payroll-cutoffs', permission: 'payroll.manage' },
       { label: 'Payroll Groups', view: 'payroll-groups', permission: 'payroll.manage' },
       { label: 'Management', view: 'payroll-management', permission: 'payroll.manage' },
-      { label: 'Statutory Schedules', view: 'payroll-statutory', permission: 'payroll.manage' },
+      { label: 'Employee Loans', view: 'payroll-loans', permission: 'payroll.manage' },
+      { label: '13th-Month Calculation', view: 'payroll-thirteenth-month', permission: 'payroll.manage' },
+      { label: 'Off-Cycle Payroll', view: 'payroll-off-cycle', permission: ['payroll.manage', 'payroll.approve'] },
     ],
   },
 ]
@@ -369,24 +407,30 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   useEffect(() => {
     if (!isCompanyContextView) return
     let isCurrent = true
-    fetchCompanies()
+    const loadCompanies = activeView === 'payroll-system-parameters'
+      ? fetchPayrollParameterCompanies
+      : fetchCompanies
+    loadCompanies()
       .then((items) => {
         if (!isCurrent) return
         setCompanies(items)
         setCompanyLoadError('')
         if (companyId && !items.some((company) => company.id === companyId)) {
           selectCompany('')
+        } else if (!companyId && items.length === 1 && items[0].id) {
+          selectCompany(items[0].id)
         }
       })
       .catch((error: unknown) => {
         if (isCurrent) {
           setCompanyLoadError(error instanceof Error ? error.message : 'Could not load companies.')
+          setCompanies([])
         }
       })
     return () => {
       isCurrent = false
     }
-  }, [companyId, isCompanyContextView, selectCompany])
+  }, [activeView, companyId, isCompanyContextView, selectCompany])
 
   useEffect(() => {
     if (!isAccountMenuOpen) return
@@ -440,12 +484,16 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
               <div key={link.label} className="group relative">
                 <button
                   type="button"
-                  className={`flex items-center gap-1.5 text-sm font-medium transition hover:text-indigo-600 ${
+                  className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium transition ${
                     link.children.some((child) => child.view === activeView)
                       || (link.label === 'Payroll' && payrollManagementViews.includes(activeView))
-                      || (link.label === 'Settings' && companySetupTabViews.includes(activeView))
-                      ? 'text-indigo-600'
-                      : 'text-slate-900'
+                      || (link.label === 'Settings' && (
+                        companySetupTabViews.includes(activeView)
+                        || activeView === 'payroll-statutory'
+                        || activeView === 'payroll-system-parameters'
+                      ))
+                      ? 'bg-indigo-50 text-indigo-700'
+                      : 'text-slate-900 hover:bg-slate-50 hover:text-indigo-600'
                   }`}
                 >
                   {(() => {
@@ -493,6 +541,26 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                             </div>
                           ))}
                         </div>
+                      </section>
+                    ) : child.label === 'Statutory Setup' && child.children ? (
+                      <section key={child.label} className="min-w-60">
+                        <h2 className="mb-2 border-b border-slate-100 px-2 pb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                          {child.label}
+                        </h2>
+                        {child.children.map((setupLink) => (
+                          <button
+                            key={setupLink.label}
+                            type="button"
+                            onClick={() => navigateTo(setupLink.view)}
+                            className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition-colors ${setupLink.view === activeView ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-900 hover:bg-slate-50 hover:text-indigo-700'}`}
+                          >
+                            {(() => {
+                              const Icon = iconForLink(setupLink)
+                              return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                            })()}
+                            {setupLink.label}
+                          </button>
+                        ))}
                       </section>
                     ) : (
                       <button
@@ -675,8 +743,33 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                         ))}
                       </div>
                     ) : (
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                        {group.children.map((link) => (
+                      <div className="space-y-3">
+                        {group.children.map((link) => link.label === 'Statutory Setup' && link.children ? (
+                          <section key={link.label}>
+                            <h3 className="mb-1 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-wide text-slate-400">
+                              <Landmark className="h-3.5 w-3.5" aria-hidden="true" />
+                              {link.label}
+                            </h3>
+                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                              {link.children.map((setupLink) => (
+                                <button
+                                  key={setupLink.label}
+                                  type="button"
+                                  onClick={() => navigateTo(setupLink.view)}
+                                  className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                                    setupLink.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-900 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {(() => {
+                                    const Icon = iconForLink(setupLink)
+                                    return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                                  })()}
+                                  {setupLink.label}
+                                </button>
+                              ))}
+                            </div>
+                          </section>
+                        ) : (
                           <button
                             key={link.label}
                             type="button"
@@ -725,23 +818,36 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
         <div className="mx-auto w-[95%] border-b border-indigo-200 pt-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
-              <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="company-context-selector">
-                Company
-              </label>
-              <select
-                id="company-context-selector"
-                aria-label="Select company for payroll or company setup"
-                value={companyId}
-                onChange={(event) => selectCompany(event.target.value)}
-                className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              >
-                <option value="">Select a company</option>
-                {companies.map((company) => (
-                  <option key={company.id} value={company.id}>
-                    {company.company_code} — {company.legal_name}
-                  </option>
-                ))}
-              </select>
+              {activeView === 'payroll-system-parameters' && companies.length === 1
+                ? (
+                  <>
+                    <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Company</span>
+                    <span className="min-w-64 rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700">
+                      {companies[0].company_code} — {companies[0].legal_name}
+                    </span>
+                  </>
+                )
+                : (
+                  <>
+                    <label className="text-xs font-bold uppercase tracking-wide text-slate-500" htmlFor="company-context-selector">
+                      Company
+                    </label>
+                    <select
+                      id="company-context-selector"
+                      aria-label="Select company for payroll or company setup"
+                      value={companyId}
+                      onChange={(event) => selectCompany(event.target.value)}
+                      className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    >
+                      <option value="">Select a company</option>
+                      {companies.map((company) => (
+                        <option key={company.id} value={company.id}>
+                          {company.company_code} — {company.legal_name}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
               {companyId && (
                 <span className="text-xs font-medium text-indigo-700">
                   {activeView.startsWith('payroll-')
@@ -753,9 +859,11 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
           </div>
           {!companyId && (
             <p className="mb-3 text-sm text-slate-500">
-              {activeView.startsWith('payroll-')
-                ? 'Select a company to load its payroll groups.'
-                : 'Select a company to open its setup tabs.'}
+              {activeView === 'payroll-system-parameters' && !companyLoadError
+                ? 'System Parameters use your active company assignment. If no company appears, verify your assignment and permissions.'
+                : activeView.startsWith('payroll-')
+                  ? 'Select a company to load its payroll groups.'
+                  : 'Select a company to open its setup tabs.'}
             </p>
           )}
           {companyLoadError && <p role="alert" className="mb-2 text-sm text-rose-700">{companyLoadError}</p>}

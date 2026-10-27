@@ -5,7 +5,6 @@ import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import {
-  acknowledgePayrollCutoffResult,
   calculatePayrollCutoff,
   createPayrollCutoff,
   fetchPayrollCutoffResults,
@@ -25,12 +24,11 @@ interface Props {
 interface CutoffForm {
   payroll_group_id: string
   cutoff_code: string
+  cutoff_half: 'FIRST_HALF' | 'SECOND_HALF' | ''
   period_start: string
   period_end: string
   pay_date: string
-  employee_review_deadline: string
-  supervisor_deadline: string
-  hr_deadline: string
+  attendance_deadline: string
   status: string
   calculation_version: string
   export_batch_id: string
@@ -43,12 +41,11 @@ type SortDirection = 'asc' | 'desc'
 const blankForm: CutoffForm = {
   payroll_group_id: '',
   cutoff_code: '',
+  cutoff_half: '',
   period_start: '',
   period_end: '',
   pay_date: '',
-  employee_review_deadline: '',
-  supervisor_deadline: '',
-  hr_deadline: '',
+  attendance_deadline: '',
   status: 'SCHEDULED',
   calculation_version: '',
   export_batch_id: '',
@@ -73,12 +70,17 @@ function groupLabel(groupId: string, groups: PayrollGroup[]) {
   return group ? `${group.payroll_group_code} — ${group.payroll_group_name}` : 'Payroll group unavailable'
 }
 
+function formatDate(value: string) {
+  const [year, month, day] = value.slice(0, 10).split('-')
+  return `${month}-${day}-${year}`
+}
+
 function deadlineText(value: string | null) {
   if (!value) return '—'
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
+  const date = new Date(value)
+  return `${formatDate(value)} ${new Intl.DateTimeFormat('en-US', {
     timeStyle: 'short',
-  }).format(new Date(value))
+  }).format(date)}`
 }
 
 function formatMinutesAsHours(minutes: number) {
@@ -159,12 +161,11 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
     setForm({
       payroll_group_id: cutoff.payroll_group_id,
       cutoff_code: cutoff.cutoff_code,
+      cutoff_half: cutoff.cutoff_half ?? '',
       period_start: cutoff.period_start,
       period_end: cutoff.period_end,
       pay_date: cutoff.pay_date,
-      employee_review_deadline: toLocalDateTime(cutoff.employee_review_deadline),
-      supervisor_deadline: toLocalDateTime(cutoff.supervisor_deadline),
-      hr_deadline: toLocalDateTime(cutoff.hr_deadline),
+      attendance_deadline: toLocalDateTime(cutoff.attendance_deadline),
       status: cutoff.status,
       calculation_version: cutoff.calculation_version ?? '',
       export_batch_id: cutoff.export_batch_id ?? '',
@@ -209,22 +210,6 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
     }
   }
 
-  async function acknowledgeHrResult(result: EmployeeCutoffResult) {
-    if (!resultsCutoff) return
-    setError('')
-    setSuccess('')
-    setResultsLoading(true)
-    try {
-      const updated = await acknowledgePayrollCutoffResult(resultsCutoff.id, result.id)
-      setResults((current) => current.map((item) => item.id === updated.id ? updated : item))
-      setSuccess(`HR acknowledged the calculation for ${updated.employee_name || 'the employee'}.`)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not acknowledge this payroll calculation.')
-    } finally {
-      setResultsLoading(false)
-    }
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -233,12 +218,11 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
     const payload: PayrollCutoffPayload = {
       payroll_group_id: form.payroll_group_id,
       cutoff_code: form.cutoff_code.trim(),
+      cutoff_half: form.cutoff_half || null,
       period_start: form.period_start,
       period_end: form.period_end,
       pay_date: form.pay_date,
-      employee_review_deadline: toUtcDateTime(form.employee_review_deadline),
-      supervisor_deadline: toUtcDateTime(form.supervisor_deadline),
-      hr_deadline: toUtcDateTime(form.hr_deadline),
+      attendance_deadline: toUtcDateTime(form.attendance_deadline),
       status: form.status.trim(),
       calculation_version: form.calculation_version.trim() || null,
       export_batch_id: form.export_batch_id.trim() || null,
@@ -264,6 +248,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   const filteredCutoffs = normalizedSearch
     ? cutoffs.filter((cutoff) => [
       cutoff.cutoff_code,
+      cutoff.cutoff_half,
       groupLabel(cutoff.payroll_group_id, groups),
       cutoff.period_start,
       cutoff.period_end,
@@ -278,8 +263,8 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
       period: [`${left.period_start} ${left.period_end}`, `${right.period_start} ${right.period_end}`],
       payDate: [left.pay_date, right.pay_date],
       deadlines: [
-        [left.employee_review_deadline, left.supervisor_deadline, left.hr_deadline].filter(Boolean).sort()[0] ?? '',
-        [right.employee_review_deadline, right.supervisor_deadline, right.hr_deadline].filter(Boolean).sort()[0] ?? '',
+        left.attendance_deadline ?? '',
+        right.attendance_deadline ?? '',
       ],
       status: [`${left.status} ${left.is_active} ${left.locked_at ?? ''}`, `${right.status} ${right.is_active} ${right.locked_at ?? ''}`],
       calculation: [`${left.calculation_version ?? ''} ${left.export_batch_id ?? ''}`, `${right.calculation_version ?? ''} ${right.export_batch_id ?? ''}`],
@@ -349,6 +334,14 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             <label className="text-sm font-semibold text-slate-700">Cutoff code
               <input className={inputClass} maxLength={50} required value={form.cutoff_code} onChange={(event) => setField('cutoff_code', event.target.value)} />
             </label>
+            <label className="text-sm font-semibold text-slate-700">Cutoff half
+              <select className={inputClass} value={form.cutoff_half} onChange={(event) => setField('cutoff_half', event.target.value as CutoffForm['cutoff_half'])}>
+                <option value="">Not designated</option>
+                <option value="FIRST_HALF">First cutoff</option>
+                <option value="SECOND_HALF">Second cutoff</option>
+              </select>
+              <span className="mt-1 block text-xs font-normal text-slate-500">Set this explicitly for First-half or Second-half recurring benefits, deductions, and loans. Dates may cross months.</span>
+            </label>
             <label className="text-sm font-semibold text-slate-700">Status
               <input className={inputClass} maxLength={30} required value={form.status} onChange={(event) => setField('status', event.target.value)} />
             </label>
@@ -361,14 +354,9 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             <label className="text-sm font-semibold text-slate-700">Pay date
               <input className={inputClass} type="date" required value={form.pay_date} onChange={(event) => setField('pay_date', event.target.value)} />
             </label>
-            <label className="text-sm font-semibold text-slate-700">Employee review deadline
-              <input className={inputClass} type="datetime-local" value={form.employee_review_deadline} onChange={(event) => setField('employee_review_deadline', event.target.value)} />
-            </label>
-            <label className="text-sm font-semibold text-slate-700">Supervisor deadline
-              <input className={inputClass} type="datetime-local" value={form.supervisor_deadline} onChange={(event) => setField('supervisor_deadline', event.target.value)} />
-            </label>
-            <label className="text-sm font-semibold text-slate-700">HR deadline
-              <input className={inputClass} type="datetime-local" value={form.hr_deadline} onChange={(event) => setField('hr_deadline', event.target.value)} />
+            <label className="text-sm font-semibold text-slate-700">Attendance deadline
+              <input className={inputClass} type="datetime-local" value={form.attendance_deadline} onChange={(event) => setField('attendance_deadline', event.target.value)} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">After this, attendance, leave, OT and official business for the cutoff are frozen. HR approves payroll after it passes.</span>
             </label>
             <label className="text-sm font-semibold text-slate-700">Calculation version (optional)
               <input className={inputClass} maxLength={50} value={form.calculation_version} onChange={(event) => setField('calculation_version', event.target.value)} />
@@ -408,7 +396,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                   <th scope="col" aria-sort={sortKey === 'cutoff' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Cutoff / Group', 'cutoff')}</th>
                   <th scope="col" aria-sort={sortKey === 'period' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Period', 'period')}</th>
                   <th scope="col" aria-sort={sortKey === 'payDate' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Pay date', 'payDate')}</th>
-                  <th scope="col" aria-sort={sortKey === 'deadlines' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Review deadlines', 'deadlines')}</th>
+                  <th scope="col" aria-sort={sortKey === 'deadlines' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Attendance deadline', 'deadlines')}</th>
                   <th scope="col" aria-sort={sortKey === 'status' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Status / lock', 'status')}</th>
                   <th scope="col" aria-sort={sortKey === 'calculation' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="px-4 py-3">{sortHeader('Calculation', 'calculation')}</th>
                   <th className="px-4 py-3"><span className="sr-only">Actions</span></th>
@@ -419,13 +407,21 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                 {!loading && visibleCutoffs.length === 0 && <tr><td colSpan={7} className="px-4 py-5 text-slate-500">{normalizedSearch ? 'No cutoffs match your search.' : 'No cutoffs configured.'}</td></tr>}
                 {visibleCutoffs.map((cutoff) => (
                   <tr key={cutoff.id} className={editing?.id === cutoff.id ? 'bg-indigo-50' : ''}>
-                    <td className="px-4 py-3"><p className="font-semibold text-slate-900">{cutoff.cutoff_code}</p><p className="text-xs text-slate-500">{groupLabel(cutoff.payroll_group_id, groups)}</p></td>
-                    <td className="px-4 py-3">{cutoff.period_start} → {cutoff.period_end}</td>
-                    <td className="px-4 py-3">{cutoff.pay_date}</td>
+                    <td className="px-4 py-3">
+                      <p className="font-semibold text-slate-900">{cutoff.cutoff_code}</p>
+                      <p className="text-xs text-slate-500">{groupLabel(cutoff.payroll_group_id, groups)}</p>
+                      <p className="text-xs font-semibold text-indigo-700">
+                        {cutoff.cutoff_half === 'FIRST_HALF'
+                          ? 'First cutoff'
+                          : cutoff.cutoff_half === 'SECOND_HALF'
+                            ? 'Second cutoff'
+                            : 'Half not designated'}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">{formatDate(cutoff.period_start)} → {formatDate(cutoff.period_end)}</td>
+                    <td className="px-4 py-3">{formatDate(cutoff.pay_date)}</td>
                     <td className="px-4 py-3 text-xs">
-                      <p>Employee: {deadlineText(cutoff.employee_review_deadline)}</p>
-                      <p>Supervisor: {deadlineText(cutoff.supervisor_deadline)}</p>
-                      <p>HR: {deadlineText(cutoff.hr_deadline)}</p>
+                      <p>{deadlineText(cutoff.attendance_deadline)}</p>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
@@ -482,7 +478,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                   Results · {resultsCutoff.cutoff_code}
                 </h2>
                 <p className="text-sm text-slate-500">
-                  {groupLabel(resultsCutoff.payroll_group_id, groups)} · {resultsCutoff.period_start} → {resultsCutoff.period_end}
+                  {groupLabel(resultsCutoff.payroll_group_id, groups)} · {formatDate(resultsCutoff.period_start)} → {formatDate(resultsCutoff.period_end)}
                 </p>
                 <p className="mt-1 text-xs text-slate-500">Time totals only; no monetary payroll amounts are calculated.</p>
               </div>
@@ -521,11 +517,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                       <th className="px-3 py-3">Night OT (hours)</th>
                       <th className="px-3 py-3">Official business (hours)</th>
                       <th className="px-3 py-3">Exceptions</th>
-                      <th className="px-3 py-3">Employee</th>
-                      <th className="px-3 py-3">Supervisor</th>
-                      <th className="px-3 py-3">HR</th>
                       <th className="px-3 py-3">Payroll</th>
-                      <th className="px-3 py-3">Acknowledgment</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -553,28 +545,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                         <td className="px-3 py-3">{formatMinutesAsHours(result.night_ot_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.official_business_minutes)}</td>
                         <td className="px-3 py-3">{result.exception_count}</td>
-                        <td className="px-3 py-3">{result.employee_confirmation_status}</td>
-                        <td className="px-3 py-3">{result.supervisor_status}</td>
-                        <td className="px-3 py-3">{result.hr_status}</td>
                         <td className="px-3 py-3">{result.payroll_status}</td>
-                        <td className="px-3 py-3">
-                          {result.employee_confirmation_status === 'ACKNOWLEDGED'
-                            && result.supervisor_status === 'ACKNOWLEDGED'
-                            && result.hr_status === 'PENDING' ? (
-                              <button
-                                type="button"
-                                onClick={() => void acknowledgeHrResult(result)}
-                                disabled={resultsLoading}
-                                className="whitespace-nowrap rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-                              >
-                                Acknowledge as HR
-                              </button>
-                            ) : result.hr_status === 'ACKNOWLEDGED' ? (
-                              <span className="whitespace-nowrap text-xs font-semibold text-emerald-700">Calculation acknowledged</span>
-                            ) : (
-                              <span className="whitespace-nowrap text-xs text-slate-500">Awaiting prior acknowledgment</span>
-                            )}
-                        </td>
                       </tr>
                     ))}
                   </tbody>

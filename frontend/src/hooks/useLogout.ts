@@ -11,6 +11,7 @@ export function useLogout(options: UseLogoutOptions = {}) {
     localStorage.removeItem('dashboard_role')
     localStorage.removeItem('dashboard_role_code')
     localStorage.removeItem('employee_name')
+    localStorage.removeItem('employee_code')
     options.onLoggedOut?.()
   }
 

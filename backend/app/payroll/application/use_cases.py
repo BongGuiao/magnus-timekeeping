@@ -9,9 +9,12 @@ from app.payroll.domain.entities.gross_payroll import (
     Compensation,
     EarningRule,
     GrossPayRun,
+    PayrollCutoffLockState,
+    ThirteenthMonthRun,
     PayrollBenefitLine,
     PayrollContributionLine,
     calculate_gross_pay,
+    compensation_period_basis,
     monthly_compensation_basis,
 )
 from app.payroll.domain.entities.net_payroll import OpeningYtdBalance
@@ -141,13 +144,21 @@ class PayrollUseCases:
             )
         }
         results = []
-        for employee in cutoff.employees:
-            compensation = await self._repository.load_covering_compensation(
-                employee.employee_id,
-                cutoff.payroll_group.payroll_group_id,
-                cutoff.period_start,
-                cutoff.period_end,
+        employee_ids = [employee.employee_id for employee in cutoff.employees]
+        compensations = await self._repository.load_covering_compensations(
+            employee_ids,
+            cutoff.payroll_group.payroll_group_id,
+            cutoff.period_start,
+            cutoff.period_end,
+        )
+        try:
+            net_inputs = await self._repository.load_net_payroll_inputs(
+                cutoff_id, employee_ids
             )
+        except LookupError as error:
+            raise PayrollCutoffNotFoundError(str(error)) from error
+        for employee in cutoff.employees:
+            compensation = compensations.get(employee.employee_id)
             gross_result = calculate_gross_pay(
                 time=employee,
                 compensation=compensation,
@@ -156,9 +167,7 @@ class PayrollUseCases:
                 cutoff_period_start=cutoff.period_start,
                 cutoff_period_end=cutoff.period_end,
             )
-            payroll_inputs = await self._repository.load_net_payroll_inputs(
-                cutoff_id, employee.employee_id
-            )
+            payroll_inputs = net_inputs[employee.employee_id]
             if gross_result.gross_amount is None:
                 results.append(
                     replace(
@@ -171,6 +180,8 @@ class PayrollUseCases:
                                 category=benefit.category,
                                 tax_treatment=benefit.tax_treatment,
                                 amount=benefit.amount,
+                                withholding_timing=benefit.withholding_timing,
+                                loan_id=benefit.loan_id,
                             )
                             for benefit in payroll_inputs.benefits
                         ),
@@ -184,16 +195,28 @@ class PayrollUseCases:
                     cutoff.payroll_group,
                     compensation,
                 ),
+                semimonthly_compensation=compensation_period_basis(
+                    cutoff.payroll_group,
+                    compensation,
+                    periods_per_year=24,
+                ),
                 contribution_brackets=payroll_inputs.contribution_brackets,
                 tax_schedule=payroll_inputs.tax_schedule,
                 tax_brackets=payroll_inputs.tax_brackets,
                 monthly_cutoff_count=payroll_inputs.monthly_cutoff_count,
                 cutoff_number_in_month=payroll_inputs.cutoff_number_in_month,
+                contribution_timing=payroll_inputs.statutory_contribution_timing,
+                pay_frequency=payroll_inputs.pay_frequency,
+                cutoff_half=payroll_inputs.cutoff_half,
                 prior_month_employee_contributions=payroll_inputs.prior_month_employee_contributions,
                 prior_month_employer_contributions=payroll_inputs.prior_month_employer_contributions,
                 prior_ytd_taxable_income=payroll_inputs.prior_ytd_taxable_income,
                 prior_ytd_withholding_tax=payroll_inputs.prior_ytd_withholding_tax,
                 prior_ytd_limited_exempt_benefits=payroll_inputs.prior_ytd_limited_exempt_benefits,
+                year_end_wtax_reconciliation_enabled=(
+                    cutoff.year_end_wtax_reconciliation_enabled
+                ),
+                is_final_december_cutoff=payroll_inputs.is_final_december_cutoff,
                 opening_ytd_balance_missing=payroll_inputs.opening_ytd_balance_missing,
                 scheduled_days=payroll_inputs.scheduled_days,
                 paid_days=payroll_inputs.paid_days,
@@ -255,9 +278,53 @@ class PayrollUseCases:
         except LookupError as error:
             raise PayrollCutoffNotFoundError(str(error)) from error
 
+    async def calculate_thirteenth_month(
+        self,
+        company_id: UUID,
+        tax_year: int,
+        covered_period_from: date,
+        covered_period_to: date,
+        actor_id: UUID,
+    ) -> ThirteenthMonthRun:
+        if tax_year < 1900 or tax_year > 9999:
+            raise PayrollSetupError("Tax year must be between 1900 and 9999.")
+        if covered_period_from > covered_period_to:
+            raise PayrollSetupError("The covered cutoff start date must be on or before its end date.")
+        if covered_period_from.year != tax_year or covered_period_to.year != tax_year:
+            raise PayrollSetupError("The covered cutoff dates must be within the selected tax year.")
+        try:
+            return await self._repository.calculate_thirteenth_month_run(
+                company_id=company_id,
+                tax_year=tax_year,
+                covered_period_from=covered_period_from,
+                covered_period_to=covered_period_to,
+                actor_id=actor_id,
+                calculated_at=datetime.now(timezone.utc),
+            )
+        except LookupError as error:
+            raise PayrollCutoffNotFoundError(str(error)) from error
+
     async def calculate_gross_pay(self, cutoff_id: UUID, actor_id: UUID) -> GrossPayRun:
         """Compatibility name for callers of the former gross-only calculation use case."""
         return await self.calculate_payroll(cutoff_id, actor_id)
+
+    async def approve_payroll_cutoff(
+        self, cutoff_id: UUID, actor_id: UUID
+    ) -> PayrollCutoffLockState:
+        return await self._repository.approve_payroll_cutoff(
+            cutoff_id,
+            actor_id,
+            datetime.now(timezone.utc),
+        )
+
+    async def unlock_payroll_cutoff(
+        self, cutoff_id: UUID, actor_id: UUID
+    ) -> PayrollCutoffLockState:
+        return await self._repository.unlock_payroll_cutoff(
+            cutoff_id,
+            actor_id,
+            datetime.now(timezone.utc),
+        )
 
     async def list_my_gross_pay_results(self, user_id: UUID) -> list[GrossPayRun]:
         return await self._repository.list_my_gross_pay_results(user_id)

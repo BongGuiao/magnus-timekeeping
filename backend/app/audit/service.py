@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -8,6 +9,8 @@ from elasticsearch import AsyncElasticsearch
 from app.audit.domain import AuditLogCreate
 
 logger = logging.getLogger("magnus.audit.elasticsearch")
+
+_pending_audit_tasks: set[asyncio.Task[None]] = set()
 
 
 def _audit_values(value: Any) -> dict[str, Any] | None:
@@ -45,14 +48,16 @@ async def log_entity_action(
 ) -> None:
     if es_client is None:
         return
-    await log_action(
-        es_client,
-        AuditLogCreate(
-            user_id=str(user_id),
-            action=action.upper(),
-            resource=resource,
-            resource_id=str(resource_id),
-            old_values=_audit_values(before),
-            new_values=_audit_values(after),
-        ),
+    log_data = AuditLogCreate(
+        user_id=str(user_id),
+        action=action.upper(),
+        resource=resource,
+        resource_id=str(resource_id),
+        old_values=_audit_values(before),
+        new_values=_audit_values(after),
     )
+    # Audit indexing must never delay the user's request (an unreachable
+    # Elasticsearch previously added ~13s of retries to every save).
+    task = asyncio.create_task(log_action(es_client, log_data))
+    _pending_audit_tasks.add(task)
+    task.add_done_callback(_pending_audit_tasks.discard)

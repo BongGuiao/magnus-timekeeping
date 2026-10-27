@@ -33,6 +33,7 @@ from app.filemaintenance.schedule.infrastructure.schedule_upload_db_model import
     ScheduleUploadBatchRowModel,
     schedule_upload_batch_no_seq,
 )
+from app.payroll.infrastructure.db_model import PayrollSystemParametersModel
 
 APPROVED_ASSIGNMENT_STATUS = "APPROVED"
 WORK_SEGMENT_TYPE = "WORK"
@@ -65,6 +66,19 @@ def _approved_assignment_conditions():
 class SqlAlchemyScheduleUploadRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def schedule_approval_required(self, company_ids: Collection[UUID]) -> bool:
+        ids = set(company_ids)
+        if not ids:
+            return True
+        rows = await self._session.execute(
+            select(
+                PayrollSystemParametersModel.company_id,
+                PayrollSystemParametersModel.schedule_assignment_approval_required,
+            ).where(PayrollSystemParametersModel.company_id.in_(ids))
+        )
+        settings = dict(rows.tuples())
+        return any(settings.get(company_id, True) for company_id in ids)
 
     async def find_team_employees(
         self,

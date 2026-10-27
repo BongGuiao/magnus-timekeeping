@@ -5,6 +5,9 @@ from sqlalchemy import delete, select
 from app.auth.infrastructure.db_model import RoleModel
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
+from app.filemaintenance.roles.application.payroll_access import (
+    ensure_role_permission_change_allowed,
+)
 from app.filemaintenance.roles.infrastructure.permission_db_model import PermissionModel
 from app.filemaintenance.roles.infrastructure.role_permission_db_model import RolePermissionModel
 
@@ -69,10 +72,10 @@ class SetRolePermissionsUseCase(BaseUseCase[list[str] | None]):
         async with self.uow as uow:
             if uow.session is None:
                 raise RuntimeError("UnitOfWork session is not active.")
-            role = await uow.session.scalar(
-                select(RoleModel.id).where(RoleModel.id == role_id)
+            role_code = await uow.session.scalar(
+                select(RoleModel.role_code).where(RoleModel.id == role_id)
             )
-            if role is None:
+            if role_code is None:
                 return None
 
             permissions = await uow.session.scalars(
@@ -85,6 +88,24 @@ class SetRolePermissionsUseCase(BaseUseCase[list[str] | None]):
             unknown_codes = sorted(set(requested_codes) - permissions_by_code.keys())
             if unknown_codes:
                 raise UnknownPermissionCodesError(unknown_codes)
+
+            existing_codes = await uow.session.scalars(
+                select(PermissionModel.permission_code)
+                .join(
+                    RolePermissionModel,
+                    RolePermissionModel.permission_id == PermissionModel.id,
+                )
+                .where(
+                    RolePermissionModel.role_id == role_id,
+                    RolePermissionModel.allowed.is_(True),
+                    PermissionModel.is_active.is_(True),
+                )
+            )
+            ensure_role_permission_change_allowed(
+                role_code,
+                set(existing_codes),
+                set(requested_codes),
+            )
 
             await uow.session.execute(
                 delete(RolePermissionModel).where(RolePermissionModel.role_id == role_id)

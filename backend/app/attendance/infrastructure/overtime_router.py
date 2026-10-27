@@ -18,6 +18,11 @@ from app.attendance.application.overtime_use_cases import (
     UpdateOvertimeApplicationInput,
     UpdateOvertimeApplicationUseCase,
 )
+from app.attendance.application.clock import ph_today, utc_now
+from app.attendance.application.supervisor_attendance_location_use_cases import (
+    ListSupervisorTeamEmployeesInput,
+    ListSupervisorTeamEmployeesUseCase,
+)
 from app.attendance.application.recent_attendance_snapshot import RecentAttendanceItem
 from app.attendance.domain.entities.overtime import OvertimeApplicationRecord, OvertimeAttendance
 from app.attendance.infrastructure.dependencies import (
@@ -26,9 +31,11 @@ from app.attendance.infrastructure.dependencies import (
     get_list_pending_overtime_applications_use_case,
     get_overtime_attendance_options_use_case,
     get_recalculate_attendance_range_use_case,
+    get_supervisor_team_employees_use_case,
     get_submit_overtime_application_use_case,
     get_update_overtime_application_use_case,
 )
+from app.attendance.infrastructure.overtime_repository import SqlAlchemyOvertimeRepository
 from app.attendance.infrastructure.http_errors import http_errors as _http_errors
 from app.attendance.infrastructure.overtime_schemas import (
     OvertimeApplicationDecisionSchema,
@@ -40,8 +47,15 @@ from app.attendance.infrastructure.overtime_schemas import (
     AttendanceRangeRecalculationSchema,
 )
 from app.auth.domain.entities.user import Role
-from app.auth.infrastructure.dependencies import require_permission, require_role
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case,
+    require_any_permission,
+    require_permission,
+    require_role,
+)
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.core.generics.mapper import ResponseEnvelope
+from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 
 router = APIRouter()
 
@@ -119,29 +133,115 @@ async def get_overtime_attendance_options(
 
 @router.post(
     "/recalculate-range",
-    response_model=ResponseEnvelope[AttendanceRangeRecalculationSchema],
-    summary="Preview or recalculate an employee's attendance range",
+    response_model=ResponseEnvelope[list[AttendanceRangeRecalculationSchema]],
+    summary="Preview or recalculate attendance for an employee or supervisor team",
 )
 async def recalculate_attendance_range(
     payload: AttendanceRangeRecalculationInputSchema,
-    claims: dict = Depends(require_role([Role.ADMIN])),
+    claims: dict = Depends(
+        require_any_permission("attendance.read_own", "attendance.read_team", "attendance.read_org")
+    ),
     use_case: RecalculateAttendanceRangeUseCase = Depends(
         get_recalculate_attendance_range_use_case
     ),
+    team_use_case: ListSupervisorTeamEmployeesUseCase = Depends(
+        get_supervisor_team_employees_use_case
+    ),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(
+        get_current_authorization_use_case
+    ),
 ):
-    with _http_errors():
-        result = await use_case.execute(
-            RecalculateAttendanceRangeInput(
-                actor_user_id=_user_id(claims),
-                employee_id=payload.employee_id,
-                from_date=payload.from_date,
-                to_date=payload.to_date,
-                dry_run=payload.dry_run,
-            )
+    role_codes = claims.get("role_codes", claims.get("roles", []))
+    role_codes = {
+        code.strip().upper() for code in role_codes if isinstance(code, str)
+    } if isinstance(role_codes, list) else set()
+    user_id = _user_id(claims)
+    authorization = await authorization_use_case.execute(user_id)
+
+    if payload.scope == "own":
+        if "attendance.read_own" not in authorization.permission_codes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+        try:
+            employee_ids = [UUID(str(claims["employee_id"]))]
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account is not linked to an employee profile.",
+            ) from error
+    elif payload.scope == "team":
+        if "SUPERVISOR" not in role_codes or "attendance.read_team" not in authorization.permission_codes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+        try:
+            supervisor_employee_id = UUID(str(claims["employee_id"]))
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account is not linked to an employee profile.",
+            ) from error
+        team = await team_use_case.execute(
+            ListSupervisorTeamEmployeesInput(supervisor_employee_id=supervisor_employee_id)
         )
+        employee_ids = [employee.employee_id for employee in team]
+        if not employee_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No active direct reports found.")
+    else:
+        if claims.get("role") != Role.ADMIN.value or "attendance.read_org" not in authorization.permission_codes:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+        if payload.employee_id is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Select an employee.")
+        employee_ids = [payload.employee_id]
+
+    with _http_errors():
+        results = [
+            await use_case.execute(
+                RecalculateAttendanceRangeInput(
+                    actor_user_id=user_id,
+                    employee_id=employee_id,
+                    from_date=payload.from_date,
+                    to_date=payload.to_date,
+                    dry_run=payload.dry_run,
+                )
+            )
+            for employee_id in employee_ids
+        ]
     return ResponseEnvelope(
         status="success",
-        data=AttendanceRangeRecalculationSchema.model_validate(result),
+        data=[AttendanceRangeRecalculationSchema.model_validate(result) for result in results],
+    )
+
+
+@router.get(
+    "/recalculation-default-range",
+    response_model=ResponseEnvelope[OvertimeCutoffSchema],
+    summary="Get the signed-in employee's current payroll cutoff dates",
+)
+async def get_recalculation_default_range(
+    claims: dict = Depends(require_permission("attendance.read_own")),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    async with uow as active_uow:
+        if active_uow.session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        repository = SqlAlchemyOvertimeRepository(active_uow.session)
+        employee_id = await repository.get_active_employee_id_for_user(_user_id(claims))
+        if employee_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="An active employee linked to your account was not found.",
+            )
+        cutoff = await repository.get_latest_configured_cutoff(employee_id, ph_today(utc_now()))
+        if cutoff is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No active payroll cutoff configuration was found for your employee record.",
+            )
+    return ResponseEnvelope(
+        status="success",
+        data=OvertimeCutoffSchema(
+            cutoff_code=cutoff.cutoff_code,
+            period_start=cutoff.period_start,
+            period_end=cutoff.period_end,
+        ),
     )
 
 

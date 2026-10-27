@@ -23,6 +23,8 @@ class ContributionBracket:
     employee_fixed_amount: Decimal
     employer_fixed_amount: Decimal
     employer_additional_fixed_amount: Decimal
+    employee_contribution_cap: Decimal | None = None
+    employer_contribution_cap: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class WithholdingTaxSchedule:
     updated_at: datetime
     updated_by: UUID | None
     row_version: int
+    calculation_basis: Literal["ANNUAL_YTD", "SEMI_MONTHLY"] = "ANNUAL_YTD"
 
 
 def validate_schedule_values(
@@ -95,6 +98,8 @@ def validate_contribution_bracket_values(
     employee_fixed_amount: Decimal,
     employer_fixed_amount: Decimal,
     employer_additional_fixed_amount: Decimal,
+    employee_contribution_cap: Decimal | None = None,
+    employer_contribution_cap: Decimal | None = None,
 ) -> None:
     if bracket_number < 1:
         raise ValueError("Bracket number must be greater than zero.")
@@ -108,6 +113,11 @@ def validate_contribution_bracket_values(
         raise ValueError("Employer contribution rate must be between zero and one.")
     if min(employee_fixed_amount, employer_fixed_amount, employer_additional_fixed_amount) < 0:
         raise ValueError("Contribution amounts cannot be negative.")
+    if min(
+        employee_contribution_cap if employee_contribution_cap is not None else Decimal(0),
+        employer_contribution_cap if employer_contribution_cap is not None else Decimal(0),
+    ) < 0:
+        raise ValueError("Contribution caps cannot be negative.")
 
 
 def validate_withholding_tax_bracket_values(
@@ -124,7 +134,7 @@ def validate_withholding_tax_bracket_values(
     if annual_income_min < 0 or (
         annual_income_max is not None and annual_income_max < annual_income_min
     ):
-        raise ValueError("Withholding tax bracket income range is invalid.")
+        raise ValueError("Withholding tax taxable-income range is invalid.")
     if base_tax < 0 or excess_over < 0:
         raise ValueError("Withholding tax amounts cannot be negative.")
     if not Decimal(0) <= marginal_rate <= Decimal(1):

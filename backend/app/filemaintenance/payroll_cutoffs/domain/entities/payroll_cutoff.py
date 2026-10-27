@@ -10,9 +10,8 @@ class PayrollCutoffEntity:
     period_start: date
     period_end: date
     pay_date: date
-    employee_review_deadline: datetime | None = None
-    supervisor_deadline: datetime | None = None
-    hr_deadline: datetime | None = None
+    cutoff_half: str | None = None
+    attendance_deadline: datetime | None = None
     status: str = "SCHEDULED"
     locked_at: datetime | None = None
     locked_by: UUID | None = None

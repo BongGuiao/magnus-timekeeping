@@ -8,6 +8,15 @@ export type OrgUnitWritePayload = Omit<
   'id' | 'created_at' | 'created_by' | 'updated_at' | 'updated_by' | 'row_version'
 >
 
+export interface OrgUnitType {
+  company_id: string
+  org_unit_type: string
+  display_name: string
+  sort_order: number
+  is_default: boolean
+  is_active: boolean
+}
+
 function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
     const body = error.response?.data as ApiErrorEnvelope | undefined
@@ -24,6 +33,17 @@ export async function fetchOrgUnits(companyId?: string): Promise<OrgUnit[]> {
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not load organization units.')
+  }
+}
+
+export async function fetchOrgUnitTypes(companyId: string): Promise<OrgUnitType[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<OrgUnitType[]>>('/org-units/types', {
+      params: { company_id: companyId },
+    })
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load organization unit types.')
   }
 }
 

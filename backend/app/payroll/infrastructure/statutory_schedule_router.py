@@ -75,6 +75,8 @@ class ContributionBracketWriteSchema(BaseModel):
     employee_fixed_amount: MoneyAmount
     employer_fixed_amount: MoneyAmount
     employer_additional_fixed_amount: MoneyAmount
+    employee_contribution_cap: MoneyAmount | None = None
+    employer_contribution_cap: MoneyAmount | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -91,6 +93,7 @@ class WithholdingTaxScheduleWriteSchema(BaseModel):
     effective_from: date
     effective_to: date | None = None
     tax_exempt_benefit_limit: MoneyAmount
+    calculation_basis: Literal["ANNUAL_YTD", "SEMI_MONTHLY"] = "SEMI_MONTHLY"
     source_reference: str = Field(min_length=1)
 
     model_config = ConfigDict(extra="forbid")
@@ -166,6 +169,7 @@ def _tax_schedule_input(
         effective_from=payload.effective_from,
         effective_to=payload.effective_to,
         tax_exempt_benefit_limit=payload.tax_exempt_benefit_limit,
+        calculation_basis=payload.calculation_basis,
         source_reference=payload.source_reference,
         actor_id=actor_id,
     )

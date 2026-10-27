@@ -409,6 +409,87 @@ class CreateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity])
             return result
 
 
+class CreateEmploymentAssignmentsBatchUseCase(BaseUseCase[list[EmploymentAssignmentEntity]]):
+    def __init__(self, uow: GenUnitOfWork):
+        self.uow = uow
+
+    async def _execute(self, rows: list[dict[str, Any]]) -> list[EmploymentAssignmentEntity]:
+        if not rows or len(rows) > 500:
+            raise ValueError("The batch must contain between 1 and 500 assignment rows.")
+
+        async with self.uow as uow:
+            prepared: list[tuple[int, dict[str, Any]]] = []
+            seen_pairs: set[tuple[UUID, UUID]] = set()
+            for row in rows:
+                row_number = row.get("row_number")
+                assignment = row.get("assignment")
+                if not isinstance(row_number, int) or not isinstance(assignment, dict):
+                    raise ValueError("Each batch row must include a row_number and assignment.")
+                try:
+                    values = _normalize_assignment(assignment)
+                    values.pop("id", None)
+                    _require(values, (
+                        "employee_id",
+                        "company_id",
+                        "employment_type",
+                        "employee_category",
+                        "hire_date",
+                        "effective_from",
+                    ))
+                    pair = (values["employee_id"], values["company_id"])
+                    if pair in seen_pairs:
+                        raise ValueError("The employee and company combination is duplicated in this file.")
+                    seen_pairs.add(pair)
+                except ValueError as error:
+                    raise ValueError(f"CSV row {row_number}: {error}") from error
+                prepared.append((row_number, values))
+
+            employee_ids = sorted({values["employee_id"] for _, values in prepared})
+            for employee_id in employee_ids:
+                await _lock_employee_assignment_scope(uow, employee_id)
+
+            if uow.session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            company_ids = {values.get("company_id") for _, values in prepared}
+            existing_pairs = set((await uow.session.execute(
+                select(EmploymentAssignmentModel.employee_id, EmploymentAssignmentModel.company_id).where(
+                    EmploymentAssignmentModel.employee_id.in_(employee_ids),
+                    EmploymentAssignmentModel.company_id.in_(company_ids),
+                )
+            )).all())
+
+            active_employees: set[UUID] = set()
+            for row_number, values in prepared:
+                try:
+                    pair = (values["employee_id"], values["company_id"])
+                    if pair in existing_pairs:
+                        raise ValueError("An employment assignment already exists for this employee and company.")
+                    is_active = values.get("is_active", True) and values.get("status", "ACTIVE") == "ACTIVE"
+                    if is_active and values["employee_id"] in active_employees:
+                        raise ValueError("An employee can have only one active employment assignment.")
+                    if is_active:
+                        active_employees.add(values["employee_id"])
+                    await _ensure_single_active_assignment(uow, values)
+                    await _validate_assignment(uow, values)
+                except ValueError as error:
+                    raise ValueError(f"CSV row {row_number}: {error}") from error
+
+            repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
+            created: list[EmploymentAssignmentEntity] = []
+            for _, values in prepared:
+                result = await repo.add(values)
+                await _replace_assignment_geofences(
+                    uow, result.id, values["company_id"], values.get("authorized_geofence_ids", [])
+                )
+                await _replace_assignment_locations(
+                    uow, result.id, values["company_id"], values.get("location_ids", [])
+                )
+                result.authorized_geofence_ids = values.get("authorized_geofence_ids", [])
+                result.location_ids = values.get("location_ids", [])
+                created.append(result)
+            return created
+
+
 class UpdateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow

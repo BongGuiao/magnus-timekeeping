@@ -20,7 +20,7 @@ export const EMPLOYEE_CSV_HEADERS = [
   'is_active',
 ] as const
 
-function parseRecords(contents: string): string[][] {
+export function parseCsvRecords(contents: string): string[][] {
   const records: string[][] = []
   let record: string[] = []
   let field = ''
@@ -86,7 +86,7 @@ function parseRecords(contents: string): string[][] {
   return records
 }
 
-function normalizeHeader(header: string): string {
+export function normalizeCsvHeader(header: string): string {
   return header
     .replace(/^\uFEFF/, '')
     .trim()
@@ -117,12 +117,12 @@ function normalizeIsActive(value: string, recordStatus: EmployeeWritePayload['re
 }
 
 export function parseEmployeeCsv(contents: string): EmployeeCsvRow[] {
-  const records = parseRecords(contents.trimStart().replace(/^\uFEFF/, ''))
+  const records = parseCsvRecords(contents.trimStart().replace(/^\uFEFF/, ''))
   if (records.length < 2) {
     throw new Error('The CSV must include a header row and at least one employee row.')
   }
 
-  const headers = records[0].map(normalizeHeader)
+  const headers = records[0].map(normalizeCsvHeader)
   const validHeaders = new Set<string>(EMPLOYEE_CSV_HEADERS)
   const unknownHeaders = headers.filter((header) => !validHeaders.has(header))
   const requiredHeaders = ['employee_no', 'first_name', 'last_name', 'personal_email']

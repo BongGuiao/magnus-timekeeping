@@ -9,6 +9,7 @@ from uuid import UUID
 
 from geoalchemy2 import Geography, Geometry
 from sqlalchemy import and_, case, cast, or_, select, func, false
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.generics.uc_base import BaseUseCase
@@ -585,6 +586,194 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
                 break_rules=break_rules,
             )
 
+
+async def resolve_schedule_day(
+    session: AsyncSession,
+    employee_id: UUID,
+    work_date: date,
+) -> ScheduleDayConfiguration:
+    emergency_request = await session.scalar(
+        select(EmergencyScheduleRequestModel).where(
+            EmergencyScheduleRequestModel.employee_id == employee_id,
+            EmergencyScheduleRequestModel.work_date == work_date,
+            EmergencyScheduleRequestModel.status == "APPROVED",
+        )
+    )
+    assignment_row = (
+        await session.execute(
+            select(
+                EmployeeScheduleAssignmentModel,
+                RestDayPatternModel.cycle_length_days,
+            )
+            .outerjoin(
+                RestDayPatternModel,
+                RestDayPatternModel.id == EmployeeScheduleAssignmentModel.rest_day_pattern_id,
+            )
+            .where(
+                EmployeeScheduleAssignmentModel.employee_id == employee_id,
+                EmployeeScheduleAssignmentModel.is_active.is_(True),
+                EmployeeScheduleAssignmentModel.status == "APPROVED",
+                EmployeeScheduleAssignmentModel.effective_from <= work_date,
+                or_(
+                    EmployeeScheduleAssignmentModel.effective_to.is_(None),
+                    EmployeeScheduleAssignmentModel.effective_to >= work_date,
+                ),
+            )
+            .order_by(
+                EmployeeScheduleAssignmentModel.effective_from.desc(),
+                EmployeeScheduleAssignmentModel.created_at.desc(),
+            )
+            .limit(1)
+        )
+    ).first()
+
+    if assignment_row is None and emergency_request is None:
+        return ScheduleDayConfiguration(
+            work_type="REG",
+            expected_clock_in_at=datetime.combine(
+                work_date,
+                DEFAULT_EXPECTED_CLOCK_IN,
+                tzinfo=PH_TIMEZONE,
+            ),
+            expected_clock_out_at=datetime.combine(
+                work_date,
+                DEFAULT_EXPECTED_CLOCK_OUT,
+                tzinfo=PH_TIMEZONE,
+            ),
+        )
+
+    assignment = None
+    pattern_day = None
+    cycle_day_no = None
+    if assignment_row is not None:
+        assignment, cycle_length_days = assignment_row
+        if assignment.rest_day_pattern_id is not None:
+            if cycle_length_days is None:
+                raise RuntimeError("The assigned rest-day pattern could not be loaded.")
+            cycle_day_no = get_cycle_day_number(
+                assignment.effective_from,
+                work_date,
+                cycle_length_days,
+            )
+            pattern_day = await session.scalar(
+                select(RestDayPatternDayModel).where(
+                    RestDayPatternDayModel.pattern_id == assignment.rest_day_pattern_id,
+                    RestDayPatternDayModel.cycle_day_no == cycle_day_no,
+                )
+            )
+            if pattern_day is None:
+                raise RuntimeError(
+                    "The assigned rest-day pattern is missing a cycle day "
+                    f"({cycle_day_no})."
+                )
+
+    is_workday = pattern_day is None or pattern_day.is_workday
+    schedule_template_id = None
+    schedule_context: dict[str, Any] = {}
+    if assignment is not None:
+        schedule_template_id = (
+            pattern_day.schedule_template_id or assignment.schedule_template_id
+            if pattern_day is not None
+            else assignment.schedule_template_id
+        )
+        schedule_context["schedule_assignment_id"] = str(assignment.id)
+    if emergency_request is not None:
+        schedule_template_id = emergency_request.schedule_template_id
+        is_workday = True
+        schedule_context["emergency_schedule_request_id"] = str(emergency_request.id)
+    if schedule_template_id is not None:
+        schedule_context["schedule_template_id"] = str(schedule_template_id)
+    if assignment is not None and assignment.rest_day_pattern_id is not None and cycle_day_no is not None:
+        schedule_context["rest_day_pattern_id"] = str(assignment.rest_day_pattern_id)
+        schedule_context["cycle_day_no"] = cycle_day_no
+    if not is_workday:
+        return ScheduleDayConfiguration(
+            work_type="REST",
+            expected_clock_in_at=None,
+            expected_clock_out_at=None,
+            schedule_context=schedule_context,
+        )
+
+    template = await session.get(ScheduleTemplateModel, schedule_template_id)
+    if template is None:
+        raise RuntimeError("The employee's assigned schedule template could not be loaded.")
+    schedule_context.update(
+        {
+            "grace_minutes": template.grace_minutes,
+            "ot_eligible": template.ot_eligible,
+            "minimum_ot_minutes": template.minimum_ot_minutes,
+            "pre_shift_ot_allowed": template.pre_shift_ot_allowed,
+        }
+    )
+    work_segments = list(
+        (
+            await session.scalars(
+                select(ScheduleSegmentModel)
+                .where(
+                    ScheduleSegmentModel.schedule_template_id == schedule_template_id,
+                    ScheduleSegmentModel.segment_type == "WORK",
+                )
+                .order_by(ScheduleSegmentModel.segment_sequence)
+            )
+        ).all()
+    )
+    if not work_segments:
+        raise RuntimeError(
+            f"Schedule template {template.schedule_code} has no WORK segments."
+        )
+
+    first_segment = work_segments[0]
+    last_segment = work_segments[-1]
+    schedule_context["early_clock_in_allowance_minutes"] = first_segment.flex_start_minutes
+    break_segments = list((await session.scalars(
+        select(ScheduleSegmentModel).where(
+            ScheduleSegmentModel.schedule_template_id == schedule_template_id,
+            ScheduleSegmentModel.break_slot.is_not(None),
+        )
+    )).all())
+    schedule_context["break_rules"] = [
+        {
+            "segment_id": str(segment.id),
+            "break_slot": segment.break_slot,
+            "segment_type": segment.segment_type,
+            "break_minutes": segment.break_minutes,
+            "auto_deduct": segment.auto_deduct,
+            "start_at": datetime.combine(work_date, segment.start_time, tzinfo=PH_TIMEZONE).isoformat(),
+            "end_at": datetime.combine(
+                work_date + timedelta(days=segment.end_day_offset),
+                segment.end_time, tzinfo=PH_TIMEZONE,
+            ).isoformat(),
+        }
+        for segment in break_segments
+    ]
+    expected_start = datetime.combine(
+        work_date,
+        first_segment.start_time,
+        tzinfo=PH_TIMEZONE,
+    )
+    expected_end = datetime.combine(
+        work_date + timedelta(days=last_segment.end_day_offset),
+        last_segment.end_time,
+        tzinfo=PH_TIMEZONE,
+    )
+    if expected_end <= expected_start:
+        raise RuntimeError(
+            f"Schedule template {template.schedule_code} has an end time that is not after its start time."
+        )
+    return ScheduleDayConfiguration(
+        work_type="REG",
+        expected_clock_in_at=expected_start,
+        expected_clock_out_at=expected_end,
+        schedule_template_id=schedule_template_id,
+        grace_minutes=template.grace_minutes,
+        ot_eligible=template.ot_eligible,
+        minimum_ot_minutes=template.minimum_ot_minutes,
+        pre_shift_ot_allowed=template.pre_shift_ot_allowed,
+        schedule_context=schedule_context,
+        early_clock_in_allowance_minutes=first_segment.flex_start_minutes,
+    )
+
+
 class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
     """
     Attendance entry point. The captured face is matched to the selected employee's enrollment.
@@ -1024,187 +1213,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
     ) -> ScheduleDayConfiguration:
         if uow.session is None:
             raise RuntimeError("UnitOfWork session is not active.")
-
-        emergency_request = await uow.session.scalar(
-            select(EmergencyScheduleRequestModel).where(
-                EmergencyScheduleRequestModel.employee_id == employee_id,
-                EmergencyScheduleRequestModel.work_date == work_date,
-                EmergencyScheduleRequestModel.status == "APPROVED",
-            )
-        )
-        assignment_row = (
-            await uow.session.execute(
-                select(
-                    EmployeeScheduleAssignmentModel,
-                    RestDayPatternModel.cycle_length_days,
-                )
-                .outerjoin(
-                    RestDayPatternModel,
-                    RestDayPatternModel.id == EmployeeScheduleAssignmentModel.rest_day_pattern_id,
-                )
-                .where(
-                    EmployeeScheduleAssignmentModel.employee_id == employee_id,
-                    EmployeeScheduleAssignmentModel.is_active.is_(True),
-                    EmployeeScheduleAssignmentModel.status == "APPROVED",
-                    EmployeeScheduleAssignmentModel.effective_from <= work_date,
-                    or_(
-                        EmployeeScheduleAssignmentModel.effective_to.is_(None),
-                        EmployeeScheduleAssignmentModel.effective_to >= work_date,
-                    ),
-                )
-                .order_by(
-                    EmployeeScheduleAssignmentModel.effective_from.desc(),
-                    EmployeeScheduleAssignmentModel.created_at.desc(),
-                )
-                .limit(1)
-            )
-        ).first()
-
-        if assignment_row is None and emergency_request is None:
-            return ScheduleDayConfiguration(
-                work_type="REG",
-                expected_clock_in_at=datetime.combine(
-                    work_date,
-                    DEFAULT_EXPECTED_CLOCK_IN,
-                    tzinfo=PH_TIMEZONE,
-                ),
-                expected_clock_out_at=datetime.combine(
-                    work_date,
-                    DEFAULT_EXPECTED_CLOCK_OUT,
-                    tzinfo=PH_TIMEZONE,
-                ),
-            )
-
-        assignment = None
-        pattern_day = None
-        cycle_day_no = None
-        if assignment_row is not None:
-            assignment, cycle_length_days = assignment_row
-            if assignment.rest_day_pattern_id is not None:
-                if cycle_length_days is None:
-                    raise RuntimeError("The assigned rest-day pattern could not be loaded.")
-                cycle_day_no = get_cycle_day_number(
-                    assignment.effective_from,
-                    work_date,
-                    cycle_length_days,
-                )
-                pattern_day = await uow.session.scalar(
-                    select(RestDayPatternDayModel).where(
-                        RestDayPatternDayModel.pattern_id == assignment.rest_day_pattern_id,
-                        RestDayPatternDayModel.cycle_day_no == cycle_day_no,
-                    )
-                )
-                if pattern_day is None:
-                    raise RuntimeError(
-                        "The assigned rest-day pattern is missing a cycle day "
-                        f"({cycle_day_no})."
-                    )
-
-        is_workday = pattern_day is None or pattern_day.is_workday
-        schedule_template_id = None
-        schedule_context: dict[str, Any] = {}
-        if assignment is not None:
-            schedule_template_id = (
-                pattern_day.schedule_template_id or assignment.schedule_template_id
-                if pattern_day is not None
-                else assignment.schedule_template_id
-            )
-            schedule_context["schedule_assignment_id"] = str(assignment.id)
-        if emergency_request is not None:
-            schedule_template_id = emergency_request.schedule_template_id
-            is_workday = True
-            schedule_context["emergency_schedule_request_id"] = str(emergency_request.id)
-        if schedule_template_id is not None:
-            schedule_context["schedule_template_id"] = str(schedule_template_id)
-        if assignment is not None and assignment.rest_day_pattern_id is not None and cycle_day_no is not None:
-            schedule_context["rest_day_pattern_id"] = str(assignment.rest_day_pattern_id)
-            schedule_context["cycle_day_no"] = cycle_day_no
-        if not is_workday:
-            return ScheduleDayConfiguration(
-                work_type="REST",
-                expected_clock_in_at=None,
-                expected_clock_out_at=None,
-                schedule_context=schedule_context,
-            )
-
-        template = await uow.session.get(ScheduleTemplateModel, schedule_template_id)
-        if template is None:
-            raise RuntimeError("The employee's assigned schedule template could not be loaded.")
-        schedule_context.update(
-            {
-                "grace_minutes": template.grace_minutes,
-                "ot_eligible": template.ot_eligible,
-                "minimum_ot_minutes": template.minimum_ot_minutes,
-                "pre_shift_ot_allowed": template.pre_shift_ot_allowed,
-            }
-        )
-        work_segments = list(
-            (
-                await uow.session.scalars(
-                    select(ScheduleSegmentModel)
-                    .where(
-                        ScheduleSegmentModel.schedule_template_id == schedule_template_id,
-                        ScheduleSegmentModel.segment_type == "WORK",
-                    )
-                    .order_by(ScheduleSegmentModel.segment_sequence)
-                )
-            ).all()
-        )
-        if not work_segments:
-            raise RuntimeError(
-                f"Schedule template {template.schedule_code} has no WORK segments."
-            )
-
-        first_segment = work_segments[0]
-        last_segment = work_segments[-1]
-        schedule_context["early_clock_in_allowance_minutes"] = first_segment.flex_start_minutes
-        break_segments = list((await uow.session.scalars(
-            select(ScheduleSegmentModel).where(
-                ScheduleSegmentModel.schedule_template_id == schedule_template_id,
-                ScheduleSegmentModel.break_slot.is_not(None),
-            )
-        )).all())
-        schedule_context["break_rules"] = [
-            {
-                "segment_id": str(segment.id),
-                "break_slot": segment.break_slot,
-                "segment_type": segment.segment_type,
-                "break_minutes": segment.break_minutes,
-                "auto_deduct": segment.auto_deduct,
-                "start_at": datetime.combine(work_date, segment.start_time, tzinfo=PH_TIMEZONE).isoformat(),
-                "end_at": datetime.combine(
-                    work_date + timedelta(days=segment.end_day_offset),
-                    segment.end_time, tzinfo=PH_TIMEZONE,
-                ).isoformat(),
-            }
-            for segment in break_segments
-        ]
-        expected_start = datetime.combine(
-            work_date,
-            first_segment.start_time,
-            tzinfo=PH_TIMEZONE,
-        )
-        expected_end = datetime.combine(
-            work_date + timedelta(days=last_segment.end_day_offset),
-            last_segment.end_time,
-            tzinfo=PH_TIMEZONE,
-        )
-        if expected_end <= expected_start:
-            raise RuntimeError(
-                f"Schedule template {template.schedule_code} has an end time that is not after its start time."
-            )
-        return ScheduleDayConfiguration(
-            work_type="REG",
-            expected_clock_in_at=expected_start,
-            expected_clock_out_at=expected_end,
-            schedule_template_id=schedule_template_id,
-            grace_minutes=template.grace_minutes,
-            ot_eligible=template.ot_eligible,
-            minimum_ot_minutes=template.minimum_ot_minutes,
-            pre_shift_ot_allowed=template.pre_shift_ot_allowed,
-            schedule_context=schedule_context,
-            early_clock_in_allowance_minutes=first_segment.flex_start_minutes,
-        )
+        return await resolve_schedule_day(uow.session, employee_id, work_date)
 
     async def _execute(self, input_dto: ClockAttendanceInputDTO) -> ClockAttendanceOutputDTO:
         candidate_encoding = self.face_recognition_service.extract_face_encoding(input_dto.image_bytes)

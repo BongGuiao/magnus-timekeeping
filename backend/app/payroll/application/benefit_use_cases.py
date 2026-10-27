@@ -3,6 +3,7 @@ from uuid import UUID
 from app.payroll.application.benefit_inputs import (
     BenefitTypeInput,
     CutoffBenefitInput,
+    CutoffBenefitUploadRow,
     EmployeeBenefitEntitlementInput,
     EmployeeBenefitDeductionInput,
 )
@@ -42,6 +43,7 @@ class BenefitUseCases:
                 deduct_for_late=data.deduct_for_late,
                 deduct_for_undertime=data.deduct_for_undertime,
                 posting_schedule=data.posting_schedule,
+                withholding_timing=data.withholding_timing,
             )
         )
 
@@ -64,6 +66,7 @@ class BenefitUseCases:
                 deduct_for_late=data.deduct_for_late,
                 deduct_for_undertime=data.deduct_for_undertime,
                 posting_schedule=data.posting_schedule,
+                withholding_timing=data.withholding_timing,
             ),
         )
 
@@ -88,6 +91,61 @@ class BenefitUseCases:
             raise ValueError("A cutoff, employee, and benefit type are required.")
         validate_cutoff_benefit_amount(data.amount)
         return await self._repository.save_cutoff_benefit(data, entry_id)
+
+    async def upload_cutoff_benefits(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]:
+        self._validate_cutoff_upload(cutoff_id, rows, "benefit")
+        return await self._repository.upload_cutoff_benefits(
+            cutoff_id, rows, actor_id
+        )
+
+    async def upload_cutoff_deductions(
+        self,
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        actor_id: UUID,
+    ) -> tuple[int, int]:
+        self._validate_cutoff_upload(cutoff_id, rows, "deduction")
+        return await self._repository.upload_cutoff_deductions(
+            cutoff_id, rows, actor_id
+        )
+
+    @staticmethod
+    def _validate_cutoff_upload(
+        cutoff_id: UUID,
+        rows: tuple[CutoffBenefitUploadRow, ...],
+        entry_name: str,
+    ) -> None:
+        if not cutoff_id:
+            raise ValueError(f"Select a cutoff before uploading {entry_name}s.")
+        if not rows:
+            raise ValueError(f"The upload must contain at least one {entry_name} row.")
+        if len(rows) > 1000:
+            raise ValueError(f"A {entry_name} upload cannot contain more than 1,000 rows.")
+        seen: set[tuple[str, str]] = set()
+        for row_number, row in enumerate(rows, start=2):
+            employee_no = row.employee_no.strip().upper()
+            benefit_code = row.benefit_code.strip().upper()
+            if not employee_no or not benefit_code:
+                raise ValueError(
+                    f"Row {row_number}: employee number and {entry_name} code are required."
+                )
+            key = (employee_no, benefit_code)
+            if key in seen:
+                raise ValueError(
+                    f"Row {row_number}: duplicate employee number and {entry_name} code in the upload."
+                )
+            seen.add(key)
+            try:
+                validate_cutoff_benefit_amount(row.amount)
+            except ValueError as error:
+                raise ValueError(f"Row {row_number}: {error}") from error
+            if row.notes is not None and len(row.notes) > 500:
+                raise ValueError(f"Row {row_number}: notes cannot exceed 500 characters.")
 
     async def delete_cutoff_benefit(self, entry_id: UUID) -> None:
         if not entry_id:
@@ -141,6 +199,7 @@ class BenefitUseCases:
             raise ValueError("An employee and benefit type are required.")
         validate_employee_benefit_entitlement_values(
             amount_per_occurrence=data.amount_per_occurrence,
+            schedule=data.schedule,
             effective_from=data.effective_from,
             effective_to=data.effective_to,
         )
@@ -170,4 +229,5 @@ class BenefitUseCases:
             deduct_for_late=data.deduct_for_late,
             deduct_for_undertime=data.deduct_for_undertime,
             posting_schedule=data.posting_schedule,
+            withholding_timing=data.withholding_timing,
         )

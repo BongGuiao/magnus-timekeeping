@@ -76,6 +76,7 @@ class UserResponseSchema(BaseModel):
 class CurrentAuthorizationSchema(BaseModel):
     role_codes: list[str]
     permission_codes: list[str]
+    employee_code: str | None = None
 
 
 @router.get(
@@ -99,6 +100,7 @@ async def get_my_authorization(
         data=CurrentAuthorizationSchema(
             role_codes=authorization.role_codes,
             permission_codes=authorization.permission_codes,
+            employee_code=authorization.employee_code,
         ),
     )
 

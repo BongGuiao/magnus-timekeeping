@@ -36,6 +36,7 @@ from app.attendance.domain.exceptions import (
 from app.attendance.infrastructure.overtime_repository import (
     SqlAlchemyOvertimeRepository,
     current_overtime_cutoff_statement,
+    latest_configured_overtime_cutoff_statement,
 )
 from app.attendance.infrastructure.overtime_router import (
     submit_overtime_application,
@@ -318,9 +319,9 @@ class SubmitOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
             await self.submit()
         self.assertNothingPersisted()
 
-    async def test_submission_after_employee_review_deadline_is_rejected(self):
-        self.cutoff.employee_review_deadline = NOW - timedelta(seconds=1)
-        with self.assertRaisesRegex(ConflictError, "employee filing deadline"):
+    async def test_submission_after_attendance_deadline_is_rejected(self):
+        self.cutoff.attendance_deadline = NOW - timedelta(seconds=1)
+        with self.assertRaisesRegex(ConflictError, "attendance deadline"):
             await self.submit()
         self.assertNothingPersisted()
 
@@ -616,6 +617,7 @@ class AttendanceRangeRecalculationTests(unittest.IsolatedAsyncioTestCase):
     def test_request_defaults_to_dry_run_and_validates_inclusive_date_range(self):
         employee_id = uuid4()
         payload = AttendanceRangeRecalculationInputSchema(
+            scope="employee",
             employee_id=employee_id,
             from_date=date(2026, 10, 8),
             to_date=date(2026, 10, 9),
@@ -624,6 +626,7 @@ class AttendanceRangeRecalculationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload.dry_run)
         with self.assertRaises(ValidationError):
             AttendanceRangeRecalculationInputSchema(
+                scope="employee",
                 employee_id=employee_id,
                 from_date=date(2026, 10, 10),
                 to_date=date(2026, 10, 9),
@@ -709,6 +712,39 @@ class AttendanceRangeRecalculationTests(unittest.IsolatedAsyncioTestCase):
         response = AttendanceRangeRecalculationSchema.model_validate(result)
         self.assertEqual(response.preview_count, 2)
         self.assertEqual(response.records[0].regular_night_differential_minutes, 240)
+
+    async def test_apply_skips_attendance_in_closed_cutoff(self):
+        ph_timezone = timezone(timedelta(hours=8))
+        attendance = make_attendance(
+            work_date=date(2026, 10, 8),
+            expected_clock_in_at=datetime(2026, 10, 8, 17, tzinfo=ph_timezone),
+            expected_clock_out_at=datetime(2026, 10, 9, 2, tzinfo=ph_timezone),
+            clock_in_at=datetime(2026, 10, 8, 17, 15, tzinfo=ph_timezone),
+            clock_out_at=datetime(2026, 10, 9, 9, 15, tzinfo=ph_timezone),
+            corrected_clock_in_at=None,
+            corrected_clock_out_at=None,
+            punch_metadata={"schedule_context": {"ot_eligible": True, "break_rules": []}},
+        )
+        cutoff = OvertimeCutoff("OCT-1", date(2026, 10, 1), date(2026, 10, 15))
+        cutoff.attendance_deadline = NOW - timedelta(seconds=1)
+        repository = FakeOvertimeRepository(attendance, cutoff=cutoff)
+        use_case = RecalculateAttendanceRangeUseCase(
+            FakeUnitOfWork(repository), MagicMock(), MagicMock(record=AsyncMock()), clock=lambda: NOW,
+        )
+
+        result = await use_case.execute(
+            RecalculateAttendanceRangeInput(
+                actor_user_id=uuid4(),
+                employee_id=uuid4(),
+                from_date=date(2026, 10, 8),
+                to_date=date(2026, 10, 8),
+                dry_run=False,
+            )
+        )
+
+        self.assertEqual(result.records[0].status, "SKIPPED")
+        self.assertIn("OCT-1 is closed", result.records[0].reason)
+        self.assertIsNone(repository.saved_attendance)
 
     async def test_apply_persists_changes_and_audits_them(self):
         ph_timezone = timezone(timedelta(hours=8))
@@ -1204,6 +1240,14 @@ class OvertimePayrollCutoffTests(unittest.TestCase):
             "period_start <=", "period_end >=", "is_active IS true",
         ):
             self.assertIn(fragment, sql)
+
+    def test_latest_configured_cutoff_uses_latest_active_cutoff_for_current_assignment(self):
+        init_db_models()
+        sql = str(latest_configured_overtime_cutoff_statement(uuid4(), date(2026, 10, 12)))
+        self.assertIn("period_end DESC", sql)
+        self.assertIn("is_active IS true", sql)
+        self.assertNotIn("period_start <=", sql)
+        self.assertNotIn("period_end >=", sql)
 
 
 class SqlAlchemyOvertimeRepositoryTests(unittest.IsolatedAsyncioTestCase):

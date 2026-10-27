@@ -6,11 +6,28 @@ from app.attendance.application.use_case import (
     calculate_break_policy,
     calculate_net_nonpayable_break_minutes,
 )
-from app.attendance.domain.worked_minutes import net_worked_minutes
+from app.attendance.domain.worked_minutes import (
+    net_worked_minutes,
+    requires_scheduled_work,
+    scheduled_work_minutes,
+)
 from app.attendance.domain.entities.attendance import AttendanceEntity
 
 
 class WorkedMinutesTests(unittest.TestCase):
+    def test_scheduled_work_minutes_excludes_lateness_and_undertime(self) -> None:
+        self.assertEqual(scheduled_work_minutes(480, 0, 0), 480)
+        self.assertEqual(scheduled_work_minutes(480, 15, 0), 465)
+        self.assertEqual(scheduled_work_minutes(480, 15, 20), 445)
+        self.assertEqual(scheduled_work_minutes(480, 300, 240), 0)
+        self.assertEqual(scheduled_work_minutes(480, 0, 0, "REST", "REG"), 0)
+        self.assertEqual(scheduled_work_minutes(480, 0, 0, "REG", "SNW"), 0)
+        self.assertEqual(scheduled_work_minutes(480, 0, 0, "REG", "SWH"), 480)
+        self.assertFalse(requires_scheduled_work("REST", "REG"))
+        self.assertFalse(requires_scheduled_work("REG", "RH"))
+        self.assertTrue(requires_scheduled_work("REG", "SWH"))
+        self.assertIsNone(scheduled_work_minutes(None, 0, 0))
+
     def test_dashboard_matches_existing_attendance_break_formula(self) -> None:
         start = datetime(2026, 10, 12, 0, tzinfo=timezone.utc)
         end = start + timedelta(hours=9)

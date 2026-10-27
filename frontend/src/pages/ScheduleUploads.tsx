@@ -154,7 +154,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
   const submitFile = () => run(async () => {
     if (!file) return
     const batch = await submitScheduleUpload(file)
-    setSuccess(`Batch ${batch.batch_no} was submitted for approval.`)
+    setSuccess(`Batch ${batch.batch_no} was approved and applied successfully.`)
     setFile(null)
     setPreview(null)
     if (fileInput.current) fileInput.current.value = ''
@@ -181,8 +181,8 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
         <header>
           <h1 className="text-xl font-bold text-slate-900">Team Schedule Upload</h1>
           <p className="mt-1 text-xs text-slate-600">
-            Upload schedules for your direct reports as a CSV file. Each file becomes one batch that must be approved
-            by HR before it takes effect. A new schedule ends or pauses the employee’s current schedule automatically.
+            Upload schedules for your direct reports as a CSV file. After successful validation, the batch is approved
+            and applied immediately. A new schedule ends or pauses the employee’s current schedule automatically.
           </p>
         </header>
 
@@ -241,7 +241,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
               disabled={!file || !preview?.is_valid || busy}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              Submit for approval
+              Submit and apply schedules
             </button>
           </div>
           {preview && (

@@ -10,6 +10,10 @@ from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import GenericMapper
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
+from app.filemaintenance.roles.application.payroll_access import (
+    PayrollAccessViolationError,
+    role_grants_restricted_payroll,
+)
 from app.filemaintenance.roles.infrastructure.db_model import UserRoleModel
 
 
@@ -155,6 +159,31 @@ def _validate_effective_dates(effective_from: date, effective_to: date | None) -
         raise ValueError("effective_to must be on or after effective_from.")
 
 
+SELF_ASSIGN_PAYROLL_ROLE_MESSAGE = (
+    "You cannot assign or extend a payroll-capable role for your own account. "
+    "Payroll access is restricted to HR personnel."
+)
+
+
+async def _role_grants_restricted_payroll(uow: GenUnitOfWork, role_id: UUID) -> bool:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    return await role_grants_restricted_payroll(uow.session, role_id)
+
+
+def _only_narrows_effective_to(existing: UserRoleEntity, payload: dict[str, Any]) -> bool:
+    """Ending one's own payroll role early is allowed; anything else is not."""
+    for key, value in payload.items():
+        if key != "effective_to" and getattr(existing, key, None) != value:
+            return False
+    if "effective_to" not in payload:
+        return False
+    new_effective_to = payload["effective_to"]
+    if new_effective_to is None:
+        return False
+    return existing.effective_to is None or new_effective_to <= existing.effective_to
+
+
 class CreateUserRoleUseCase(BaseUseCase[UserRoleEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
@@ -163,6 +192,12 @@ class CreateUserRoleUseCase(BaseUseCase[UserRoleEntity]):
         _validate_effective_dates(payload["effective_from"], payload.get("effective_to"))
         try:
             async with self.uow as uow:
+                if (
+                    payload.get("assigned_by") is not None
+                    and payload.get("user_id") == payload.get("assigned_by")
+                    and await _role_grants_restricted_payroll(uow, payload["role_id"])
+                ):
+                    raise PayrollAccessViolationError(SELF_ASSIGN_PAYROLL_ROLE_MESSAGE)
                 repo = uow.get_repo(UserRoleEntity, UserRoleModel)
                 return await repo.add(payload)
         except IntegrityError as error:
@@ -243,6 +278,7 @@ class UpdateUserRoleUseCase(BaseUseCase[UserRoleEntity | None]):
         self,
         user_role_id: UUID,
         payload: dict[str, Any],
+        actor_id: UUID | None = None,
     ) -> UserRoleEntity | None:
         try:
             async with self.uow as uow:
@@ -256,6 +292,13 @@ class UpdateUserRoleUseCase(BaseUseCase[UserRoleEntity | None]):
                     merged["effective_from"],
                     merged.get("effective_to"),
                 )
+                if (
+                    actor_id is not None
+                    and merged.get("user_id") == actor_id
+                    and not _only_narrows_effective_to(existing, payload)
+                    and await _role_grants_restricted_payroll(uow, merged["role_id"])
+                ):
+                    raise PayrollAccessViolationError(SELF_ASSIGN_PAYROLL_ROLE_MESSAGE)
                 entity = GenericMapper.to_entity(merged, UserRoleEntity)
                 return await repo.update(entity)
         except IntegrityError as error:

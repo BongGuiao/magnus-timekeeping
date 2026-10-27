@@ -21,9 +21,6 @@ CREATE TABLE IF NOT EXISTS schedule.schedule_upload_batches (
     ),
     CONSTRAINT ck_schedule_upload_batches_review CHECK (
         (status = 'PENDING_APPROVAL') = (reviewed_by IS NULL AND reviewed_at IS NULL)
-    ),
-    CONSTRAINT ck_schedule_upload_batches_no_self_approval CHECK (
-        status <> 'APPROVED' OR reviewed_by <> uploaded_by
     )
 );
 

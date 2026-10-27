@@ -65,6 +65,10 @@ class FakeScheduleUploadRepository:
         self.added: list[NewScheduleAssignment] = []
         self.links: dict[int, UUID] = {}
         self.locked: set[UUID] = set()
+        self.approval_required = True
+
+    async def schedule_approval_required(self, company_ids):
+        return self.approval_required
 
     async def find_team_employees(self, supervisor_employee_id, employee_codes, on_date):
         if supervisor_employee_id != SUPERVISOR_ID:
@@ -157,6 +161,22 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
     async def _submit(self, *lines: str) -> ScheduleUploadBatch:
         return await SubmitScheduleUploadUseCase(self.uow, self.reader, self._clock()).execute(_file(*lines))
 
+    def _make_legacy_pending(self, batch: ScheduleUploadBatch) -> ScheduleUploadBatch:
+        pending = replace(
+            batch,
+            status=ScheduleUploadBatchStatus.PENDING_APPROVAL,
+            reviewed_by=None,
+            reviewed_at=None,
+            review_remarks=None,
+            rows=tuple(replace(row, assignment_id=None) for row in batch.rows),
+        )
+        self.repository.batches[batch.id] = pending
+        self.repository.added.clear()
+        self.repository.revisions.clear()
+        self.repository.links.clear()
+        self.repository.locked.clear()
+        return pending
+
     async def test_preview_reports_row_errors_and_effects(self):
         self.repository.assignments.append(
             ExistingScheduleAssignment(
@@ -186,20 +206,34 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.repository.batches, {})
 
-    async def test_valid_file_creates_pending_batch_with_generated_number(self):
+    async def test_valid_file_waits_for_approval_by_default(self):
+        batch = await self._submit("E001,DAY,regular,2026-11-01,,SAT_SUN,Rotation")
+
+        self.assertEqual(batch.status, ScheduleUploadBatchStatus.PENDING_APPROVAL)
+        self.assertIsNone(batch.reviewed_by)
+        self.assertIsNone(batch.rows[0].assignment_id)
+        self.assertEqual(self.repository.added, [])
+
+    async def test_valid_file_applies_and_approves_when_approval_is_disabled(self):
+        self.repository.approval_required = False
         batch = await self._submit("E001,DAY,regular,2026-11-01,,SAT_SUN,Rotation")
 
         self.assertEqual(batch.batch_no, "SCH-2026-000001")
-        self.assertEqual(batch.status, ScheduleUploadBatchStatus.PENDING_APPROVAL)
+        self.assertEqual(batch.status, ScheduleUploadBatchStatus.APPROVED)
+        self.assertEqual(batch.reviewed_by, UPLOADER_ID)
         self.assertEqual(batch.rows[0].employee_id, self.repository.employee.employee_id)
         self.assertEqual(batch.rows[0].assignment_type, "REGULAR")
+        self.assertIsNotNone(batch.rows[0].assignment_id)
+        self.assertEqual(len(self.repository.added), 1)
 
-    async def test_approval_applies_plan_and_creates_approved_assignments(self):
+    async def test_legacy_approval_applies_plan_and_creates_approved_assignments(self):
         current = ExistingScheduleAssignment(
             uuid4(), self.repository.employee.employee_id, uuid4(), "OLD", None, "REGULAR", date(2026, 1, 1), None
         )
         self.repository.assignments.append(current)
-        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,2026-11-15,SAT_SUN,")
+        batch = self._make_legacy_pending(
+            await self._submit("E001,DAY,REGULAR,2026-11-01,2026-11-15,SAT_SUN,")
+        )
 
         approved = await ApproveScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
             ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, "  ok  ")
@@ -219,7 +253,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.batches[batch.id].status, ScheduleUploadBatchStatus.APPROVED)
 
     async def test_uploader_cannot_approve_own_batch(self):
-        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        batch = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-11-01,,,"))
 
         with self.assertRaises(ScheduleUploadPermissionError):
             await ApproveScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
@@ -228,7 +262,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.added, [])
 
     async def test_approval_fails_when_batch_is_no_longer_valid(self):
-        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        batch = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-11-01,,,"))
         self.repository.team = []
 
         with self.assertRaises(ScheduleUploadNoLongerApplicableError) as context:
@@ -242,7 +276,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.batches[batch.id].status, ScheduleUploadBatchStatus.PENDING_APPROVAL)
 
     async def test_approval_after_start_date_is_rejected(self):
-        batch = await self._submit("E001,DAY,REGULAR,2026-10-21,,,")
+        batch = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-10-21,,,"))
         late = datetime(2026, 10, 21, 2, 0, tzinfo=timezone.utc)
 
         with self.assertRaises(ScheduleUploadNoLongerApplicableError):
@@ -251,13 +285,13 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_reject_and_cancel_rules(self):
-        first = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        first = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-11-01,,,"))
         rejected = await RejectScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
             ReviewScheduleUploadBatchInput(first.id, APPROVER_ID, "Wrong shift")
         )
         self.assertEqual(rejected.status, ScheduleUploadBatchStatus.REJECTED)
 
-        second = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        second = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-11-01,,,"))
         cancel = CancelScheduleUploadBatchUseCase(self.uow, self._clock())
         with self.assertRaises(ScheduleUploadNotFoundError):
             await cancel.execute(CancelScheduleUploadBatchInput(second.id, APPROVER_ID))
