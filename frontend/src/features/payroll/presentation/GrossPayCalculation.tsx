@@ -88,6 +88,7 @@ export default function GrossPayCalculation({
   const holdCount = (run?.results.length ?? 0) - readyCount
   const selectedCutoff = cutoffs.find((cutoff) => cutoff.id === selectedCutoffId)
   const canFinalize = Boolean(run && run.results.length > 0 && holdCount === 0)
+  const attendanceFinalized = Boolean(selectedCutoff?.attendanceFinalized)
 
   async function calculate() {
     setError('')
@@ -150,7 +151,8 @@ export default function GrossPayCalculation({
                 <option value="">Select a cutoff</option>
                 {cutoffs.map((cutoff) => (
                   <option key={cutoff.id} value={cutoff.id}>
-                    {cutoff.code} · {cutoff.periodStart} to {cutoff.periodEnd}{cutoff.locked ? ' · LOCKED' : ''}
+                    {cutoff.code} · {cutoff.periodStart} to {cutoff.periodEnd}
+                    {cutoff.locked ? ' · PAYROLL LOCKED' : cutoff.attendanceFinalized ? ' · ATTENDANCE FINALIZED' : ' · ATTENDANCE OPEN'}
                   </option>
                 ))}
               </select>
@@ -159,7 +161,14 @@ export default function GrossPayCalculation({
           <button
             type="button"
             onClick={() => void calculate()}
-            disabled={!selectedCutoffId || Boolean(selectedCutoff?.locked) || calculating || loading}
+            disabled={
+              !selectedCutoffId
+              || Boolean(selectedCutoff?.locked)
+              || !attendanceFinalized
+              || calculating
+              || loading
+            }
+            title={!attendanceFinalized ? 'Finalize attendance in Attendance Detail before calculating payroll.' : undefined}
             className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {run ? <RefreshCw className="h-4 w-4" /> : <Calculator className="h-4 w-4" />}
@@ -194,10 +203,10 @@ export default function GrossPayCalculation({
           )}
         </div>
         <p className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
-          Recalculate attendance results in Payroll Cutoffs before recalculating payroll when attendance hours or calculation rules have changed. This page uses the cutoff results already saved; it does not recalculate attendance.
+          Finalize attendance in Attendance Detail before calculating payroll. After attendance is finalized, the calculation uses the saved cutoff results and does not recalculate attendance.
         </p>
         <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Net pay remains on HOLD until effective statutory schedules and the employee tax-year opening balances are available. Missing compensation, earning rules, or approved worked minutes also keeps results on HOLD. Only an HR administrator other than the person who calculated the payroll can approve it, after the cutoff's attendance deadline. Employer contributions are reported separately and are not deducted from employee pay.
+          Net pay remains on HOLD until effective statutory schedules and any required employee tax-year opening balances are available. Missing compensation, earning rules, or approved worked minutes also keeps results on HOLD. Only a separate HR administrator can approve and lock payroll after attendance is finalized and the attendance deadline has passed. Employer contributions are reported separately and are not deducted from employee pay.
         </p>
         {notice && <p role="status" className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</p>}
         {error && <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}

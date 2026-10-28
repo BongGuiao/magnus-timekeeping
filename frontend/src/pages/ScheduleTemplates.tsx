@@ -501,7 +501,7 @@ export default function ScheduleTemplates({ employeeName, onNavigate, onLoggedOu
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="schedule-templates" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-3 py-6">
+      <main className="w-full space-y-3 px-4 py-6 sm:px-6 lg:px-8">
         {!isFormOpen && <p className="text-xs text-slate-500">Define work schedule rules, grace periods, overtime eligibility, and effective dates.</p>}
 
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}

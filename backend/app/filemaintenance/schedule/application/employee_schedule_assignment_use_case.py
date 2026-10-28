@@ -40,6 +40,7 @@ def _to_entity(
         schedule_template_id=model.schedule_template_id,
         rest_day_pattern_id=model.rest_day_pattern_id,
         assignment_type=model.assignment_type,
+        attendance_mode=model.attendance_mode,
         effective_from=model.effective_from,
         effective_to=model.effective_to,
         reason=model.reason,
@@ -138,6 +139,7 @@ class CreateEmployeeScheduleAssignmentUseCase(
                 now = datetime.now(timezone.utc)
                 model = EmployeeScheduleAssignmentModel(
                     **payload,
+                    attendance_mode=payload.get("attendance_mode", "PUNCH_REQUIRED"),
                     status="DRAFT" if approval_required else "APPROVED",
                     approved_by=None if approval_required else payload["created_by"],
                     approved_at=None if approval_required else now,
@@ -256,6 +258,7 @@ class UpdateEmployeeScheduleAssignmentUseCase(
                     "employee_id",
                     "schedule_template_id",
                     "rest_day_pattern_id",
+                    "attendance_mode",
                     "assignment_type",
                     "effective_from",
                     "effective_to",

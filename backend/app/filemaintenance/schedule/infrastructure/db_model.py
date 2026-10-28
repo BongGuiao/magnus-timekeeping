@@ -262,6 +262,10 @@ class EmployeeScheduleAssignmentModel(Base):
             "effective_to IS NULL OR effective_to >= effective_from",
             name="ck_employee_schedule_assignments_effective_dates",
         ),
+        CheckConstraint(
+            "attendance_mode IN ('PUNCH_REQUIRED', 'SCHEDULE_CREDITED')",
+            name="ck_employee_schedule_assignments_attendance_mode",
+        ),
         {"schema": "schedule"},
     )
 
@@ -286,6 +290,12 @@ class EmployeeScheduleAssignmentModel(Base):
         nullable=True,
     )
     assignment_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    attendance_mode: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="PUNCH_REQUIRED",
+        server_default=text("'PUNCH_REQUIRED'"),
+    )
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

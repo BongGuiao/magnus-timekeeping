@@ -11,6 +11,8 @@ export interface PayrollCutoff {
   period_end: string
   pay_date: string
   attendance_deadline: string | null
+  attendance_finalized_at?: string | null
+  attendance_finalized_by?: string | null
   status: string
   locked_at: string | null
   locked_by: string | null
@@ -32,6 +34,9 @@ export interface EmployeeCutoffResult {
   period_end: string | null
   employee_id: string
   employee_name: string | null
+  operational_group: string | null
+  attendance_finalized_at: string | null
+  cutoff_locked_at: string | null
   scheduled_days: number
   paid_days: number
   regular_minutes: number
@@ -69,9 +74,27 @@ export type PayrollCutoffPayload = Omit<
 
 function rethrowApiError(error: unknown, fallback: string): never {
   if (error instanceof AxiosError) {
-    const body = error.response?.data as ApiErrorEnvelope | undefined
+    const body = error.response?.data as (Omit<ApiErrorEnvelope, 'detail'> & { detail?: unknown }) | undefined
     const status = error.response?.status
-    const message = body?.detail ?? fallback
+    const detail = body?.detail
+    const validationMessages = Array.isArray(detail)
+      ? detail.flatMap((item: unknown) => {
+        if (typeof item !== 'object' || item === null || !('msg' in item)) return []
+        const message = item.msg
+        if (typeof message !== 'string') return []
+        const location = 'loc' in item && Array.isArray(item.loc)
+          ? item.loc.filter(
+            (part): part is string | number => typeof part === 'string' || typeof part === 'number',
+          )
+          : []
+        return [`${location.length ? `${location.join(' → ')}: ` : ''}${message}`]
+      })
+      : []
+    const message = typeof detail === 'string'
+      ? detail
+      : validationMessages.length
+        ? validationMessages.join('; ')
+        : fallback
     if (status && status >= 500) {
       throw new Error(
         `${message} (HTTP ${status}). Check the backend logs and confirm ` +

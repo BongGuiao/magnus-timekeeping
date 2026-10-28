@@ -542,7 +542,7 @@ export default function StatutorySchedulesPage({
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="payroll-statutory" onNavigate={onNavigate} onSignOut={onLoggedOut} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-5 py-6">
+      <main className="w-full space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <header>
           <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Payroll setup</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">Statutory Setup</h1>

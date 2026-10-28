@@ -13,6 +13,8 @@ from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.org_unit.application.use_case import (
     CreateOrgUnitUseCase,
     CreateOrgUnitTypeUseCase,
+    DeleteOrgUnitTypeUseCase,
+    DeleteOrgUnitUseCase,
     GetOrgUnitTypeUseCase,
     GetOrgUnitUseCase,
     ListOrgUnitsUseCase,
@@ -26,6 +28,8 @@ from app.filemaintenance.org_unit.domain.entities.org_unit_type import OrgUnitTy
 from app.filemaintenance.org_unit.infrastructure.dependencies import (
     get_create_org_unit_use_case,
     get_create_org_unit_type_use_case,
+    get_delete_org_unit_type_use_case,
+    get_delete_org_unit_use_case,
     get_list_org_units_use_case,
     get_list_org_unit_types_use_case,
     get_org_unit_use_case,
@@ -169,6 +173,33 @@ async def update_org_unit(
     return ResponseEnvelope(status="success", data=result)
 
 
+@router.delete(
+    "/{org_unit_id}",
+    response_model=ResponseEnvelope[OrgUnitEntity],
+    status_code=status.HTTP_200_OK,
+)
+async def delete_org_unit(
+    org_unit_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: DeleteOrgUnitUseCase = Depends(get_delete_org_unit_use_case),
+    get_use_case: GetOrgUnitUseCase = Depends(get_org_unit_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    user_id = _get_user_id(claims)
+    before = await get_use_case.execute(org_unit_id)
+    result = await use_case.execute(org_unit_id, user_id)
+    await log_entity_action(
+        es_client,
+        user_id=user_id,
+        action="DELETE",
+        resource="org_unit",
+        resource_id=org_unit_id,
+        before=before,
+        after=result,
+    )
+    return ResponseEnvelope(status="success", data=result)
+
+
 @router.get(
     "/list",
     response_model=ResponseEnvelope[list[OrgUnitEntity]],
@@ -176,11 +207,12 @@ async def update_org_unit(
 )
 async def list_org_units(
     company_id: UUID | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: ListOrgUnitsUseCase = Depends(get_list_org_units_use_case),
 ):
     _require_email(claims)
-    result = await use_case.execute(company_id)
+    result = await use_case.execute(company_id, include_deleted)
     return ResponseEnvelope(status="success", data=result)
 
 
@@ -196,11 +228,13 @@ async def list_org_units(
 )
 async def list_org_unit_types(
     company_id: UUID = Query(...),
+    include_inactive: bool = Query(False),
+    include_deleted: bool = Query(False),
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: ListOrgUnitTypesUseCase = Depends(get_list_org_unit_types_use_case),
 ):
     _require_email(claims)
-    result = await use_case.execute(company_id)
+    result = await use_case.execute(company_id, include_inactive, include_deleted)
     return ResponseEnvelope(status="success", data=result)
 
 
@@ -280,6 +314,35 @@ async def update_org_unit_type(
         action="UPDATE",
         resource="org_unit_type",
         resource_id=normalized_type,
+        before=before,
+        after=result,
+    )
+    return ResponseEnvelope(status="success", data=result)
+
+
+@router.delete(
+    "/types/{org_unit_type}",
+    response_model=ResponseEnvelope[OrgUnitTypeEntity],
+    status_code=status.HTTP_200_OK,
+)
+async def delete_org_unit_type(
+    org_unit_type: str,
+    company_id: UUID = Query(...),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: DeleteOrgUnitTypeUseCase = Depends(get_delete_org_unit_type_use_case),
+    get_use_case: GetOrgUnitTypeUseCase = Depends(get_org_unit_type_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    user_id = _get_user_id(claims)
+    normalized_type = org_unit_type.strip().upper()
+    before = await get_use_case.execute(company_id, normalized_type)
+    result = await use_case.execute(company_id, normalized_type, user_id)
+    await log_entity_action(
+        es_client,
+        user_id=user_id,
+        action="DELETE",
+        resource="org_unit_type",
+        resource_id=f"{company_id}:{normalized_type}",
         before=before,
         after=result,
     )

@@ -81,6 +81,7 @@ class EmployeeScheduleAssignmentApprovalTests(unittest.IsolatedAsyncioTestCase):
         ).execute(_assignment_payload())
 
         self.assertEqual(result.status, "DRAFT")
+        self.assertEqual(result.attendance_mode, "PUNCH_REQUIRED")
         self.assertIsNone(result.approved_by)
         self.assertIsNone(result.approved_at)
 
@@ -91,6 +92,7 @@ class EmployeeScheduleAssignmentApprovalTests(unittest.IsolatedAsyncioTestCase):
         ).execute(_assignment_payload())
 
         self.assertEqual(result.status, "APPROVED")
+        self.assertEqual(result.attendance_mode, "PUNCH_REQUIRED")
         self.assertEqual(result.approved_by, ACTOR_ID)
         self.assertIsNotNone(result.approved_at)
 
@@ -101,6 +103,7 @@ class EmployeeScheduleAssignmentApprovalTests(unittest.IsolatedAsyncioTestCase):
             schedule_template_id=TEMPLATE_ID,
             rest_day_pattern_id=None,
             assignment_type="REGULAR",
+            attendance_mode="PUNCH_REQUIRED",
             effective_from=date(2026, 10, 1),
             effective_to=None,
             reason=None,
@@ -129,3 +132,38 @@ class EmployeeScheduleAssignmentApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.approved_by, result.updated_by)
         self.assertIsNotNone(result.approved_at)
 
+    async def test_changing_attendance_mode_requires_reapproval_when_enabled(self):
+        assignment = SimpleNamespace(
+            id=uuid4(),
+            employee_id=EMPLOYEE_ID,
+            schedule_template_id=TEMPLATE_ID,
+            rest_day_pattern_id=None,
+            assignment_type="REGULAR",
+            attendance_mode="PUNCH_REQUIRED",
+            effective_from=date(2026, 10, 1),
+            effective_to=None,
+            reason=None,
+            status="APPROVED",
+            approved_by=ACTOR_ID,
+            approved_at=None,
+            created_at=None,
+            created_by=ACTOR_ID,
+            updated_at=None,
+            updated_by=None,
+            row_version=1,
+            is_active=True,
+        )
+        session = FakeSession(approval_required=True, assignment=assignment)
+        result = await UpdateEmployeeScheduleAssignmentUseCase(
+            FakeUnitOfWork(session)
+        ).execute(
+            assignment.id,
+            {
+                "attendance_mode": "SCHEDULE_CREDITED",
+                "updated_by": uuid4(),
+            },
+        )
+
+        self.assertEqual(result.attendance_mode, "SCHEDULE_CREDITED")
+        self.assertEqual(result.status, "DRAFT")
+        self.assertIsNone(result.approved_by)

@@ -257,7 +257,7 @@ export default function Companies({ employeeName, onNavigate, onLoggedOut }: Pro
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="companies" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] py-6">
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-3">
           <p className="text-xs text-slate-500">Manage legal entities, operating details, and company status.</p>
         </div>

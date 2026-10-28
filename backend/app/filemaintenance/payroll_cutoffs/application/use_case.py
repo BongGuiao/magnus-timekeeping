@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.attendance.application.use_case import resolve_schedule_day
+from app.attendance.application.use_case import (
+    resolve_attendance_day_type,
+    resolve_schedule_day,
+)
 from app.attendance.infrastructure.db_model import (
     AttendanceModel,
     OfficialBusinessRequestModel,
@@ -47,20 +50,47 @@ from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
-from app.filemaintenance.schedule.infrastructure.db_model import ScheduleTemplateModel
+from app.filemaintenance.schedule.infrastructure.db_model import (
+    EmployeeScheduleAssignmentModel,
+    ScheduleTemplateModel,
+)
 from app.payroll.infrastructure.db_model import GrossPayRunModel
 
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
+
+
+def _operational_group_for_cutoff_result():
+    return (
+        select(EmploymentAssignmentModel.operational_group)
+        .where(
+            EmploymentAssignmentModel.employee_id == EmployeeCutoffResultModel.employee_id,
+            EmploymentAssignmentModel.is_active.is_(True),
+            EmploymentAssignmentModel.status == "ACTIVE",
+            EmploymentAssignmentModel.effective_from <= PayrollCutoffModel.period_end,
+            or_(
+                EmploymentAssignmentModel.effective_to.is_(None),
+                EmploymentAssignmentModel.effective_to >= PayrollCutoffModel.period_start,
+            ),
+            or_(
+                EmploymentAssignmentModel.separation_date.is_(None),
+                EmploymentAssignmentModel.separation_date >= PayrollCutoffModel.period_start,
+            ),
+        )
+        .order_by(EmploymentAssignmentModel.effective_from.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
 
 
 async def _scheduled_days_without_attendance(
     session,
     official_business: list[OfficialBusinessFact],
     attendance: list[AttendanceFact],
+    schedule_assignments: list[EmployeeScheduleAssignmentModel],
     period_start: date,
     period_end: date,
 ) -> list[ScheduledDayFact]:
-    """Resolve the schedule for official-business dates that have no attendance record."""
+    """Resolve scheduled shifts with OB or schedule-credited attendance but no punch record."""
     recorded = {(fact.employee_id, fact.work_date) for fact in attendance}
     candidates: set[tuple[UUID, date]] = set()
     for request in official_business:
@@ -70,6 +100,17 @@ async def _scheduled_days_without_attendance(
         while day <= last_day:
             if period_start <= day <= period_end and (request.employee_id, day) not in recorded:
                 candidates.add((request.employee_id, day))
+            day += timedelta(days=1)
+    employee_ids = {assignment.employee_id for assignment in schedule_assignments}
+    for employee_id in employee_ids:
+        day = period_start
+        while day <= period_end:
+            if (
+                (employee_id, day) not in recorded
+                and _schedule_mode_for_date(schedule_assignments, employee_id, day)
+                == "SCHEDULE_CREDITED"
+            ):
+                candidates.add((employee_id, day))
             day += timedelta(days=1)
     if not candidates:
         return []
@@ -91,6 +132,7 @@ async def _scheduled_days_without_attendance(
                 template.required_minutes if template is not None else 0
             ) or 0
         scheduled_minutes = template_minutes[schedule.schedule_template_id]
+        day_type = await resolve_attendance_day_type(session, employee_id, work_date)
         facts.append(
             ScheduledDayFact(
                 employee_id=employee_id,
@@ -98,9 +140,30 @@ async def _scheduled_days_without_attendance(
                 expected_clock_in_at=schedule.expected_clock_in_at,
                 expected_clock_out_at=schedule.expected_clock_out_at,
                 scheduled_minutes=scheduled_minutes,
+                work_type=schedule.work_type,
+                day_type=day_type,
+                schedule_credited=schedule.attendance_mode == "SCHEDULE_CREDITED",
             )
         )
     return facts
+
+
+def _schedule_mode_for_date(
+    assignments: list[EmployeeScheduleAssignmentModel],
+    employee_id: UUID,
+    work_date: date,
+) -> str:
+    for assignment in assignments:
+        if (
+            assignment.employee_id == employee_id
+            and assignment.effective_from <= work_date
+            and (
+                assignment.effective_to is None
+                or assignment.effective_to >= work_date
+            )
+        ):
+            return assignment.attendance_mode
+    return "PUNCH_REQUIRED"
 
 
 class PayrollCutoffConflictError(ValueError):
@@ -239,6 +302,10 @@ class UpdatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity | None]):
                     raise ValueError(
                         "A finalized payroll cutoff must be unlocked by an administrator before it can be changed."
                     )
+                if existing.attendance_finalized_at is not None:
+                    raise ValueError(
+                        "A cutoff with finalized attendance cannot be changed."
+                    )
 
                 merged = {**existing.__dict__, **payload}
                 _validate_period(merged["period_start"], merged["period_end"])
@@ -279,7 +346,14 @@ class CalculateEmployeeCutoffResultsUseCase:
         employee_id: UUID | None = None,
     ) -> list[EmployeeCutoffResultEntity]:
         statement = (
-            select(EmployeeCutoffResultModel, EmployeeModel, PayrollCutoffModel)
+            select(
+                EmployeeCutoffResultModel,
+                EmployeeModel,
+                PayrollCutoffModel,
+                _operational_group_for_cutoff_result(),
+                PayrollCutoffModel.attendance_finalized_at,
+                PayrollCutoffModel.locked_at,
+            )
             .join(EmployeeModel, EmployeeModel.id == EmployeeCutoffResultModel.employee_id)
             .join(PayrollCutoffModel, PayrollCutoffModel.id == EmployeeCutoffResultModel.cutoff_id)
             .where(EmployeeCutoffResultModel.cutoff_id == cutoff_id)
@@ -289,7 +363,7 @@ class CalculateEmployeeCutoffResultsUseCase:
             statement = statement.where(EmployeeCutoffResultModel.employee_id == employee_id)
         result = await session.execute(statement)
         entities = []
-        for result_model, employee, cutoff in result.all():
+        for result_model, employee, cutoff, operational_group, finalized_at, locked_at in result.all():
             entity = GenericMapper.to_entity(result_model, EmployeeCutoffResultEntity)
             entity.employee_name = employee.preferred_name or " ".join(
                 part
@@ -304,6 +378,9 @@ class CalculateEmployeeCutoffResultsUseCase:
             entity.cutoff_code = cutoff.cutoff_code
             entity.period_start = cutoff.period_start
             entity.period_end = cutoff.period_end
+            entity.operational_group = operational_group
+            entity.attendance_finalized_at = finalized_at
+            entity.cutoff_locked_at = locked_at
             entities.append(entity)
         return entities
 
@@ -321,14 +398,21 @@ class CalculateEmployeeCutoffResultsUseCase:
             if actor_employee_id is None:
                 raise LookupError("No employee is linked to the signed-in account.")
             result = await session.execute(
-                select(EmployeeCutoffResultModel, EmployeeModel, PayrollCutoffModel)
+                select(
+                    EmployeeCutoffResultModel,
+                    EmployeeModel,
+                    PayrollCutoffModel,
+                    _operational_group_for_cutoff_result(),
+                    PayrollCutoffModel.attendance_finalized_at,
+                    PayrollCutoffModel.locked_at,
+                )
                 .join(EmployeeModel, EmployeeModel.id == EmployeeCutoffResultModel.employee_id)
                 .join(PayrollCutoffModel, PayrollCutoffModel.id == EmployeeCutoffResultModel.cutoff_id)
                 .where(EmployeeCutoffResultModel.employee_id == actor_employee_id)
                 .order_by(EmployeeCutoffResultModel.calculated_at.desc())
             )
             entities: list[EmployeeCutoffResultEntity] = []
-            for result_model, employee, cutoff in result.all():
+            for result_model, employee, cutoff, operational_group, finalized_at, locked_at in result.all():
                 entity = GenericMapper.to_entity(result_model, EmployeeCutoffResultEntity)
                 entity.employee_name = employee.preferred_name or " ".join(
                     part
@@ -343,6 +427,9 @@ class CalculateEmployeeCutoffResultsUseCase:
                 entity.cutoff_code = cutoff.cutoff_code
                 entity.period_start = cutoff.period_start
                 entity.period_end = cutoff.period_end
+                entity.operational_group = operational_group
+                entity.attendance_finalized_at = finalized_at
+                entity.cutoff_locked_at = locked_at
                 entities.append(entity)
             return entities
 
@@ -360,7 +447,14 @@ class CalculateEmployeeCutoffResultsUseCase:
             if actor_employee_id is None:
                 raise LookupError("No employee is linked to the signed-in account.")
             result = await session.execute(
-                select(EmployeeCutoffResultModel, EmployeeModel, PayrollCutoffModel)
+                select(
+                    EmployeeCutoffResultModel,
+                    EmployeeModel,
+                    PayrollCutoffModel,
+                    EmploymentAssignmentModel.operational_group,
+                    PayrollCutoffModel.attendance_finalized_at,
+                    PayrollCutoffModel.locked_at,
+                )
                 .join(EmployeeModel, EmployeeModel.id == EmployeeCutoffResultModel.employee_id)
                 .join(PayrollCutoffModel, PayrollCutoffModel.id == EmployeeCutoffResultModel.cutoff_id)
                 .join(
@@ -381,11 +475,16 @@ class CalculateEmployeeCutoffResultsUseCase:
                         EmploymentAssignmentModel.separation_date >= PayrollCutoffModel.period_start,
                     ),
                 )
-                .order_by(PayrollCutoffModel.period_start.desc(), EmployeeModel.last_name, EmployeeModel.first_name)
+                .order_by(
+                    PayrollCutoffModel.period_start.desc(),
+                    EmployeeModel.last_name,
+                    EmployeeModel.first_name,
+                    EmploymentAssignmentModel.effective_from.desc(),
+                )
             )
             entities = []
             seen_result_ids: set[UUID] = set()
-            for result_model, employee, cutoff in result.all():
+            for result_model, employee, cutoff, operational_group, finalized_at, locked_at in result.all():
                 if result_model.id in seen_result_ids:
                     continue
                 seen_result_ids.add(result_model.id)
@@ -403,6 +502,9 @@ class CalculateEmployeeCutoffResultsUseCase:
                 entity.cutoff_code = cutoff.cutoff_code
                 entity.period_start = cutoff.period_start
                 entity.period_end = cutoff.period_end
+                entity.operational_group = operational_group
+                entity.attendance_finalized_at = finalized_at
+                entity.cutoff_locked_at = locked_at
                 entities.append(entity)
             return entities
 
@@ -412,7 +514,14 @@ class CalculateEmployeeCutoffResultsUseCase:
             if session is None:
                 raise RuntimeError("UnitOfWork session is not active.")
             result = await session.execute(
-                select(EmployeeCutoffResultModel, EmployeeModel, PayrollCutoffModel)
+                select(
+                    EmployeeCutoffResultModel,
+                    EmployeeModel,
+                    PayrollCutoffModel,
+                    _operational_group_for_cutoff_result(),
+                    PayrollCutoffModel.attendance_finalized_at,
+                    PayrollCutoffModel.locked_at,
+                )
                 .join(EmployeeModel, EmployeeModel.id == EmployeeCutoffResultModel.employee_id)
                 .join(PayrollCutoffModel, PayrollCutoffModel.id == EmployeeCutoffResultModel.cutoff_id)
                 .order_by(
@@ -422,7 +531,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                 )
             )
             entities: list[EmployeeCutoffResultEntity] = []
-            for result_model, employee, cutoff in result.all():
+            for result_model, employee, cutoff, operational_group, finalized_at, locked_at in result.all():
                 entity = GenericMapper.to_entity(result_model, EmployeeCutoffResultEntity)
                 entity.employee_name = employee.preferred_name or " ".join(
                     part
@@ -437,6 +546,9 @@ class CalculateEmployeeCutoffResultsUseCase:
                 entity.cutoff_code = cutoff.cutoff_code
                 entity.period_start = cutoff.period_start
                 entity.period_end = cutoff.period_end
+                entity.operational_group = operational_group
+                entity.attendance_finalized_at = finalized_at
+                entity.cutoff_locked_at = locked_at
                 entities.append(entity)
             return entities
 
@@ -460,6 +572,8 @@ class CalculateEmployeeCutoffResultsUseCase:
                 raise LookupError("Payroll cutoff not found.")
             if cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED":
                 raise ValueError("A locked payroll cutoff cannot be recalculated.")
+            if cutoff.attendance_finalized_at is not None:
+                raise ValueError("Attendance has been finalized and cannot be recalculated.")
 
             cutoff_start = datetime.combine(cutoff.period_start, time.min, tzinfo=PH_TIMEZONE)
             cutoff_end = datetime.combine(
@@ -491,8 +605,33 @@ class CalculateEmployeeCutoffResultsUseCase:
             official_business_facts: list[OfficialBusinessFact] = []
             scheduled_day_facts: list[ScheduledDayFact] = []
             exception_facts: list[ExceptionFact] = []
+            schedule_assignment_rows: list[EmployeeScheduleAssignmentModel] = []
 
             if employee_ids:
+                schedule_assignment_rows = list(
+                    (
+                        await session.scalars(
+                            select(EmployeeScheduleAssignmentModel)
+                            .where(
+                                EmployeeScheduleAssignmentModel.employee_id.in_(employee_ids),
+                                EmployeeScheduleAssignmentModel.is_active.is_(True),
+                                EmployeeScheduleAssignmentModel.status == "APPROVED",
+                                EmployeeScheduleAssignmentModel.effective_from
+                                <= cutoff.period_end,
+                                or_(
+                                    EmployeeScheduleAssignmentModel.effective_to.is_(None),
+                                    EmployeeScheduleAssignmentModel.effective_to
+                                    >= cutoff.period_start,
+                                ),
+                            )
+                            .order_by(
+                                EmployeeScheduleAssignmentModel.employee_id,
+                                EmployeeScheduleAssignmentModel.effective_from.desc(),
+                                EmployeeScheduleAssignmentModel.created_at.desc(),
+                            )
+                        )
+                    ).all()
+                )
                 attendance_result = await session.execute(
                     select(
                         AttendanceModel,
@@ -527,6 +666,14 @@ class CalculateEmployeeCutoffResultsUseCase:
                         expected_clock_out_at=record.expected_clock_out_at,
                         clock_in_at=record.corrected_clock_in_at or record.clock_in_at,
                         clock_out_at=record.corrected_clock_out_at or record.clock_out_at,
+                        schedule_credited=(
+                            _schedule_mode_for_date(
+                                schedule_assignment_rows,
+                                employee_id,
+                                record.work_date,
+                            )
+                            == "SCHEDULE_CREDITED"
+                        ),
                     )
                     for record, employee_id, required_minutes in attendance_result.all()
                 ]
@@ -714,6 +861,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                     session,
                     official_business_facts,
                     attendance_facts,
+                    schedule_assignment_rows,
                     cutoff.period_start,
                     cutoff.period_end,
                 )

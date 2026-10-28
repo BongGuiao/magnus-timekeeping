@@ -133,6 +133,10 @@ class PayrollUseCases:
 
         if cutoff.is_locked:
             raise PayrollSetupError("A locked payroll cutoff cannot be recalculated.")
+        if not cutoff.is_attendance_finalized:
+            raise PayrollSetupError(
+                "Finalize attendance for this cutoff before calculating payroll."
+            )
         if not cutoff.employees:
             raise PayrollSetupError(
                 "The payroll cutoff has no employee time results. Recalculate the attendance cutoff first."

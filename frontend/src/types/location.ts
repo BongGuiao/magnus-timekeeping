@@ -1,13 +1,6 @@
-export type LocationType =
-  | 'OFFICE'
-  | 'WAREHOUSE'
-  | 'DISPATCH'
-  | 'CUSTOMER'
-  | 'FIELD'
-  | 'FLEET_YARD'
-  | 'OTHER'
+export type LocationType = string
 
-export type LocationStatus = 'ACTIVE' | 'INACTIVE'
+export type LocationStatus = 'ACTIVE' | 'INACTIVE' | 'DELETED'
 
 export interface Location {
   id: string
@@ -37,4 +30,6 @@ export interface Location {
   updated_at: string
   updated_by: string | null
   row_version: number
+  deleted_at?: string | null
+  deleted_by?: string | null
 }

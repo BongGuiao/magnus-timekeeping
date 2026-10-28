@@ -308,6 +308,16 @@ async def _validate_assignment(uow: GenUnitOfWork, values: dict[str, Any]) -> No
             or any(geofence.company_id != values["company_id"] for geofence in geofences)
         ):
             raise ValueError("Authorized geofence does not belong to the selected company.")
+        # Soft-deleted geofences can no longer be assigned; drop stale links on save.
+        geofences = [
+            geofence for geofence in geofences
+            if getattr(geofence, "deleted_at", None) is None
+        ]
+        authorized_geofence_ids = [
+            geofence_id for geofence_id in authorized_geofence_ids
+            if any(geofence.id == geofence_id for geofence in geofences)
+        ]
+    if authorized_geofence_ids:
         if any(geofence.location_id is None for geofence in geofences):
             raise ValueError("Every authorized geofence must be linked to a location.")
         location_repo = uow.get_repo(LocationEntity, Location)
@@ -346,6 +356,15 @@ async def _validate_assignment(uow: GenUnitOfWork, values: dict[str, Any]) -> No
         )
         if {location.id for location in locations} != set(location_ids):
             raise ValueError("Assigned location does not belong to the selected company.")
+        # Soft-deleted locations can no longer be assigned; drop stale links on save.
+        deleted_location_ids = {
+            location.id for location in locations
+            if getattr(location, "deleted_at", None) is not None
+        }
+        location_ids = [
+            location_id for location_id in location_ids
+            if location_id not in deleted_location_ids
+        ]
     values["location_ids"] = location_ids
     primary_location_id = values.get("primary_location_id")
     if primary_location_id not in location_ids:

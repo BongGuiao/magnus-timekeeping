@@ -235,7 +235,7 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="employee-entitlements" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-6 py-6">
+      <main className="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <header>
           <p className="text-sm font-semibold uppercase tracking-wide text-indigo-600">People</p>
           <h1 className="mt-1 text-2xl font-bold text-slate-900">Employee Entitlements</h1>

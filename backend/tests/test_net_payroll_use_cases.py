@@ -40,6 +40,7 @@ class FakePayrollRepository:
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 15),
             is_locked=False,
+            is_attendance_finalized=True,
             payroll_group=self.policy,
             employees=(
                 CutoffEmployeeTime(
@@ -219,6 +220,18 @@ class NetPayrollUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(employee_result.status, "HOLD")
         self.assertIsNone(employee_result.net_amount)
         self.assertIn("Missing active statutory schedules", employee_result.hold_reason or "")
+
+    async def test_payroll_calculation_requires_finalized_attendance(self) -> None:
+        repository = FakePayrollRepository()
+        repository.cutoff = replace(repository.cutoff, is_attendance_finalized=False)
+
+        with self.assertRaisesRegex(ValueError, "Finalize attendance"):
+            await PayrollUseCases(repository).calculate_payroll(
+                repository.cutoff_id,
+                uuid4(),
+            )
+
+        self.assertEqual(repository.loader_calls, [])
 
     async def test_payroll_inputs_are_loaded_once_for_all_employees(self) -> None:
         repository = FakePayrollRepository()

@@ -68,6 +68,7 @@ class CutoffPayrollData:
     is_locked: bool
     payroll_group: PayrollGroupPolicy
     employees: tuple[CutoffEmployeeTime, ...]
+    is_attendance_finalized: bool = False
     year_end_wtax_reconciliation_enabled: bool = False
     cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
 

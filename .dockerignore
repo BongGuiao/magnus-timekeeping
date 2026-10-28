@@ -14,3 +14,18 @@ __pycache__
 *.pyc
 postgres_data
 es_data
+
+# Secrets are injected at runtime via docker compose env_file, never baked into the image
+.env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Uploaded employee face photos are mounted at runtime (./static), not built into the image
+static
+
+# Not needed by the backend image
+frontend
+mobile
+certbot
+logs

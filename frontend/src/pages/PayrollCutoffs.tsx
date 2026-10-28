@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowDown, ArrowUp, Calculator, ChevronsUpDown, Eye, Pencil, Plus, Search } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -70,6 +70,13 @@ function groupLabel(groupId: string, groups: PayrollGroup[]) {
   return group ? `${group.payroll_group_code} — ${group.payroll_group_name}` : 'Payroll group unavailable'
 }
 
+function generatedCutoffCode(payrollGroupId: string, periodStart: string, periodEnd: string, groups: PayrollGroup[]) {
+  const groupCode = groups.find((group) => group.id === payrollGroupId)?.payroll_group_code
+  if (!groupCode || !periodStart || !periodEnd) return ''
+  const normalizedGroupCode = groupCode.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-')
+  return `${normalizedGroupCode}-${periodStart.replaceAll('-', '')}-${periodEnd.replaceAll('-', '')}`
+}
+
 function formatDate(value: string) {
   const [year, month, day] = value.slice(0, 10).split('-')
   return `${month}-${day}-${year}`
@@ -109,11 +116,13 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   const [results, setResults] = useState<EmployeeCutoffResult[]>([])
   const [resultsLoading, setResultsLoading] = useState(false)
   const [calculatingCutoffId, setCalculatingCutoffId] = useState<string | null>(null)
+  const lastGeneratedCode = useRef<string | null>(null)
 
   useEffect(() => {
     setEditing(null)
     setIsFormOpen(false)
     setForm(blankForm)
+    lastGeneratedCode.current = null
   }, [companyId])
 
   useEffect(() => {
@@ -141,12 +150,31 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   }, [companyId])
 
   function setField<K extends keyof CutoffForm>(key: K, value: CutoffForm[K]) {
-    setForm((current) => ({ ...current, [key]: value }))
+    setForm((current) => {
+      const next = { ...current, [key]: value }
+      if (!editing && (key === 'payroll_group_id' || key === 'period_start' || key === 'period_end')) {
+        const generatedCode = generatedCutoffCode(
+          next.payroll_group_id,
+          next.period_start,
+          next.period_end,
+          groups,
+        )
+        if (
+          generatedCode
+          && (!current.cutoff_code || current.cutoff_code === lastGeneratedCode.current)
+        ) {
+          next.cutoff_code = generatedCode
+          lastGeneratedCode.current = generatedCode
+        }
+      }
+      return next
+    })
   }
 
   function resetForm() {
     setEditing(null)
     setIsFormOpen(false)
+    lastGeneratedCode.current = null
     setForm({
       ...blankForm,
       payroll_group_id: groups.find((group) => group.is_active && group.status === 'ACTIVE')?.id ?? '',
@@ -156,6 +184,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   }
 
   function beginEdit(cutoff: PayrollCutoff) {
+    lastGeneratedCode.current = null
     setEditing(cutoff)
     setIsFormOpen(true)
     setForm({
@@ -312,7 +341,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="payroll-cutoffs" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-3 py-6">
+      <main className="w-full space-y-3 px-4 py-6 sm:px-6 lg:px-8">
         {!isFormOpen && <p className="text-xs text-slate-500">Schedule payroll periods, pay dates, and review deadlines by payroll group.</p>}
 
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
@@ -333,6 +362,9 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             </label>
             <label className="text-sm font-semibold text-slate-700">Cutoff code
               <input className={inputClass} maxLength={50} required value={form.cutoff_code} onChange={(event) => setField('cutoff_code', event.target.value)} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">
+                {editing ? 'Editable cutoff identifier.' : 'Generated from the payroll group and period; you can edit it.'}
+              </span>
             </label>
             <label className="text-sm font-semibold text-slate-700">Cutoff half
               <select className={inputClass} value={form.cutoff_half} onChange={(event) => setField('cutoff_half', event.target.value as CutoffForm['cutoff_half'])}>
@@ -431,7 +463,8 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                       }`}>
                         {cutoff.status}{!cutoff.is_active ? ' · INACTIVE' : ''}
                       </span>
-                      {cutoff.locked_at && <p className="text-xs text-amber-700">Locked {deadlineText(cutoff.locked_at)}</p>}
+                      {cutoff.attendance_finalized_at && <p className="text-xs text-emerald-700">Attendance finalized {deadlineText(cutoff.attendance_finalized_at)}</p>}
+                      {cutoff.locked_at && <p className="text-xs text-amber-700">Payroll locked {deadlineText(cutoff.locked_at)}</p>}
                     </td>
                     <td className="px-4 py-3 text-xs">
                       <p>{cutoff.calculation_version ?? '—'}</p>
@@ -451,15 +484,28 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                         <button
                           type="button"
                           onClick={() => void calculateResults(cutoff)}
-                          disabled={!cutoff.is_active || Boolean(cutoff.locked_at) || cutoff.status.toUpperCase() === 'LOCKED' || calculatingCutoffId !== null || resultsLoading}
+                          disabled={!cutoff.is_active || Boolean(cutoff.locked_at) || cutoff.status.toUpperCase() === 'LOCKED' || Boolean(cutoff.attendance_finalized_at) || calculatingCutoffId !== null || resultsLoading}
                           aria-label={`${cutoff.calculation_version ? 'Recalculate' : 'Calculate'} ${cutoff.cutoff_code}`}
-                          title={cutoff.locked_at || cutoff.status.toUpperCase() === 'LOCKED' ? 'Locked cutoffs cannot be recalculated' : undefined}
+                          title={cutoff.attendance_finalized_at ? 'Attendance is finalized and cannot be recalculated' : cutoff.locked_at || cutoff.status.toUpperCase() === 'LOCKED' ? 'Locked cutoffs cannot be recalculated' : undefined}
                           className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Calculator className="h-4 w-4" aria-hidden="true" />
                           {calculatingCutoffId === cutoff.id ? 'Calculating…' : cutoff.calculation_version ? 'Recalculate' : 'Calculate'}
                         </button>
-                        <button type="button" onClick={() => beginEdit(cutoff)} aria-label={`Edit ${cutoff.cutoff_code}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700">
+                        <button
+                          type="button"
+                          onClick={() => beginEdit(cutoff)}
+                          disabled={Boolean(cutoff.locked_at) || cutoff.status.toUpperCase() === 'LOCKED' || Boolean(cutoff.attendance_finalized_at)}
+                          title={
+                            cutoff.attendance_finalized_at
+                              ? 'Cutoffs with finalized attendance cannot be edited.'
+                              : cutoff.locked_at || cutoff.status.toUpperCase() === 'LOCKED'
+                                ? 'Locked cutoffs cannot be edited.'
+                                : undefined
+                          }
+                          aria-label={`Edit ${cutoff.cutoff_code}`}
+                          className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
                           <Pencil className="h-4 w-4" />
                         </button>
                       </div>

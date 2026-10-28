@@ -72,7 +72,7 @@ export default function EmergencyScheduleApprovals({
         onNavigate={onNavigate}
         onSignOut={logout}
       />
-      <main className="mx-auto w-[95%] max-w-5xl space-y-4 py-6">
+      <main className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
         <header>
           <h1 className="text-xl font-bold text-slate-900">Emergency Schedule Approvals</h1>
           <p className="mt-1 text-xs text-slate-600">

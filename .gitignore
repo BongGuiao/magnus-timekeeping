@@ -10,3 +10,5 @@ logs/
 # Celery
 celerybeat-schedule
 celerybeat.pid
+# Uploaded employee face photos (biometric data) must never be committed
+static/employee-faces/

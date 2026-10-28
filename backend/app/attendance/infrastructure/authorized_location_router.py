@@ -33,7 +33,7 @@ class AuthorizedLocationSchema(BaseModel):
     location_code: str
     location_name: str
     geofences: list[AuthorizedGeofenceSchema]
-    location_type: Literal["OFFICE", "WFH"] = "OFFICE"
+    location_type: str = "OFFICE"
 
 
 def _schema(site: AuthorizedLocation) -> AuthorizedLocationSchema:

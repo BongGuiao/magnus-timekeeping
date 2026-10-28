@@ -15,7 +15,7 @@ class OrgUnitEntity:
     manager_employee_id: UUID | None = None
     cost_center_code: str | None = None
     effective_to: date | None = None
-    status: Literal["DRAFT", "ACTIVE", "INACTIVE"] = "ACTIVE"
+    status: Literal["DRAFT", "ACTIVE", "INACTIVE", "DELETED"] = "ACTIVE"
     created_by: UUID | None = None
     updated_by: UUID | None = None
     is_active: bool = True
@@ -23,3 +23,5 @@ class OrgUnitEntity:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     row_version: int | None = None
+    deleted_at: datetime | None = None
+    deleted_by: UUID | None = None

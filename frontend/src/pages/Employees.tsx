@@ -757,7 +757,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="employees" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] py-6">
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-bold uppercase text-indigo-600">Maintenance</p>

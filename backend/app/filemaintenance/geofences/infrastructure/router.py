@@ -15,6 +15,7 @@ from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.geofences.application.use_case import (
     CreateGeofenceUseCase,
+    DeleteGeofenceUseCase,
     GetGeofenceUseCase,
     ListGeofencesUseCase,
     UpdateGeofenceUseCase,
@@ -22,6 +23,7 @@ from app.filemaintenance.geofences.application.use_case import (
 from app.filemaintenance.geofences.domain.entities.geofence import GeofenceEntity
 from app.filemaintenance.geofences.infrastructure.dependencies import (
     get_create_geofence_use_case,
+    get_delete_geofence_use_case,
     get_geofence_use_case,
     get_list_geofences_use_case,
     get_update_geofence_use_case,
@@ -128,11 +130,40 @@ async def update_geofence(
 )
 async def list_geofences(
     company_id: UUID | None = None,
+    include_deleted: bool = False,
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: ListGeofencesUseCase = Depends(get_list_geofences_use_case),
 ):
     _require_email(claims)
-    result = await use_case.execute(company_id)
+    result = await use_case.execute(company_id, include_deleted)
+    return ResponseEnvelope(status="success", data=result)
+
+
+@router.delete(
+    "/{geofence_id}",
+    response_model=ResponseEnvelope[GeofenceEntity],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("company.setup"))],
+)
+async def delete_geofence(
+    geofence_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: DeleteGeofenceUseCase = Depends(get_delete_geofence_use_case),
+    get_use_case: GetGeofenceUseCase = Depends(get_geofence_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    user_id = _get_user_id(claims)
+    before = await get_use_case.execute(geofence_id)
+    result = await use_case.execute(geofence_id, user_id)
+    await log_entity_action(
+        es_client,
+        user_id=user_id,
+        action="DELETE",
+        resource="geofence",
+        resource_id=geofence_id,
+        before=before,
+        after=result,
+    )
     return ResponseEnvelope(status="success", data=result)
 
 

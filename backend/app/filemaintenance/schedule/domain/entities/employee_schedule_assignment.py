@@ -9,6 +9,7 @@ class EmployeeScheduleAssignmentEntity:
     schedule_template_id: UUID
     assignment_type: str
     effective_from: date
+    attendance_mode: str = "PUNCH_REQUIRED"
     rest_day_pattern_id: UUID | None = None
     effective_to: date | None = None
     reason: str | None = None

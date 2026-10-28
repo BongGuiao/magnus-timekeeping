@@ -5,6 +5,11 @@ from uuid import uuid4
 
 from app.payroll.domain.entities.gross_payroll import PayrollApprovalPermissionError
 from app.payroll.infrastructure.repository import SqlAlchemyPayrollRepository
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    is_cutoff_closed,
+    require_cutoff_open,
+    CutoffDeadlineError,
+)
 
 
 class FakeResultRows:
@@ -46,9 +51,11 @@ class PayrollCutoffApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.actor_id = uuid4()
         self.cutoff = SimpleNamespace(
             id=self.cutoff_id,
+            cutoff_code="TEST-CUTOFF",
             is_active=True,
             locked_at=None,
             locked_by=None,
+            attendance_finalized_at=datetime.now(timezone.utc),
             status="ACTIVE",
             attendance_deadline=datetime.now(timezone.utc) - timedelta(hours=1),
             updated_at=None,
@@ -136,6 +143,16 @@ class PayrollCutoffApprovalTests(unittest.IsolatedAsyncioTestCase):
                 datetime.now(timezone.utc),
             )
 
+    async def test_approval_requires_attendance_finalization(self):
+        self.cutoff.attendance_finalized_at = None
+
+        with self.assertRaisesRegex(ValueError, "Finalize attendance"):
+            await self.repository().approve_payroll_cutoff(
+                self.cutoff_id,
+                self.actor_id,
+                datetime.now(timezone.utc),
+            )
+
     async def test_calculator_cannot_approve_own_payroll(self):
         self.run.calculated_by = self.actor_id
 
@@ -165,6 +182,13 @@ class PayrollCutoffApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.cutoff.locked_at)
         self.assertIsNone(self.cutoff.locked_by)
         self.assertEqual(self.cutoff.status, "ACTIVE")
+
+    def test_attendance_finalization_closes_cutoff_before_payroll_lock(self):
+        self.cutoff.attendance_deadline = datetime.now(timezone.utc) + timedelta(hours=1)
+        self.cutoff.attendance_finalized_at = datetime.now(timezone.utc)
+        self.assertTrue(is_cutoff_closed(self.cutoff))
+        with self.assertRaisesRegex(CutoffDeadlineError, "has been finalized"):
+            require_cutoff_open(self.cutoff)
 
 
 if __name__ == "__main__":

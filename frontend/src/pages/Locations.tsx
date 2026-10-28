@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { LoaderCircle, MapPin, Pencil, Plus, X } from 'lucide-react'
+import { LoaderCircle, MapPin, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
@@ -14,10 +14,17 @@ import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import { fetchCompanies } from '../lib/companyApi'
-import { createLocation, fetchLocation, fetchLocations, updateLocation } from '../lib/locationApi'
-import type { LocationWritePayload } from '../lib/locationApi'
+import {
+  createLocation,
+  deleteLocation,
+  fetchLocation,
+  fetchLocations,
+  fetchLocationTypes,
+  updateLocation,
+} from '../lib/locationApi'
+import type { LocationTypeOption, LocationWritePayload } from '../lib/locationApi'
 import type { Company } from '../types/company'
-import type { Location, LocationType } from '../types/location'
+import type { Location } from '../types/location'
 
 interface Props {
   employeeName: string
@@ -25,15 +32,6 @@ interface Props {
   onLoggedOut?: () => void
 }
 
-const locationTypes = [
-  'OFFICE',
-  'WAREHOUSE',
-  'DISPATCH',
-  'CUSTOMER',
-  'FIELD',
-  'FLEET_YARD',
-  'OTHER',
-] as const satisfies readonly LocationType[]
 const NCR_PSGC_REGION_CODE = '130000000'
 const ncrDistricts = [
   { value: 'NCR_1ST_DISTRICT', label: '1st District' },
@@ -47,7 +45,7 @@ const locationSchema = z.object({
   location_code: z.string().trim().min(1, 'Location code is required.').max(30)
     .regex(/^[A-Z0-9_-]+$/, 'Use uppercase letters, numbers, hyphens, or underscores.'),
   location_name: z.string().trim().min(1, 'Location name is required.').max(150),
-  location_type: z.enum(locationTypes),
+  location_type: z.string().trim().min(1, 'Location type is required.').max(30),
   address_line1: z.string().trim().max(200),
   region: z.string().trim().max(100),
   psgc_region_code: z.string().regex(/^$|^\d{9}$/),
@@ -129,6 +127,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   const { companyId } = useCompanySetupSelection()
   const [companies, setCompanies] = useState<Company[]>([])
   const [locations, setLocations] = useState<Location[]>([])
+  const [locationTypes, setLocationTypes] = useState<LocationTypeOption[]>([])
   const [selectedMapLocationId, setSelectedMapLocationId] = useState('')
   const [isMapVisible, setIsMapVisible] = useState(false)
   const [editingLocation, setEditingLocation] = useState<Location | null>(null)
@@ -141,6 +140,8 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   const [addressLookupError, setAddressLookupError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showDeleted, setShowDeleted] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
@@ -150,15 +151,18 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
     setEditingLocation(null)
     Promise.allSettled([
       fetchCompanies(),
-      companyId ? fetchLocations(companyId) : Promise.resolve([]),
+      companyId ? fetchLocations(companyId, showDeleted) : Promise.resolve([]),
+      companyId ? fetchLocationTypes(companyId, true) : Promise.resolve([]),
     ])
-      .then(([companiesResult, locationsResult]) => {
+      .then(([companiesResult, locationsResult, locationTypesResult]) => {
         if (!isCurrent) return
         const errors: string[] = []
         if (companiesResult.status === 'fulfilled') setCompanies(companiesResult.value)
         else errors.push(companiesResult.reason instanceof Error ? companiesResult.reason.message : 'Could not load companies.')
         if (locationsResult.status === 'fulfilled') setLocations(locationsResult.value)
         else errors.push(locationsResult.reason instanceof Error ? locationsResult.reason.message : 'Could not load locations.')
+        if (locationTypesResult.status === 'fulfilled') setLocationTypes(locationTypesResult.value)
+        else errors.push(locationTypesResult.reason instanceof Error ? locationTypesResult.reason.message : 'Could not load location types.')
         setErrorMessage(errors.join(' '))
       })
       .finally(() => {
@@ -167,7 +171,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
     return () => {
       isCurrent = false
     }
-  }, [companyId])
+  }, [companyId, showDeleted])
 
   useEffect(() => {
     if (!successMessage) return
@@ -186,6 +190,20 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
         code: 'custom',
         path: ['location_code'],
         message: 'Location code must be unique within the selected company.',
+      })
+    }
+    const typeIsAvailable = locationTypes.some((type) => (
+      type.company_id === values.company_id
+      && type.location_type === values.location_type
+      && type.is_active
+    ))
+    const retainingInactiveType = editingLocation?.company_id === values.company_id
+      && editingLocation.location_type === values.location_type
+    if (!typeIsAvailable && !retainingInactiveType) {
+      context.addIssue({
+        code: 'custom',
+        path: ['location_type'],
+        message: 'Select an active location type configured for this company.',
       })
     }
     if ((values.latitude === '') !== (values.longitude === '')) {
@@ -231,12 +249,16 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
         latitude: editingLocation.latitude === null ? '' : Number(editingLocation.latitude),
         longitude: editingLocation.longitude === null ? '' : Number(editingLocation.longitude),
         timezone: editingLocation.timezone,
-        status: editingLocation.status,
+        status: editingLocation.status === 'DELETED' ? 'INACTIVE' : editingLocation.status,
         is_active: editingLocation.is_active,
       }
-    : { ...emptyLocation, company_id: companyId }
+    : {
+        ...emptyLocation,
+        company_id: companyId,
+        location_type: locationTypes.find((type) => type.is_default && type.is_active)?.location_type ?? '',
+      }
 
-  const mappedLocations = locations.filter((location) => getCoordinates(location) !== null)
+  const mappedLocations = locations.filter((location) => !location.deleted_at && getCoordinates(location) !== null)
   const selectedMapLocation = mappedLocations.find((location) => location.id === selectedMapLocationId)
     ?? mappedLocations[0]
   const selectedCoordinates = selectedMapLocation ? getCoordinates(selectedMapLocation) : null
@@ -260,6 +282,11 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   function companyLabel(companyId: string) {
     const company = companies.find((company) => company.id === companyId)
     return company ? `${company.company_code} — ${company.legal_name}` : 'Unknown company'
+  }
+
+  function locationTypeLabel(locationType: string) {
+    return locationTypes.find((type) => type.location_type === locationType)?.display_name
+      ?? locationType.replaceAll('_', ' ')
   }
 
   function openCreate() {
@@ -433,6 +460,29 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
     }
   }
 
+  async function removeLocation(location: Location) {
+    const confirmed = window.confirm(
+      `Delete location ${location.location_code} — ${location.location_name}?\n\n`
+      + 'It will no longer be available for assignments or attendance, but past records that used it are kept.',
+    )
+    if (!confirmed) return
+    setErrorMessage('')
+    setSuccessMessage('')
+    setDeletingId(location.id)
+    try {
+      const deleted = await deleteLocation(location.id)
+      setLocations((current) => showDeleted
+        ? current.map((item) => item.id === deleted.id ? deleted : item)
+        : current.filter((item) => item.id !== deleted.id))
+      if (selectedMapLocationId === deleted.id) setIsMapVisible(false)
+      setSuccessMessage(`Location ${deleted.location_code} deleted. Its history is kept.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not delete the location.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const columns: DataTableColumn<Location>[] = [
     {
       key: 'location',
@@ -446,7 +496,12 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
       ),
     },
     { key: 'company', header: 'Company', value: (location) => companyLabel(location.company_id) },
-    { key: 'type', header: 'Type', value: (location) => location.location_type },
+    {
+      key: 'type',
+      header: 'Type',
+      value: (location) => `${locationTypeLabel(location.location_type)} ${location.location_type}`,
+      render: (location) => locationTypeLabel(location.location_type),
+    },
     { key: 'city', header: 'City', value: (location) => location.city ?? '—' },
     {
       key: 'ncr_district',
@@ -458,11 +513,18 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
       header: 'Status',
       value: (location) => location.status,
       render: (location) => (
-        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
-          location.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
-        }`}>
-          {location.status}
-        </span>
+        <div>
+          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
+            location.status === 'ACTIVE'
+              ? 'bg-emerald-50 text-emerald-700'
+              : location.status === 'DELETED' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {location.status}
+          </span>
+          {location.deleted_at && (
+            <p className="mt-1 text-[11px] text-slate-500">Deleted {formatUpdatedAt(location.deleted_at)}</p>
+          )}
+        </div>
       ),
     },
     { key: 'updated', header: 'Updated', value: (location) => location.updated_at, render: (location) => formatUpdatedAt(location.updated_at) },
@@ -474,16 +536,32 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
       searchable: false,
       render: (location) => (
         <div className="flex items-center">
-          <button
-            type="button"
-            onClick={() => openEdit(location)}
-            disabled={loadingEditId === location.id}
-            aria-label={`Edit ${location.location_code}`}
-            className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-          {getCoordinates(location) && (
+          {!location.deleted_at && (
+            <button
+              type="button"
+              onClick={() => openEdit(location)}
+              disabled={loadingEditId === location.id}
+              aria-label={`Edit ${location.location_code}`}
+              className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
+          {!location.deleted_at && (
+            <button
+              type="button"
+              onClick={() => void removeLocation(location)}
+              disabled={deletingId === location.id}
+              aria-label={`Delete ${location.location_code}`}
+              title="Delete location"
+              className="rounded-md p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+            >
+              {deletingId === location.id
+                ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+            </button>
+          )}
+          {!location.deleted_at && getCoordinates(location) && (
             <button
               type="button"
               onClick={() => {
@@ -508,7 +586,7 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="locations" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] py-6">
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-3">
           <p className="text-xs text-slate-500">Manage company sites, addresses, coordinates, and location status.</p>
         </div>
@@ -579,15 +657,26 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
           searchPlaceholder="Search code, name, company, or city"
           emptyMessage={isLoading ? 'Loading locations…' : 'No locations match your search.'}
           toolbar={(
-            <button
-              type="button"
-              onClick={openCreate}
-              disabled={isLoading || !companyId}
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Plus className="h-4 w-4" />
-              New location
-            </button>
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showDeleted}
+                  onChange={(event) => setShowDeleted(event.target.checked)}
+                  className="h-4 w-4 accent-indigo-600"
+                />
+                Show deleted
+              </label>
+              <button
+                type="button"
+                onClick={openCreate}
+                disabled={isLoading || !companyId}
+                className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                New location
+              </button>
+            </div>
           )}
         />
       </main>
@@ -612,7 +701,19 @@ export default function Locations({ employeeName, onNavigate, onLoggedOut }: Pro
                 <label className={labelClassName}>Company<select {...register('company_id')} className={inputClassName} disabled={Boolean(companyId)}><option value="">Select a company</option>{companies.filter((company) => !companyId || company.id === companyId).map((company) => <option key={company.id} value={company.id}>{company.company_code} — {company.legal_name}</option>)}</select><FieldError message={errors.company_id?.message} /></label>
                 <label className={labelClassName}>Location code<input {...register('location_code', { setValueAs: (value: string) => value.toUpperCase() })} className={inputClassName} /><FieldError message={errors.location_code?.message} /></label>
                 <label className={labelClassName}>Location name<input {...register('location_name')} className={inputClassName} /><FieldError message={errors.location_name?.message} /></label>
-                <label className={labelClassName}>Type<select {...register('location_type')} className={inputClassName}>{locationTypes.map((type) => <option key={type} value={type}>{type.replace('_', ' ')}</option>)}</select><FieldError message={errors.location_type?.message} /></label>
+                <label className={labelClassName}>Type<select {...register('location_type')} className={inputClassName}>
+                  <option value="">Select a location type</option>
+                  {editingLocation
+                    && !locationTypes.some((type) => (
+                      type.location_type === editingLocation.location_type && type.is_active
+                    ))
+                    && <option value={editingLocation.location_type}>{locationTypeLabel(editingLocation.location_type)} (inactive or unavailable)</option>}
+                  {locationTypes.filter((type) => type.is_active).map((type) => (
+                    <option key={type.location_type} value={type.location_type}>
+                      {type.display_name}
+                    </option>
+                  ))}
+                </select><FieldError message={errors.location_type?.message} /></label>
               </div>
             </section>
 

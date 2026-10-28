@@ -88,7 +88,7 @@ export default function ChangePassword({ employeeName, onNavigate, onLoggedOut }
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="change-password" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-xl py-8">
+      <main className="w-full px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-6 flex items-center gap-3">
           <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
             <KeyRound className="h-5 w-5" />
@@ -99,7 +99,7 @@ export default function ChangePassword({ employeeName, onNavigate, onLoggedOut }
           </div>
         </header>
 
-        <form onSubmit={submit} noValidate className="space-y-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <form onSubmit={submit} noValidate className="mx-auto max-w-xl space-y-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           {error && (
             <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>
           )}

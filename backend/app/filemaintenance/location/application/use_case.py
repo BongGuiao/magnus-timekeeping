@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -7,8 +8,10 @@ from sqlalchemy import func, select
 from app.core.generics.mapper import GenericMapper
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
+from app.filemaintenance.geofences.infrastructure.db_model import Geofence
 from app.filemaintenance.location.domain.entities.location import LocationEntity
 from app.filemaintenance.location.infrastructure.db_model import Location
+from app.filemaintenance.location.infrastructure.location_type_db_model import LocationType
 
 NCR_PSGC_REGION_CODE = "130000000"
 NCR_REGION_NAMES = {"NCR", "NATIONAL CAPITAL REGION"}
@@ -62,6 +65,51 @@ def _validate_ncr_district(location: LocationEntity) -> None:
         raise ValueError("Select an NCR district for this location.")
 
 
+async def _ensure_unique_location_code(
+    uow: GenUnitOfWork,
+    company_id: UUID,
+    location_code: str,
+    exclude_id: UUID | None = None,
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    query = select(Location.deleted_at).where(
+        Location.company_id == company_id,
+        Location.location_code == location_code,
+    )
+    if exclude_id is not None:
+        query = query.where(Location.id != exclude_id)
+    conflict = (await uow.session.execute(query.limit(1))).first()
+    if conflict is None:
+        return
+    if conflict[0] is not None:
+        raise ValueError(
+            f"Location code {location_code} belongs to a deleted location. Use a different code."
+        )
+    raise ValueError(f"Location code {location_code} already exists for this company.")
+
+
+async def _ensure_location_type_is_active(
+    uow: GenUnitOfWork,
+    company_id: UUID,
+    location_type: str,
+    *,
+    allow_inactive: bool = False,
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    type_is_active = await uow.session.scalar(
+        select(LocationType.is_active).where(
+            LocationType.company_id == company_id,
+            LocationType.location_type == location_type,
+        )
+    )
+    if type_is_active is None:
+        raise ValueError(f"Location type '{location_type}' is not configured for this company.")
+    if not type_is_active and not allow_inactive:
+        raise ValueError(f"Location type '{location_type}' is inactive and cannot be assigned.")
+
+
 class CreateLocationUseCase(BaseUseCase[LocationEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
@@ -69,10 +117,16 @@ class CreateLocationUseCase(BaseUseCase[LocationEntity]):
     async def _execute(self, payload: dict[str, Any]) -> LocationEntity:
         async with self.uow as uow:
             normalized = _normalize_payload(payload)
+            normalized.pop("deleted_at", None)
+            normalized.pop("deleted_by", None)
             entity = GenericMapper.to_entity(normalized, LocationEntity)
             if entity is None:
                 raise ValueError("Location details are required.")
             _validate_ncr_district(entity)
+            await _ensure_location_type_is_active(
+                uow, entity.company_id, entity.location_type
+            )
+            await _ensure_unique_location_code(uow, entity.company_id, entity.location_code)
             repo = uow.get_repo(LocationEntity, Location)
             created = await repo.add(normalized)
             return (await _include_geo_point_wkt(uow, [created]))[0]
@@ -95,10 +149,16 @@ class ListLocationsUseCase(BaseUseCase[list[LocationEntity]]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self, company_id: UUID | None = None) -> list[LocationEntity]:
+    async def _execute(
+        self,
+        company_id: UUID | None = None,
+        include_deleted: bool = False,
+    ) -> list[LocationEntity]:
         async with self.uow as uow:
             repo = uow.get_repo(LocationEntity, Location)
-            criteria = (Location.company_id == company_id,) if company_id else ()
+            criteria = [Location.company_id == company_id] if company_id else []
+            if not include_deleted:
+                criteria.append(Location.deleted_at.is_(None))
             locations = await repo.find_all(
                 *criteria,
                 order_by=Location.location_code,
@@ -118,9 +178,13 @@ class UpdateLocationUseCase(BaseUseCase[LocationEntity]):
             existing = await repo.find_one(Location.id == location_id)
             if existing is None:
                 raise ValueError("Location not found.")
+            if existing.deleted_at is not None:
+                raise ValueError("Deleted locations cannot be edited.")
 
             existing = (await _include_geo_point_wkt(uow, [existing]))[0]
             normalized = _normalize_payload(payload)
+            normalized.pop("deleted_at", None)
+            normalized.pop("deleted_by", None)
             entity_data = GenericMapper.to_entity(
                 {**existing.__dict__, **normalized},
                 LocationEntity,
@@ -128,6 +192,18 @@ class UpdateLocationUseCase(BaseUseCase[LocationEntity]):
             if entity_data is None:
                 raise ValueError("Location details are required.")
             _validate_ncr_district(entity_data)
+            await _ensure_location_type_is_active(
+                uow,
+                entity_data.company_id,
+                entity_data.location_type,
+                allow_inactive=(
+                    entity_data.company_id == existing.company_id
+                    and entity_data.location_type == existing.location_type
+                ),
+            )
+            await _ensure_unique_location_code(
+                uow, entity_data.company_id, entity_data.location_code, exclude_id=location_id
+            )
             entity_data.id = location_id
             changes = {
                 key: value
@@ -143,3 +219,57 @@ class UpdateLocationUseCase(BaseUseCase[LocationEntity]):
             )
             saved = await repo.update(updated)
             return (await _include_geo_point_wkt(uow, [saved]))[0]
+
+
+class DeleteLocationUseCase(BaseUseCase[LocationEntity]):
+    """Soft-deletes a location so records that reference it keep their history."""
+
+    def __init__(self, uow: GenUnitOfWork):
+        self.uow = uow
+
+    async def _execute(self, location_id: UUID, actor_id: UUID) -> LocationEntity:
+        async with self.uow as uow:
+            if uow.session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            location = (
+                await uow.session.execute(
+                    select(Location).where(Location.id == location_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if location is None:
+                raise ValueError("Location not found.")
+            if location.deleted_at is not None:
+                raise ValueError("This location is already deleted.")
+
+            active_geofence_codes = (
+                await uow.session.execute(
+                    select(Geofence.geofence_code)
+                    .where(
+                        Geofence.location_id == location_id,
+                        Geofence.deleted_at.is_(None),
+                    )
+                    .order_by(Geofence.geofence_code)
+                )
+            ).scalars().all()
+            if active_geofence_codes:
+                raise ValueError(
+                    "Delete the geofences linked to this location first: "
+                    + ", ".join(active_geofence_codes)
+                    + "."
+                )
+
+            now = datetime.now(timezone.utc)
+            location.deleted_at = now
+            location.deleted_by = actor_id
+            location.status = "DELETED"
+            location.is_active = False
+            location.updated_at = now
+            location.updated_by = actor_id
+            location.row_version = (location.row_version or 0) + 1
+            await uow.session.flush()
+
+            repo = uow.get_repo(LocationEntity, Location)
+            deleted = await repo.find_one(Location.id == location_id)
+            if deleted is None:
+                raise RuntimeError("Deleted location could not be reloaded.")
+            return (await _include_geo_point_wkt(uow, [deleted]))[0]

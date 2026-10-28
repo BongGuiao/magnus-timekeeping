@@ -15,6 +15,8 @@ class PayrollCutoffEntity:
     status: str = "SCHEDULED"
     locked_at: datetime | None = None
     locked_by: UUID | None = None
+    attendance_finalized_at: datetime | None = None
+    attendance_finalized_by: UUID | None = None
     calculation_version: str | None = None
     export_batch_id: UUID | None = None
     created_at: datetime | None = None

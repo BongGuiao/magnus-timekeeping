@@ -262,6 +262,22 @@ approve existing drafts or pending uploads. For a batch spanning multiple
 companies, approval is required if any included company requires it. Apply
 `backend/sql/20261024_add_schedule_assignment_approval_parameter.sql`.
 
+## Schedule-credited attendance
+
+Employee schedule assignments support an **Attendance mode** setting:
+**Punch required** remains the default, while **Schedule credited** credits
+scheduled work time without clock punches. For schedule-credited days, approved
+paid/unpaid leave and approved official business are counted separately and
+reduce the remaining scheduled-work minutes, preventing those minutes from
+being counted twice. Lateness, undertime, and absence caused only by missing
+punches are not recorded for this mode. Actual punch timestamps, when present,
+remain actual timestamps and are not fabricated for no-punch days.
+
+The mode is effective over the schedule assignment's existing date range.
+Changes remain subject to the configured schedule-approval policy and are
+audited. Existing assignments retain **Punch required** after applying
+`backend/sql/20261028_add_schedule_credited_attendance_mode.sql`.
+
 ## Payroll cutoff designation
 
 For a two-cutoff payroll group, explicitly mark each cutoff as **First cutoff**
@@ -274,6 +290,19 @@ this designation. Every-cutoff schedules do not require it.
 Existing cutoffs are left undesignated by the migration and must be assigned
 before calculating payroll when a first-half or second-half schedule applies.
 Apply `backend/sql/20261023_add_payroll_cutoff_half_designation.sql`.
+
+## Attendance finalization before payroll
+
+Attendance for a payroll cutoff must be calculated and reviewed in Attendance
+Detail before an HR administrator can finalize it. Finalization is available
+only after the cutoff's attendance deadline and requires the `attendance.finalize`
+permission. The finalization action records the actor and time; attendance changes
+and recalculation are then blocked, and payroll calculation remains unavailable
+until the cutoff is finalized. Payroll approval remains a separate action that
+locks the completed payroll. Apply
+`backend/sql/20261028_add_attendance_finalization_workflow.sql` before deploying.
+The migration treats cutoffs already locked or past their attendance deadline as
+finalized to preserve existing cutoff behavior.
 
 ## Employee loans
 

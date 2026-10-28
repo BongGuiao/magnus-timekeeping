@@ -33,3 +33,5 @@ class LocationEntity:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     row_version: int | None = None
+    deleted_at: datetime | None = None
+    deleted_by: UUID | None = None

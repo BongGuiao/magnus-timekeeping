@@ -37,6 +37,7 @@ function emptyAssignment(): AssignmentForm {
     schedule_template_id: '',
     rest_day_pattern_id: null,
     assignment_type: '',
+    attendance_mode: 'PUNCH_REQUIRED',
     effective_from: getManilaDate(),
     effective_to: null,
     reason: null,
@@ -156,6 +157,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
       schedule_template_id: item.schedule_template_id,
       rest_day_pattern_id: item.rest_day_pattern_id,
       assignment_type: item.assignment_type,
+      attendance_mode: item.attendance_mode,
       effective_from: item.effective_from,
       effective_to: item.effective_to,
       reason: item.reason,
@@ -262,7 +264,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
             <tr>
               <th className="px-3 py-2">Schedule template</th>
               <th className="px-3 py-2">Rest-day pattern</th>
-              <th className="px-3 py-2">Type / effective period</th>
+              <th className="px-3 py-2">Type / attendance / effective period</th>
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2"><span className="sr-only">Actions</span></th>
             </tr>
@@ -274,7 +276,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
               <tr key={item.id} className={editingId === item.id ? 'bg-indigo-50' : ''}>
                 <td className="px-3 py-2 font-semibold text-slate-900">{templateName(item.schedule_template_id)}</td>
                 <td className="px-3 py-2">{patternName(item.rest_day_pattern_id)}</td>
-                <td className="px-3 py-2"><p>{item.assignment_type}</p><p className="text-slate-500">{item.effective_from} → {item.effective_to ?? 'present'}</p></td>
+                <td className="px-3 py-2"><p>{item.assignment_type}</p><p>{item.attendance_mode === 'SCHEDULE_CREDITED' ? 'Schedule credited' : 'Punch required'}</p><p className="text-slate-500">{item.effective_from} → {item.effective_to ?? 'present'}</p></td>
                 <td className="px-3 py-2">
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${item.status === 'APPROVED' && item.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
                     {item.is_active ? item.status : `${item.status} (disabled)`}
@@ -323,6 +325,12 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
           </label>
           <label className={labelClassName}>Assignment type
             <input className={inputClassName} required maxLength={30} value={form.assignment_type} onChange={(event) => updateField('assignment_type', event.target.value)} placeholder="e.g. REGULAR" />
+          </label>
+          <label className={labelClassName}>Attendance mode
+            <select className={inputClassName} value={form.attendance_mode} onChange={(event) => updateField('attendance_mode', event.target.value === 'SCHEDULE_CREDITED' ? 'SCHEDULE_CREDITED' : 'PUNCH_REQUIRED')}>
+              <option value="PUNCH_REQUIRED">Punch required</option>
+              <option value="SCHEDULE_CREDITED">Schedule credited (no punch required)</option>
+            </select>
           </label>
           <label className={labelClassName}>Effective from
             <input className={inputClassName} type="date" required value={form.effective_from} onChange={(event) => updateField('effective_from', event.target.value)} />

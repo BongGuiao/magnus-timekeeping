@@ -6,6 +6,7 @@ from decimal import Decimal
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Numeric,
     String,
     UniqueConstraint,
@@ -18,6 +19,7 @@ from geoalchemy2 import Geography
 from app.core.database import Base
 # Registers the "CompanyModel" relationship target when this model is imported on its own.
 from app.filemaintenance.companies.infrastructure.db_model import CompanyModel  # noqa: F401
+from app.filemaintenance.location.infrastructure.location_type_db_model import LocationType  # noqa: F401
 
 class Location(Base):
     __tablename__ = "locations"
@@ -25,6 +27,13 @@ class Location(Base):
         # Multi-tenancy unique constraint
         UniqueConstraint("company_id", "location_code", name="uq_locations_company_code"),
         UniqueConstraint("company_id", "id", name="uq_locations_company_id_id"),
+        ForeignKeyConstraint(
+            ["company_id", "location_type"],
+            ["core.location_types.company_id", "core.location_types.location_type"],
+            name="fk_locations_location_type",
+            onupdate="RESTRICT",
+            ondelete="RESTRICT",
+        ),
         # Latitude validation: -90 to 90
         CheckConstraint(
             "latitude IS NULL OR (latitude >= -90 AND latitude <= 90)",
@@ -34,11 +43,6 @@ class Location(Base):
         CheckConstraint(
             "longitude IS NULL OR (longitude >= -180 AND longitude <= 180)",
             name="chk_locations_longitude_range",
-        ),
-        # Location type enum check constraint
-        CheckConstraint(
-            "location_type IN ('OFFICE', 'WAREHOUSE', 'DISPATCH', 'CUSTOMER', 'FIELD', 'FLEET_YARD', 'OTHER')",
-            name="chk_locations_type_valid",
         ),
         CheckConstraint(
             "(psgc_region_code IS NULL OR psgc_region_code ~ '^[0-9]{9}$') "
@@ -135,6 +139,12 @@ class Location(Base):
         onupdate=text("now()"),
     )
     updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
 

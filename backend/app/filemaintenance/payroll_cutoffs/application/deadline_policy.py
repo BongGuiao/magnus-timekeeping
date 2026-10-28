@@ -15,6 +15,7 @@ PH_TIMEZONE = ZoneInfo("Asia/Manila")
 class CutoffDeadlineSource(Protocol):
     cutoff_code: str
     attendance_deadline: datetime | None
+    attendance_finalized_at: datetime | None
 
 
 class CutoffDeadlineError(ValueError):
@@ -31,6 +32,8 @@ def validate_attendance_deadline(period_end: date, deadline: datetime | None) ->
 
 
 def is_cutoff_closed(cutoff: CutoffDeadlineSource, now: datetime | None = None) -> bool:
+    if getattr(cutoff, "attendance_finalized_at", None) is not None:
+        return True
     if getattr(cutoff, "locked_at", None) is not None:
         return True
     if str(getattr(cutoff, "status", "") or "").upper() == "LOCKED":
@@ -46,6 +49,11 @@ def require_cutoff_open(
     """Attendance covered by a lapsed or approved cutoff cannot be filed, changed or approved."""
     if cutoff is None or not is_cutoff_closed(cutoff, now):
         return
+    if getattr(cutoff, "attendance_finalized_at", None) is not None:
+        raise CutoffDeadlineError(
+            f"Attendance for payroll cutoff {cutoff.cutoff_code} has been finalized. "
+            "Attendance covered by this cutoff can no longer be changed."
+        )
     deadline = cutoff.attendance_deadline
     if deadline is not None and (now or datetime.now(timezone.utc)) > deadline:
         raise CutoffDeadlineError(

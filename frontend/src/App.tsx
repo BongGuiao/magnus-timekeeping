@@ -11,8 +11,10 @@ import ScheduleUploadApprovals from './pages/ScheduleUploadApprovals'
 import EmergencyScheduleApprovals from './pages/EmergencyScheduleApprovals'
 import Companies from './pages/Companies'
 import OrgUnits from './pages/OrgUnits'
+import OrgUnitTypes from './pages/OrgUnitTypes'
 import Employees from './pages/Employees'
 import Locations from './pages/Locations'
+import LocationTypes from './pages/LocationTypes'
 import Geofences from './pages/Geofences'
 import LeaveManagement from './pages/LeaveManagement'
 import Calendar from './pages/Calendar'
@@ -24,6 +26,7 @@ import OfficialBusiness from './pages/OfficialBusiness'
 import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
 import AttendanceDetailReport from './pages/AttendanceDetailReport'
+import OrgUnitAttendanceSummaryReport from './pages/OrgUnitAttendanceSummaryReport'
 import PayrollResultsReview from './pages/PayrollResultsReview'
 import PayrollManagementPage from './features/payroll/presentation/PayrollManagementPage'
 import StatutorySchedulesPage from './features/payroll/presentation/StatutorySchedulesPage'
@@ -40,6 +43,7 @@ import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
 import type { NavView } from './components/dashboard/TopNav'
 import { WorkspaceTabsProvider } from './components/dashboard/WorkspaceTabsContext'
+import ErrorBoundary from './components/common/ErrorBoundary'
 import { fetchCurrentAuthorization } from './lib/authApi'
 import {
   getSelectedDashboardRole,
@@ -52,7 +56,7 @@ const payrollUseCases = new PayrollUseCases(new HttpPayrollRepository())
 const offCyclePayrollUseCases = new OffCyclePayrollUseCases(new HttpOffCyclePayrollRepository())
 
 const navViews: NavView[] = [
-  'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-recalculation', 'companies', 'org-units', 'locations',
+  'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-org-unit-summary', 'attendance-recalculation', 'companies', 'org-units', 'org-unit-types', 'locations', 'location-types',
   'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
@@ -60,6 +64,19 @@ const navViews: NavView[] = [
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
 ]
+
+// Every open tab stays mounted (and keeps polling), so cap them to bound memory use.
+const MAX_OPEN_TABS = 8
+
+function limitOpenTabs(tabs: NavView[], activeView: NavView): NavView[] {
+  const next = [...tabs]
+  while (next.length > MAX_OPEN_TABS) {
+    const evictIndex = next.findIndex((tab) => tab !== 'dashboard' && tab !== activeView)
+    if (evictIndex === -1) break
+    next.splice(evictIndex, 1)
+  }
+  return next
+}
 
 function getStoredView(): NavView {
   const storedView = sessionStorage.getItem('active_view')
@@ -81,7 +98,7 @@ function getStoredTabs(): NavView[] {
           ...validTabs.filter((tab) => tab !== 'dashboard' && tab !== activeView),
           ...(activeView === 'dashboard' ? [] : [activeView]),
         ]
-        return restoredTabs
+        return limitOpenTabs(restoredTabs, activeView)
       }
     } catch {
       sessionStorage.removeItem('open_views')
@@ -149,7 +166,7 @@ function App() {
 
   function navigateTo(nextView: NavView) {
     setOpenViews((current) => {
-      const next = current.includes(nextView) ? current : [...current, nextView]
+      const next = current.includes(nextView) ? current : limitOpenTabs([...current, nextView], nextView)
       sessionStorage.setItem('open_views', JSON.stringify(next))
       return next
     })
@@ -231,10 +248,13 @@ function App() {
       attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
       'attendance-recalculation': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
       'attendance-detail-report': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+      'attendance-org-unit-summary': 'payroll.manage',
       'payroll-review': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
       companies: 'company.setup',
       'org-units': 'company.setup',
+      'org-unit-types': 'company.setup',
       locations: 'company.setup',
+      'location-types': 'company.setup',
       geofences: 'company.setup',
       employees: ['employees.read', 'employees.read_team'],
       'payroll-groups': 'payroll.manage',
@@ -298,6 +318,16 @@ function App() {
       )
     }
 
+    if (view === 'attendance-org-unit-summary') {
+      return (
+        <OrgUnitAttendanceSummaryReport
+          employeeName={employeeName}
+          onNavigate={navigateTo}
+          onLoggedOut={logout}
+        />
+      )
+    }
+
     if (view === 'attendance-recalculation') {
       return (
         <AttendanceRecalculation
@@ -332,8 +362,16 @@ function App() {
       return <OrgUnits employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
+    if (view === 'org-unit-types') {
+      return <OrgUnitTypes employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
     if (view === 'locations') {
       return <Locations employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'location-types') {
+      return <LocationTypes employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'geofences') {
@@ -520,7 +558,9 @@ function App() {
     >
       {openViews.map((openView) => (
         <div key={openView} hidden={openView !== view}>
-          {renderView(openView)}
+          <ErrorBoundary label={openView}>
+            {renderView(openView)}
+          </ErrorBoundary>
         </div>
       ))}
     </WorkspaceTabsProvider>

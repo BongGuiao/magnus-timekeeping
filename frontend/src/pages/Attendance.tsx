@@ -471,7 +471,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     <div className="scrollbar-hidden flex min-h-svh flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-slate-100">
       <TopNav employeeName={employeeName} activeView="attendance" onNavigate={onNavigate} onSignOut={logout} />
 
-      <main className="mx-auto flex min-h-max w-[95%] flex-none flex-col py-4">
+      <main className="flex min-h-max w-full flex-none flex-col px-4 py-4 sm:px-6 lg:px-8">
         <header className="mb-3 shrink-0">
           <p className="text-xs font-bold uppercase tracking-[0.15em] text-indigo-600">Time Clock</p>
           <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight text-slate-900">FACIAL RECOGNITION</h1>

@@ -35,6 +35,7 @@ class AttendanceFact:
     expected_clock_out_at: datetime | None = None
     clock_in_at: datetime | None = None
     clock_out_at: datetime | None = None
+    schedule_credited: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class ScheduledDayFact:
     expected_clock_in_at: datetime
     expected_clock_out_at: datetime
     scheduled_minutes: int
+    schedule_credited: bool = False
+    work_type: str = "REG"
+    day_type: str = "REG"
 
 
 @dataclass(frozen=True)
@@ -162,6 +166,9 @@ class EmployeeCutoffResultEntity:
     cutoff_code: str | None = None
     period_start: date | None = None
     period_end: date | None = None
+    operational_group: str | None = None
+    attendance_finalized_at: datetime | None = None
+    cutoff_locked_at: datetime | None = None
 
 
 def _hours_to_minutes(hours: float | None) -> int:
@@ -220,6 +227,26 @@ def _add_classified_minutes(
     setattr(totals, field_name, getattr(totals, field_name) + minutes)
 
 
+def _subtract_classified_minutes(
+    totals: EmployeeCutoffTotals,
+    minutes: int,
+    work_type: str,
+    day_type: str,
+) -> None:
+    minutes = max(minutes, 0)
+    day_type = day_type.upper()
+    work_type = work_type.upper()
+    if day_type in HOLIDAY_DAY_TYPES:
+        field_name = "holiday_minutes"
+    elif day_type in SPECIAL_DAY_TYPES:
+        field_name = "special_day_minutes"
+    elif work_type == "REST":
+        field_name = "rest_day_minutes"
+    else:
+        field_name = "regular_minutes"
+    setattr(totals, field_name, max(0, getattr(totals, field_name) - minutes))
+
+
 def calculate_employee_cutoff_totals(
     employee_ids: list[UUID],
     attendance: list[AttendanceFact],
@@ -240,6 +267,17 @@ def calculate_employee_cutoff_totals(
     )
     totals = {employee_id: EmployeeCutoffTotals(employee_id=employee_id) for employee_id in employee_ids}
     shifts_by_employee: dict[UUID, list[ShiftCoverage]] = {}
+    leave_minutes_by_date: dict[tuple[UUID, date], int] = {}
+    for leave in leaves:
+        for day in leave.days:
+            if leave.carry_forward or period_start <= day.leave_date <= period_end:
+                key = (leave.employee_id, day.leave_date)
+                leave_minutes_by_date[key] = leave_minutes_by_date.get(key, 0) + max(
+                    day.paid_minutes, 0
+                ) + max(day.unpaid_minutes, 0)
+    schedule_credited_minutes_by_date: dict[
+        tuple[UUID, date], tuple[int, str, str]
+    ] = {}
     for record in attendance:
         current = totals.get(record.employee_id)
         if current is None:
@@ -252,7 +290,23 @@ def calculate_employee_cutoff_totals(
                 current.scheduled_minutes_by_date.get(record.work_date, 0),
                 max(record.scheduled_minutes, 0),
             )
-        if record.is_absent:
+        schedule_credit_key = (record.employee_id, record.work_date)
+        if record.schedule_credited and requires_work and not record.is_absent:
+            leave_minutes = min(
+                max(record.scheduled_minutes, 0),
+                leave_minutes_by_date.get(schedule_credit_key, 0),
+            )
+            worked_minutes = max(record.scheduled_minutes - leave_minutes, 0)
+            schedule_credited_minutes_by_date[schedule_credit_key] = (
+                worked_minutes,
+                record.work_type,
+                record.day_type,
+            )
+            if worked_minutes > 0:
+                _add_classified_minutes(current, worked_minutes, record.work_type, record.day_type)
+            if record.late_minutes == 0 and record.undertime_minutes == 0 and worked_minutes > 0:
+                current.present_dates.add(record.work_date)
+        elif record.is_absent:
             if requires_work:
                 current.absence_minutes += max(record.scheduled_minutes, 0)
         else:
@@ -276,18 +330,34 @@ def calculate_employee_cutoff_totals(
             current.night_regular_minutes += (
                 min(night_minutes, worked_minutes) if requires_work else night_minutes
             )
-        current.late_minutes += max(record.late_minutes, 0)
-        current.undertime_minutes += max(record.undertime_minutes, 0)
+        if not record.schedule_credited:
+            current.late_minutes += max(record.late_minutes, 0)
+            current.undertime_minutes += max(record.undertime_minutes, 0)
         coverage = shift_coverage(
             work_date=record.work_date,
             expected_clock_in_at=record.expected_clock_in_at,
             expected_clock_out_at=record.expected_clock_out_at,
             required_minutes=record.scheduled_minutes,
-            credited_work_minutes=worked_minutes,
+            credited_work_minutes=(
+                min(
+                    max(record.scheduled_minutes, 0),
+                    leave_minutes_by_date.get(schedule_credit_key, 0),
+                )
+                if record.schedule_credited and not record.is_absent
+                else worked_minutes
+            ),
             work_type=record.work_type,
             day_type=record.day_type,
-            clock_in_at=None if record.is_absent else record.clock_in_at,
-            clock_out_at=None if record.is_absent else record.clock_out_at,
+            clock_in_at=(
+                None
+                if record.is_absent or record.schedule_credited
+                else record.clock_in_at
+            ),
+            clock_out_at=(
+                None
+                if record.is_absent or record.schedule_credited
+                else record.clock_out_at
+            ),
         )
         if coverage is not None:
             shifts_by_employee.setdefault(record.employee_id, []).append(coverage)
@@ -296,16 +366,51 @@ def calculate_employee_cutoff_totals(
     for day in scheduled_days or []:
         if day.employee_id not in totals or not period_start <= day.work_date <= period_end:
             continue
+        if not requires_scheduled_work(day.work_type, day.day_type):
+            continue
         coverage = shift_coverage(
             work_date=day.work_date,
             expected_clock_in_at=day.expected_clock_in_at,
             expected_clock_out_at=day.expected_clock_out_at,
             required_minutes=day.scheduled_minutes,
-            credited_work_minutes=0,
+            work_type=day.work_type,
+            day_type=day.day_type,
+            credited_work_minutes=(
+                min(
+                    max(day.scheduled_minutes, 0),
+                    leave_minutes_by_date.get((day.employee_id, day.work_date), 0),
+                )
+                if day.schedule_credited
+                else 0
+            ),
         )
         if coverage is not None:
             shifts_by_employee.setdefault(day.employee_id, []).append(coverage)
             unrecorded_minutes[(day.employee_id, day.work_date)] = max(day.scheduled_minutes, 0)
+        if day.schedule_credited:
+            current = totals[day.employee_id]
+            current.scheduled_dates.add(day.work_date)
+            current.scheduled_minutes_by_date[day.work_date] = max(
+                current.scheduled_minutes_by_date.get(day.work_date, 0),
+                max(day.scheduled_minutes, 0),
+            )
+            leave_minutes = min(
+                max(day.scheduled_minutes, 0),
+                leave_minutes_by_date.get((day.employee_id, day.work_date), 0),
+            )
+            credited_minutes = max(day.scheduled_minutes - leave_minutes, 0)
+            schedule_credited_minutes_by_date[(day.employee_id, day.work_date)] = (
+                credited_minutes,
+                day.work_type,
+                day.day_type,
+            )
+            if credited_minutes > 0:
+                _add_classified_minutes(
+                    current,
+                    credited_minutes,
+                    day.work_type,
+                    day.day_type,
+                )
 
     for leave in leaves:
         current = totals.get(leave.employee_id)
@@ -376,6 +481,25 @@ def calculate_employee_cutoff_totals(
         )
         current.official_business_minutes += sum(allocation.values())
         for work_date in allocation:
+            credited_schedule = schedule_credited_minutes_by_date.get(
+                (request.employee_id, work_date)
+            )
+            if credited_schedule is not None:
+                credited_work_minutes, work_type, day_type = credited_schedule
+                credited_ob_minutes = allocation[work_date]
+                _subtract_classified_minutes(
+                    current,
+                    credited_ob_minutes,
+                    work_type,
+                    day_type,
+                )
+                schedule_credited_minutes_by_date[(request.employee_id, work_date)] = (
+                    max(0, credited_work_minutes - credited_ob_minutes),
+                    work_type,
+                    day_type,
+                )
+                if credited_work_minutes > 0 or credited_ob_minutes > 0:
+                    current.present_dates.add(work_date)
             scheduled_minutes = unrecorded_minutes.get((request.employee_id, work_date))
             if scheduled_minutes is not None:
                 # A scheduled day without punches still requires its schedule.

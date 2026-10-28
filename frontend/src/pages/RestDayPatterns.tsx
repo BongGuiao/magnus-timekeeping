@@ -233,7 +233,7 @@ export default function RestDayPatterns({ employeeName, onNavigate, onLoggedOut 
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="rest-day-patterns" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-4 py-6">
+      <main className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-bold uppercase text-indigo-600">Work Rules</p>

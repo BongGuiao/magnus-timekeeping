@@ -486,6 +486,7 @@ class ScheduleDayConfiguration:
     work_type: str
     expected_clock_in_at: datetime | None
     expected_clock_out_at: datetime | None
+    attendance_mode: str = "PUNCH_REQUIRED"
     schedule_template_id: UUID | None = None
     grace_minutes: int = 0
     ot_eligible: bool = False
@@ -695,6 +696,7 @@ async def resolve_schedule_day(
             work_type="REST",
             expected_clock_in_at=None,
             expected_clock_out_at=None,
+            attendance_mode=assignment.attendance_mode if assignment is not None else "PUNCH_REQUIRED",
             schedule_context=schedule_context,
         )
 
@@ -768,6 +770,7 @@ async def resolve_schedule_day(
         work_type="REG",
         expected_clock_in_at=expected_start,
         expected_clock_out_at=expected_end,
+        attendance_mode=assignment.attendance_mode if assignment is not None else "PUNCH_REQUIRED",
         schedule_template_id=schedule_template_id,
         grace_minutes=template.grace_minutes,
         ot_eligible=template.ot_eligible,
@@ -776,6 +779,105 @@ async def resolve_schedule_day(
         schedule_context=schedule_context,
         early_clock_in_allowance_minutes=first_segment.flex_start_minutes,
     )
+
+
+async def resolve_attendance_day_type(
+    session: AsyncSession,
+    employee_id: UUID,
+    work_date: date,
+) -> str:
+    """Resolve the published holiday type at the employee's primary work location."""
+    row = (
+        await session.execute(
+            select(
+                EmploymentAssignmentModel.company_id,
+                LocationModel.region,
+                LocationModel.province,
+                LocationModel.city,
+                LocationModel.psgc_region_code,
+                LocationModel.psgc_province_code,
+                LocationModel.psgc_city_code,
+                LocationModel.ncr_district,
+            )
+            .outerjoin(
+                LocationModel,
+                LocationModel.id == EmploymentAssignmentModel.primary_location_id,
+            )
+            .where(
+                EmploymentAssignmentModel.employee_id == employee_id,
+                EmploymentAssignmentModel.is_active.is_(True),
+                EmploymentAssignmentModel.status == "ACTIVE",
+                EmploymentAssignmentModel.effective_from <= work_date,
+                or_(
+                    EmploymentAssignmentModel.effective_to.is_(None),
+                    EmploymentAssignmentModel.effective_to >= work_date,
+                ),
+            )
+            .order_by(EmploymentAssignmentModel.effective_from.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return "REG"
+    (
+        company_id,
+        region,
+        province,
+        city,
+        psgc_region_code,
+        psgc_province_code,
+        psgc_city_code,
+        ncr_district,
+    ) = row
+
+    location_scope = GeographicArea(
+        region=region,
+        province=province,
+        city=city,
+        psgc_region_code=psgc_region_code,
+        psgc_province_code=psgc_province_code,
+        psgc_city_code=psgc_city_code,
+        ncr_district=ncr_district,
+    )
+    holidays = (
+        await session.execute(
+            select(HolidayModel, HolidayCalendarModel)
+            .join(
+                HolidayCalendarModel,
+                HolidayCalendarModel.id == HolidayModel.holiday_calendar_id,
+            )
+            .where(
+                HolidayCalendarModel.company_id == company_id,
+                HolidayCalendarModel.effective_year == work_date.year,
+                HolidayCalendarModel.status == "PUBLISHED",
+                HolidayCalendarModel.is_active.is_(True),
+                HolidayModel.holiday_date == work_date,
+                HolidayModel.status == "ACTIVE",
+                HolidayModel.is_active.is_(True),
+            )
+        )
+    ).all()
+
+    best: str | None = None
+    best_rank = len(HOLIDAY_DAY_TYPE_PRIORITY)
+    for holiday, _ in holidays:
+        if not holiday_applies_to_location(
+            holiday.holiday_type,
+            holiday,
+            location_scope,
+        ):
+            continue
+        code = (
+            "DBL"
+            if holiday.is_double_holiday
+            else HOLIDAY_DAY_TYPES.get(holiday.holiday_type)
+        )
+        if code is None:
+            continue
+        rank = HOLIDAY_DAY_TYPE_PRIORITY.index(code)
+        if rank < best_rank:
+            best, best_rank = code, rank
+    return best or "REG"
 
 
 class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
@@ -1112,99 +1214,9 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         employee_id: UUID,
         work_date: date,
     ) -> str:
-        """Day type from the published holiday calendar; REG when no holiday applies.
-
-        Local holiday eligibility follows the assignment's primary work location,
-        not whichever authorized site accepted the punch.
-        """
         if uow.session is None:
             raise RuntimeError("UnitOfWork session is not active.")
-
-        row = (
-            await uow.session.execute(
-                select(
-                    EmploymentAssignmentModel.company_id,
-                    LocationModel.region,
-                    LocationModel.province,
-                    LocationModel.city,
-                    LocationModel.psgc_region_code,
-                    LocationModel.psgc_province_code,
-                    LocationModel.psgc_city_code,
-                    LocationModel.ncr_district,
-                )
-                .outerjoin(
-                    LocationModel,
-                    LocationModel.id == EmploymentAssignmentModel.primary_location_id,
-                )
-                .where(
-                    EmploymentAssignmentModel.employee_id == employee_id,
-                    EmploymentAssignmentModel.is_active.is_(True),
-                    EmploymentAssignmentModel.status == "ACTIVE",
-                    EmploymentAssignmentModel.effective_from <= work_date,
-                    or_(
-                        EmploymentAssignmentModel.effective_to.is_(None),
-                        EmploymentAssignmentModel.effective_to >= work_date,
-                    ),
-                )
-                .order_by(EmploymentAssignmentModel.effective_from.desc())
-                .limit(1)
-            )
-        ).first()
-        if row is None:
-            return "REG"
-        (
-            company_id,
-            region,
-            province,
-            city,
-            psgc_region_code,
-            psgc_province_code,
-            psgc_city_code,
-            ncr_district,
-        ) = row
-
-        location_scope = GeographicArea(
-            region=region,
-            province=province,
-            city=city,
-            psgc_region_code=psgc_region_code,
-            psgc_province_code=psgc_province_code,
-            psgc_city_code=psgc_city_code,
-            ncr_district=ncr_district,
-        )
-
-        holidays = (
-            await uow.session.execute(
-                select(HolidayModel, HolidayCalendarModel)
-                .join(HolidayCalendarModel, HolidayCalendarModel.id == HolidayModel.holiday_calendar_id)
-                .where(
-                    HolidayCalendarModel.company_id == company_id,
-                    HolidayCalendarModel.effective_year == work_date.year,
-                    HolidayCalendarModel.status == "PUBLISHED",
-                    HolidayCalendarModel.is_active.is_(True),
-                    HolidayModel.holiday_date == work_date,
-                    HolidayModel.status == "ACTIVE",
-                    HolidayModel.is_active.is_(True),
-                )
-            )
-        ).all()
-
-        best: str | None = None
-        best_rank = len(HOLIDAY_DAY_TYPE_PRIORITY)
-        for holiday, calendar in holidays:
-            if not holiday_applies_to_location(
-                holiday.holiday_type,
-                holiday,
-                location_scope,
-            ):
-                continue
-            code = "DBL" if holiday.is_double_holiday else HOLIDAY_DAY_TYPES.get(holiday.holiday_type)
-            if code is None:
-                continue
-            rank = HOLIDAY_DAY_TYPE_PRIORITY.index(code)
-            if rank < best_rank:
-                best, best_rank = code, rank
-        return best or "REG"
+        return await resolve_attendance_day_type(uow.session, employee_id, work_date)
 
     async def _resolve_schedule_day(
         self,

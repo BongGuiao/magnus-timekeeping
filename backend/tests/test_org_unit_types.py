@@ -1,7 +1,11 @@
 import unittest
 from uuid import uuid4
 
-from app.filemaintenance.org_unit.application.use_case import ListOrgUnitTypesUseCase
+from app.filemaintenance.org_unit.application.use_case import (
+    CreateOrgUnitUseCase,
+    ListOrgUnitsUseCase,
+    ListOrgUnitTypesUseCase,
+)
 from app.filemaintenance.org_unit.domain.entities.org_unit_type import OrgUnitTypeEntity
 from app.filemaintenance.org_unit.infrastructure.router import (
     OrgUnitTypeCreateSchema,
@@ -51,7 +55,45 @@ class ListOrgUnitTypesUseCaseTests(unittest.IsolatedAsyncioTestCase):
         result = await ListOrgUnitTypesUseCase(_FakeUnitOfWork(repository)).execute(company_id)
 
         self.assertEqual(result, values)
+        self.assertEqual(len(repository.criteria), 3)
+
+    async def test_can_include_inactive_types_for_management(self):
+        repository = _FakeRepository([])
+
+        await ListOrgUnitTypesUseCase(_FakeUnitOfWork(repository)).execute(uuid4(), True)
+
         self.assertEqual(len(repository.criteria), 2)
+
+    async def test_can_include_deleted_types_for_management(self):
+        repository = _FakeRepository([])
+
+        await ListOrgUnitTypesUseCase(_FakeUnitOfWork(repository)).execute(uuid4(), True, True)
+
+        self.assertEqual(len(repository.criteria), 1)
+
+
+class OrgUnitCreationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_org_units_cannot_be_created_as_deleted(self):
+        use_case = CreateOrgUnitUseCase(_FakeUnitOfWork(_FakeRepository([])))
+
+        with self.assertRaisesRegex(ValueError, "cannot be created as deleted"):
+            await use_case.execute({"status": "DELETED"})
+
+
+class ListOrgUnitsUseCaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_excludes_deleted_units_by_default(self):
+        repository = _FakeRepository([])
+
+        await ListOrgUnitsUseCase(_FakeUnitOfWork(repository)).execute(uuid4())
+
+        self.assertEqual(len(repository.criteria), 2)
+
+    async def test_can_include_deleted_units_for_management(self):
+        repository = _FakeRepository([])
+
+        await ListOrgUnitsUseCase(_FakeUnitOfWork(repository)).execute(uuid4(), True)
+
+        self.assertEqual(len(repository.criteria), 1)
 
 
 class OrgUnitTypeSchemaTests(unittest.TestCase):

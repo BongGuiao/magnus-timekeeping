@@ -42,3 +42,5 @@ class Geofence(Base):
     updated_by = Column(UUID(as_uuid=True), nullable=True)
     row_version = Column(Integer, nullable=False, server_default='1')
     is_active = Column(Boolean, nullable=False, server_default='true')
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_by = Column(UUID(as_uuid=True), nullable=True)

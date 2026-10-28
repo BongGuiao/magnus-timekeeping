@@ -822,7 +822,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     <div className="min-h-screen bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
-      <main className="mx-auto w-[95%] pt-6">
+      <main className="w-full px-4 pt-6 sm:px-6 lg:px-8">
         <HeroBanner employeeName={employeeName} role={role} />
         <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">

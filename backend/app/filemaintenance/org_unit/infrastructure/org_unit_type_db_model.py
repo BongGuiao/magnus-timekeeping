@@ -1,6 +1,7 @@
 from uuid import UUID
+from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,4 +29,10 @@ class OrgUnitType(Base):
         Boolean,
         nullable=False,
         server_default=text("true"),
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("identity.users.id"),
+        nullable=True,
     )

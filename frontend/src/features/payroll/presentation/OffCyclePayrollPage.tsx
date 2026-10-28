@@ -274,7 +274,7 @@ export default function OffCyclePayrollPage({
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="payroll-off-cycle" onNavigate={onNavigate} onSignOut={onLoggedOut} />
-      <main className="mx-auto w-[95%] max-w-7xl space-y-5 py-6">
+      <main className="w-full space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex items-start gap-3">
           <span className="mt-1 flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700">
             <Gift className="h-5 w-5" aria-hidden="true" />

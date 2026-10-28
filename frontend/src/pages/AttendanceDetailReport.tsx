@@ -1,13 +1,16 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useState, type FormEvent } from 'react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import {
+  finalizeAttendanceCutoff,
+  fetchAttendanceFinalizationCutoffs,
   fetchAttendanceDetailReport,
+  type AttendanceFinalizationCutoff,
   type AttendanceDetailReportFilters,
   type AttendanceDetailReportRecord,
 } from '../lib/attendanceReportApi'
-import { getSelectedDashboardRole } from '../types/role'
+import { getSelectedDashboardRole, hasAnyPermission, hasPermission } from '../types/role'
 
 interface Props {
   employeeName: string
@@ -64,6 +67,8 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
     : selectedRole === 'supervisor'
       ? 'team'
       : 'organization'
+  const canFinalizeAttendance = hasPermission('attendance.finalize')
+  const canReviewCutoffStatus = hasAnyPermission(['attendance.read_org', 'payroll.manage'])
   const [fromDate, setFromDate] = useState(defaultFrom)
   const [toDate, setToDate] = useState(defaultTo)
   const [employeeNo, setEmployeeNo] = useState(isEmployeeView ? employeeCode : '')
@@ -72,8 +77,15 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
     to_date: defaultTo,
     scope: reportScope,
     employee_no: isEmployeeView ? employeeCode : '',
+    cutoff_id: '',
   })
   const [records, setRecords] = useState<AttendanceDetailReportRecord[]>([])
+  const [attendanceCutoffs, setAttendanceCutoffs] = useState<AttendanceFinalizationCutoff[]>([])
+  const [selectedAttendanceCutoffId, setSelectedAttendanceCutoffId] = useState('')
+  const [finalizationLoading, setFinalizationLoading] = useState(false)
+  const [finalizationError, setFinalizationError] = useState<string | null>(null)
+  const [finalizationNotice, setFinalizationNotice] = useState<string | null>(null)
+  const [currentTime, setCurrentTime] = useState(Date.now())
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const daysWithPunches = records.filter((record) => record.clock_in_at && record.clock_out_at).length
@@ -90,6 +102,60 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
     (total, record) => total + record.late_minutes + record.undertime_minutes,
     0,
   )
+  const selectedAttendanceCutoff = attendanceCutoffs.find(
+    (cutoff) => cutoff.cutoff_id === selectedAttendanceCutoffId,
+  )
+  const attendanceDeadlinePassed = Boolean(
+    selectedAttendanceCutoff?.attendance_deadline
+      && currentTime > new Date(selectedAttendanceCutoff.attendance_deadline).getTime(),
+  )
+  const canFinalizeSelectedCutoff = Boolean(
+    selectedAttendanceCutoff
+      && !selectedAttendanceCutoff.attendance_finalized_at
+      && selectedAttendanceCutoff.attendance_deadline
+      && attendanceDeadlinePassed
+      && selectedAttendanceCutoff.attendance_result_count > 0,
+  )
+
+  useEffect(() => {
+    const timerId = window.setInterval(() => setCurrentTime(Date.now()), 30_000)
+    return () => window.clearInterval(timerId)
+  }, [])
+
+  useEffect(() => {
+    if (!canReviewCutoffStatus) return
+    let isCurrent = true
+    fetchAttendanceFinalizationCutoffs()
+      .then((cutoffs) => {
+        if (!isCurrent) return
+        setAttendanceCutoffs(cutoffs)
+        const selected = cutoffs[0]
+        setSelectedAttendanceCutoffId(selected?.cutoff_id ?? '')
+        if (selected) {
+          setFromDate(selected.period_start)
+          setToDate(selected.period_end)
+          setQuery({
+            from_date: selected.period_start,
+            to_date: selected.period_end,
+            scope: reportScope,
+            employee_no: '',
+            cutoff_id: selected.cutoff_id,
+          })
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (isCurrent) {
+          setFinalizationError(
+            loadError instanceof Error
+              ? loadError.message
+              : 'Could not load attendance cutoff status.',
+          )
+        }
+      })
+    return () => {
+      isCurrent = false
+    }
+  }, [canReviewCutoffStatus, reportScope])
 
   useEffect(() => {
     let isCurrent = true
@@ -120,7 +186,67 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
       to_date: toDate,
       scope: reportScope,
       employee_no: isEmployeeView ? employeeCode : employeeNo.trim(),
+      cutoff_id: selectedAttendanceCutoffId,
     })
+  }
+
+  function updateReportDate(field: 'from' | 'to', value: string) {
+    const nextFromDate = field === 'from' ? value : fromDate
+    const nextToDate = field === 'to' ? value : toDate
+    if (field === 'from') setFromDate(value)
+    else setToDate(value)
+
+    const matchingCutoff = attendanceCutoffs.find(
+      (cutoff) => cutoff.period_start === nextFromDate && cutoff.period_end === nextToDate,
+    )
+    setSelectedAttendanceCutoffId(matchingCutoff?.cutoff_id ?? '')
+  }
+
+  function selectFinalizationCutoff(cutoffId: string) {
+    setSelectedAttendanceCutoffId(cutoffId)
+    setFinalizationError(null)
+    setFinalizationNotice(null)
+    if (!cutoffId) return
+    const cutoff = attendanceCutoffs.find((item) => item.cutoff_id === cutoffId)
+    if (!cutoff) return
+    setFromDate(cutoff.period_start)
+    setToDate(cutoff.period_end)
+    setQuery({
+      from_date: cutoff.period_start,
+      to_date: cutoff.period_end,
+      scope: reportScope,
+      employee_no: '',
+      cutoff_id: cutoff.cutoff_id,
+    })
+  }
+
+  async function finalizeAttendance() {
+    if (!selectedAttendanceCutoff || !canFinalizeSelectedCutoff || !canFinalizeAttendance) return
+    setFinalizationLoading(true)
+    setFinalizationError(null)
+    setFinalizationNotice(null)
+    try {
+      const result = await finalizeAttendanceCutoff(selectedAttendanceCutoff.cutoff_id)
+      setAttendanceCutoffs((current) => current.map((cutoff) => (
+        cutoff.cutoff_id === result.cutoff_id
+          ? {
+            ...cutoff,
+            attendance_finalized_at: result.finalized_at,
+            attendance_finalized_by: result.finalized_by,
+            attendance_result_count: result.attendance_result_count,
+          }
+          : cutoff
+      )))
+      setFinalizationNotice(
+        `Attendance for ${selectedAttendanceCutoff.cutoff_code} is finalized. Payroll calculation can now proceed.`,
+      )
+    } catch (cause) {
+      setFinalizationError(
+        cause instanceof Error ? cause.message : 'Could not finalize attendance for this cutoff.',
+      )
+    } finally {
+      setFinalizationLoading(false)
+    }
   }
 
   return (
@@ -131,7 +257,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
         onNavigate={onNavigate}
         onSignOut={logout}
       />
-      <main className="mx-auto max-w-[1600px] px-4 py-8 sm:px-6 lg:px-8">
+      <main className="w-full px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Attendance Detail</h1>
           <p className="mt-1 text-sm text-slate-600">
@@ -143,6 +269,90 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
           </p>
         </header>
 
+        {(canReviewCutoffStatus || !canFinalizeAttendance) && (
+          <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-sm font-bold text-slate-900">Attendance cutoff finalization</h2>
+            <p className="mt-1 text-xs text-slate-600">
+              Review and calculate attendance results before finalizing. Finalized attendance cannot be changed;
+              payroll calculation is enabled only afterward.
+            </p>
+            {!canReviewCutoffStatus && (
+              <p className="mt-3 text-xs text-amber-800">
+                You can view attendance, but cutoff status and finalization are restricted to organization-level reviewers.
+              </p>
+            )}
+            {canReviewCutoffStatus && (
+              <div className="mt-3 flex flex-wrap items-end gap-3">
+              <label className="min-w-72 flex-1 text-sm font-medium text-slate-700">
+                Payroll cutoff
+                <select
+                  value={selectedAttendanceCutoffId}
+                  onChange={(event) => selectFinalizationCutoff(event.target.value)}
+                  disabled={attendanceCutoffs.length === 0 || finalizationLoading}
+                  className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                >
+                  <option value="">
+                    {attendanceCutoffs.length === 0 ? 'No active payroll cutoffs' : 'Custom date range'}
+                  </option>
+                  {attendanceCutoffs.map((cutoff) => (
+                      <option key={cutoff.cutoff_id} value={cutoff.cutoff_id}>
+                        {cutoff.cutoff_code} · {cutoff.payroll_group_name} · {cutoff.period_start} to {cutoff.period_end}
+                      </option>
+                  ))}
+                </select>
+              </label>
+              {selectedAttendanceCutoff && (
+                <div className="min-w-56 text-xs text-slate-600">
+                  <p>
+                    Status:{' '}
+                    <span className="font-semibold">
+                      {selectedAttendanceCutoff.attendance_finalized_at ? 'Attendance finalized' : 'Attendance open'}
+                    </span>
+                  </p>
+                  <p>Attendance results: {selectedAttendanceCutoff.attendance_result_count} employee(s)</p>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => void finalizeAttendance()}
+                disabled={
+                  !canFinalizeAttendance
+                  || !canFinalizeSelectedCutoff
+                  || finalizationLoading
+                }
+                title={
+                  !canFinalizeAttendance
+                    ? 'You do not have permission to finalize attendance.'
+                    : !selectedAttendanceCutoff?.attendance_deadline
+                      ? 'Set the cutoff attendance deadline first.'
+                      : !attendanceDeadlinePassed
+                        ? 'The attendance deadline must pass before finalization.'
+                        : selectedAttendanceCutoff.attendance_result_count === 0
+                          ? 'Calculate attendance results before finalization.'
+                          : selectedAttendanceCutoff.attendance_finalized_at
+                            ? 'Attendance is already finalized.'
+                            : undefined
+                }
+                className="rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {finalizationLoading ? 'Finalizing…' : 'Finalize attendance'}
+              </button>
+              </div>
+            )}
+            {!canFinalizeAttendance && (
+              <p className="mt-2 text-xs text-amber-800">
+                You can review cutoff status, but only users with attendance finalization permission can finalize it.
+              </p>
+            )}
+            {finalizationError && (
+              <p role="alert" className="mt-3 text-sm text-rose-700">{finalizationError}</p>
+            )}
+            {finalizationNotice && (
+              <p role="status" className="mt-3 text-sm text-emerald-700">{finalizationNotice}</p>
+            )}
+          </section>
+        )}
+
         <form
           onSubmit={runReport}
           className="mb-6 grid gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1.2fr_auto]"
@@ -153,7 +363,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
               type="date"
               required
               value={fromDate}
-              onChange={(event) => setFromDate(event.target.value)}
+              onChange={(event) => updateReportDate('from', event.target.value)}
               className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2"
             />
           </label>
@@ -163,7 +373,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
               type="date"
               required
               value={toDate}
-              onChange={(event) => setToDate(event.target.value)}
+              onChange={(event) => updateReportDate('to', event.target.value)}
               className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2"
             />
           </label>
@@ -267,11 +477,26 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {records.map((record) => (
-                  <tr
-                    key={record.attendance_id ?? `${record.employee_no}-${record.work_date}`}
-                    className={record.attendance_id ? 'align-top hover:bg-slate-50' : 'align-top bg-amber-50/50'}
-                  >
+                {records.map((record, index) => {
+                  const isNewEmployee = index === 0
+                    || records[index - 1].employee_no !== record.employee_no
+                  return (
+                    <Fragment key={`${record.employee_no}-${record.work_date}`}>
+                      {isNewEmployee && (
+                        <tr className="border-t-2 border-slate-300 bg-slate-100">
+                          <th
+                            colSpan={10}
+                            scope="rowgroup"
+                            className="px-4 py-2 text-left text-sm font-bold text-slate-800"
+                          >
+                            {record.employee_no} · {record.employee_name}
+                          </th>
+                        </tr>
+                      )}
+                      <tr
+                        key={record.attendance_id ?? `${record.employee_no}-${record.work_date}-record`}
+                        className={record.attendance_id ? 'align-top hover:bg-slate-50' : 'align-top bg-amber-50/50'}
+                      >
                     <td className="px-4 py-3 font-medium">
                       <div className="whitespace-nowrap">{formatReportDate(record.work_date)}</div>
                     </td>
@@ -298,15 +523,23 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                     </td>
                     <td className="px-4 py-3">
                       <div>
-                        {!record.attendance_id
-                          ? 'No punches'
-                          : record.is_absent
-                          ? 'Absent'
-                          : record.work_type === 'REST'
-                            ? 'Worked · Rest day'
-                            : record.day_type !== 'REG'
-                              ? `${record.work_type} · ${record.day_type}`
-                              : record.record_status}
+                        <div className={
+                          record.attendance_id && record.record_status !== 'VALID'
+                            ? 'font-semibold text-rose-700'
+                            : ''
+                        }>
+                          {record.attendance_mode === 'SCHEDULE_CREDITED'
+                            ? 'Schedule credited · no punch required'
+                            : !record.attendance_id
+                            ? 'No punches'
+                            : record.is_absent
+                            ? 'Absent'
+                            : record.work_type === 'REST'
+                              ? 'Worked · Rest day'
+                              : record.day_type !== 'REG'
+                                ? `${record.work_type} · ${record.day_type}`
+                                : record.record_status}
+                        </div>
                         {record.leave_applications.map((leave) => (
                           <div key={leave.application_no} className="mt-1">
                             <div className={`text-xs font-medium ${leave.status === 'APPROVED' ? 'text-emerald-700' : 'text-slate-600'}`}>
@@ -329,10 +562,18 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                           <div className="whitespace-nowrap">{formatHours(record.worked_minutes)} worked</div>
                         )}
                         {(record.late_minutes > 0 || record.undertime_minutes > 0) && (
-                          <div className="whitespace-nowrap text-xs text-slate-500">
-                            {record.late_minutes > 0 && `Late ${formatHours(record.late_minutes)}`}
+                          <div className="whitespace-nowrap text-xs">
+                            {record.late_minutes > 0 && (
+                              <span className="font-semibold text-rose-700">
+                                Late {formatHours(record.late_minutes)}
+                              </span>
+                            )}
                             {record.late_minutes > 0 && record.undertime_minutes > 0 && ' · '}
-                            {record.undertime_minutes > 0 && `Undertime ${formatHours(record.undertime_minutes)}`}
+                            {record.undertime_minutes > 0 && (
+                              <span className="font-semibold text-rose-700">
+                                Undertime {formatHours(record.undertime_minutes)}
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -342,19 +583,28 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                         {(record.regular_overtime_minutes > 0
                           || record.night_differential_overtime_minutes > 0) && (
                           <div className="whitespace-nowrap">
-                            {record.regular_overtime_minutes > 0
-                              && `Regular OT ${formatHours(record.regular_overtime_minutes)}`}
+                            {record.regular_overtime_minutes > 0 && (
+                              <span className="font-semibold text-emerald-700">
+                                Regular OT {formatHours(record.regular_overtime_minutes)}
+                              </span>
+                            )}
                             {record.regular_overtime_minutes > 0
                               && record.night_differential_overtime_minutes > 0
                               && ' · '}
-                            {record.night_differential_overtime_minutes > 0
-                              && `ND OT ${formatHours(record.night_differential_overtime_minutes)}`}
+                            {record.night_differential_overtime_minutes > 0 && (
+                              <span className="font-semibold text-emerald-700">
+                                ND OT {formatHours(record.night_differential_overtime_minutes)}
+                              </span>
+                            )}
                           </div>
                         )}
                         {(record.night_differential_minutes > 0 || approvedOvertimeMinutes(record) > 0) && (
                           <div className="whitespace-nowrap">
-                            {record.night_differential_minutes > 0
-                              && `Night diff ${formatHours(record.night_differential_minutes)}`}
+                            {record.night_differential_minutes > 0 && (
+                              <span className="font-semibold text-emerald-700">
+                                Night diff {formatHours(record.night_differential_minutes)}
+                              </span>
+                            )}
                             {record.night_differential_minutes > 0 && approvedOvertimeMinutes(record) > 0 && ' · '}
                             {approvedOvertimeMinutes(record) > 0 && (
                               <>
@@ -425,8 +675,10 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                           && '—'}
                       </div>
                     </td>
-                  </tr>
-                ))}
+                      </tr>
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>

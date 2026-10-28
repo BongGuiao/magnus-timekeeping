@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -59,6 +59,7 @@ async def _get_geofence(
 async def _list_geofences(
     uow: GenUnitOfWork,
     company_id: UUID | None,
+    include_deleted: bool = False,
 ) -> list[GeofenceEntity]:
     if uow.session is None:
         raise RuntimeError("UnitOfWork session is not active.")
@@ -70,6 +71,8 @@ async def _list_geofences(
     )
     if company_id is not None:
         query = query.where(Geofence.company_id == company_id)
+    if not include_deleted:
+        query = query.where(Geofence.deleted_at.is_(None))
     result = await uow.session.execute(
         query.order_by(Geofence.geofence_code).limit(1000)
     )
@@ -82,6 +85,32 @@ async def _list_geofences(
     return geofences
 
 
+async def _ensure_unique_geofence_code(
+    uow: GenUnitOfWork,
+    company_id: UUID | None,
+    geofence_code: str | None,
+    exclude_id: UUID | None = None,
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    if company_id is None or not geofence_code:
+        return
+    query = select(Geofence.deleted_at).where(
+        Geofence.company_id == company_id,
+        Geofence.geofence_code == geofence_code,
+    )
+    if exclude_id is not None:
+        query = query.where(Geofence.id != exclude_id)
+    conflict = (await uow.session.execute(query.limit(1))).first()
+    if conflict is None:
+        return
+    if conflict[0] is not None:
+        raise ValueError(
+            f"Geofence code {geofence_code} belongs to a deleted geofence. Use a different code."
+        )
+    raise ValueError(f"Geofence code {geofence_code} already exists for this company.")
+
+
 class CreateGeofenceUseCase(BaseUseCase[GeofenceEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
@@ -90,7 +119,13 @@ class CreateGeofenceUseCase(BaseUseCase[GeofenceEntity]):
         async with self.uow as uow:
             if uow.session is None:
                 raise RuntimeError("UnitOfWork session is not active.")
-            geofence = Geofence(**_normalize_payload(payload))
+            normalized = _normalize_payload(payload)
+            normalized.pop("deleted_at", None)
+            normalized.pop("deleted_by", None)
+            await _ensure_unique_geofence_code(
+                uow, normalized.get("company_id"), normalized.get("geofence_code")
+            )
+            geofence = Geofence(**normalized)
             uow.session.add(geofence)
             await uow.session.flush()
             await uow.session.refresh(geofence)
@@ -113,9 +148,13 @@ class ListGeofencesUseCase(BaseUseCase[list[GeofenceEntity]]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self, company_id: UUID | None = None) -> list[GeofenceEntity]:
+    async def _execute(
+        self,
+        company_id: UUID | None = None,
+        include_deleted: bool = False,
+    ) -> list[GeofenceEntity]:
         async with self.uow as uow:
-            return await _list_geofences(uow, company_id)
+            return await _list_geofences(uow, company_id, include_deleted)
 
 
 class UpdateGeofenceUseCase(BaseUseCase[GeofenceEntity]):
@@ -132,14 +171,24 @@ class UpdateGeofenceUseCase(BaseUseCase[GeofenceEntity]):
             geofence = result.scalar_one_or_none()
             if geofence is None:
                 raise ValueError("Geofence not found.")
+            if geofence.deleted_at is not None:
+                raise ValueError("Deleted geofences cannot be edited.")
 
             updates = _normalize_payload(payload)
+            await _ensure_unique_geofence_code(
+                uow,
+                updates.get("company_id", geofence.company_id),
+                updates.get("geofence_code", geofence.geofence_code),
+                exclude_id=geofence_id,
+            )
             for field, value in updates.items():
                 if field not in {
                     "id",
                     "created_at",
                     "created_by",
                     "row_version",
+                    "deleted_at",
+                    "deleted_by",
                 }:
                     setattr(geofence, field, value)
             geofence.row_version = (geofence.row_version or 0) + 1
@@ -149,3 +198,38 @@ class UpdateGeofenceUseCase(BaseUseCase[GeofenceEntity]):
             if updated is None:
                 raise RuntimeError("Updated geofence could not be reloaded.")
             return updated
+
+
+class DeleteGeofenceUseCase(BaseUseCase[GeofenceEntity]):
+    """Soft-deletes a geofence so punches and assignments that used it keep their history."""
+
+    def __init__(self, uow: GenUnitOfWork):
+        self.uow = uow
+
+    async def _execute(self, geofence_id: UUID, actor_id: UUID) -> GeofenceEntity:
+        async with self.uow as uow:
+            if uow.session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            geofence = (
+                await uow.session.execute(
+                    select(Geofence).where(Geofence.id == geofence_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if geofence is None:
+                raise ValueError("Geofence not found.")
+            if geofence.deleted_at is not None:
+                raise ValueError("This geofence is already deleted.")
+
+            now = datetime.now(timezone.utc)
+            geofence.deleted_at = now
+            geofence.deleted_by = actor_id
+            geofence.status = "DELETED"
+            geofence.is_active = False
+            geofence.updated_at = now
+            geofence.updated_by = actor_id
+            geofence.row_version = (geofence.row_version or 0) + 1
+            await uow.session.flush()
+            deleted = await _get_geofence(uow, geofence_id)
+            if deleted is None:
+                raise RuntimeError("Deleted geofence could not be reloaded.")
+            return deleted

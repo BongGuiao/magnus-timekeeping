@@ -601,6 +601,7 @@ function toCutoffOption(cutoff: PayrollCutoff): PayrollCutoffOption {
     periodStart: cutoff.period_start,
     periodEnd: cutoff.period_end,
     locked: Boolean(cutoff.locked_at) || cutoff.status.toUpperCase() === 'LOCKED',
+    attendanceFinalized: Boolean(cutoff.attendance_finalized_at),
   }
 }
 

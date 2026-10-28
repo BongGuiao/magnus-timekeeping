@@ -71,6 +71,15 @@ class PayrollCutoffModel(Base):
         ForeignKey("identity.users.id"),
         nullable=True,
     )
+    attendance_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    attendance_finalized_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("identity.users.id"),
+        nullable=True,
+    )
     calculation_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     export_batch_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

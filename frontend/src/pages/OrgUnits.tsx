@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Pencil, Plus } from 'lucide-react'
+import { LoaderCircle, Pencil, Plus, Trash2 } from 'lucide-react'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
 import FormModal from '../components/common/FormModal'
@@ -15,6 +15,7 @@ import { fetchCompanies } from '../lib/companyApi'
 import { fetchEmployees } from '../lib/employeeApi'
 import {
   createOrgUnit,
+  deleteOrgUnit,
   fetchOrgUnit,
   fetchOrgUnits,
   fetchOrgUnitTypes,
@@ -51,17 +52,21 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showDeleted, setShowDeleted] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
   useEffect(() => {
     let isCurrent = true
+    setIsLoading(true)
+    setErrorMessage('')
     setIsFormOpen(false)
     setEditingOrgUnit(null)
 
     Promise.allSettled([
       fetchCompanies(),
-      companyId ? fetchOrgUnits(companyId) : Promise.resolve([]),
+      companyId ? fetchOrgUnits(companyId, showDeleted) : Promise.resolve([]),
       fetchEmployees(),
       companyId ? fetchOrgUnitTypes(companyId) : Promise.resolve([]),
     ])
@@ -107,7 +112,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
     return () => {
       isCurrent = false
     }
-  }, [companyId])
+  }, [companyId, showDeleted])
 
   useEffect(() => {
     if (!successMessage) return
@@ -215,6 +220,28 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
     }
   }
 
+  async function removeOrgUnit(unit: OrgUnit) {
+    const confirmed = window.confirm(
+      `Delete organization unit ${unit.org_unit_code} — ${unit.org_unit_name}?\n\n`
+      + 'Historical employee assignments and records will be retained. Units with active child units cannot be deleted.',
+    )
+    if (!confirmed) return
+    setErrorMessage('')
+    setSuccessMessage('')
+    setDeletingId(unit.id)
+    try {
+      const deleted = await deleteOrgUnit(unit.id)
+      setOrgUnits((current) => showDeleted
+        ? current.map((item) => item.id === deleted.id ? deleted : item)
+        : current.filter((item) => item.id !== deleted.id))
+      setSuccessMessage(`Org unit ${deleted.org_unit_code} deleted. Its history is kept.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not delete the organization unit.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const columns: DataTableColumn<OrgUnit>[] = [
     {
       key: 'unit',
@@ -240,16 +267,18 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
     {
       key: 'status',
       header: 'Status',
-      value: (unit) => unit.status,
+      value: (unit) => unit.deleted_at ? 'DELETED' : unit.status,
       render: (unit) => (
         <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
-          unit.status === 'ACTIVE'
-            ? 'bg-emerald-50 text-emerald-700'
-            : unit.status === 'DRAFT'
-              ? 'bg-amber-50 text-amber-700'
-              : 'bg-slate-100 text-slate-600'
+          unit.deleted_at
+            ? 'bg-rose-50 text-rose-700'
+            : unit.status === 'ACTIVE'
+              ? 'bg-emerald-50 text-emerald-700'
+              : unit.status === 'DRAFT'
+                ? 'bg-amber-50 text-amber-700'
+                : 'bg-slate-100 text-slate-600'
         }`}>
-          {unit.status}
+          {unit.deleted_at ? 'DELETED' : unit.status}
         </span>
       ),
     },
@@ -260,9 +289,25 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
       sortable: false,
       searchable: false,
       render: (unit) => (
-        <button type="button" onClick={() => openEdit(unit)} disabled={loadingEditId === unit.id} aria-label={`Edit ${unit.org_unit_code}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
-          <Pencil className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {!unit.deleted_at && (
+            <>
+              <button type="button" onClick={() => openEdit(unit)} disabled={loadingEditId === unit.id} aria-label={`Edit ${unit.org_unit_code}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
+                <Pencil className="h-4 w-4" />
+              </button>
+              <button type="button" onClick={() => void removeOrgUnit(unit)} disabled={deletingId === unit.id} aria-label={`Delete ${unit.org_unit_code}`} className="rounded-md p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-50">
+                {deletingId === unit.id
+                  ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                  : <Trash2 className="h-4 w-4" />}
+              </button>
+            </>
+          )}
+          {unit.deleted_at && (
+            <span className="text-xs text-slate-500">
+              Deleted {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(unit.deleted_at))}
+            </span>
+          )}
+        </div>
       ),
     },
   ]
@@ -270,7 +315,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="org-units" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] py-6">
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-3">
           <p className="text-xs text-slate-500">Maintain company hierarchy, ownership, cost centers, and effective dates.</p>
         </div>
@@ -285,10 +330,21 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
           searchPlaceholder="Search code, name, company, or type"
           emptyMessage={isLoading ? 'Loading organization units…' : 'No organization units match your search.'}
           toolbar={(
-            <button type="button" onClick={openCreate} disabled={isLoading || !companyId} className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
-              <Plus className="h-4 w-4" />
-              New org unit
-            </button>
+            <div className="flex items-center gap-4">
+              <button type="button" onClick={openCreate} disabled={isLoading || !companyId} className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
+                <Plus className="h-4 w-4" />
+                New org unit
+              </button>
+              <label className="flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showDeleted}
+                  onChange={(event) => setShowDeleted(event.target.checked)}
+                  className="h-4 w-4 accent-indigo-600"
+                />
+                Show deleted
+              </label>
+            </div>
           )}
         />
       </main>
@@ -311,7 +367,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
               form={form}
               companies={companies}
               employees={employees}
-              orgUnits={orgUnits}
+              orgUnits={orgUnits.filter((unit) => !unit.deleted_at)}
               orgUnitTypes={orgUnitTypes}
               selectedCompanyId={companyId}
               editingId={editingOrgUnit?.id}

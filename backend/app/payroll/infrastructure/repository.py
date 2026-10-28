@@ -713,6 +713,7 @@ class SqlAlchemyPayrollRepository:
                 period_start=cutoff.period_start,
                 period_end=cutoff.period_end,
                 is_locked=cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED",
+                is_attendance_finalized=cutoff.attendance_finalized_at is not None,
                 payroll_group=PayrollGroupPolicy(
                     payroll_group_id=group.id,
                     rate_type=group.rate_type,
@@ -823,6 +824,10 @@ class SqlAlchemyPayrollRepository:
                 raise LookupError("Payroll cutoff not found.")
             if cutoff.locked_at is not None or cutoff.status.upper() == "LOCKED":
                 raise ValueError("A locked payroll cutoff cannot be recalculated.")
+            if cutoff.attendance_finalized_at is None:
+                raise ValueError(
+                    "Finalize attendance for this cutoff before calculating payroll."
+                )
             current_run = await session.scalars(
                 select(GrossPayRunModel)
                 .where(
@@ -1767,6 +1772,10 @@ class SqlAlchemyPayrollRepository:
             if approved_at <= cutoff.attendance_deadline:
                 raise ValueError(
                     "Payroll can be approved only after the cutoff's attendance deadline has passed."
+                )
+            if cutoff.attendance_finalized_at is None:
+                raise ValueError(
+                    "Finalize attendance for this cutoff before approving payroll."
                 )
 
             run = await session.scalar(

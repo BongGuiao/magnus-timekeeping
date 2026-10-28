@@ -55,7 +55,7 @@ export function toOrgUnitFormValues(orgUnit: OrgUnit): OrgUnitFormValues {
     cost_center_code: orgUnit.cost_center_code ?? '',
     effective_from: orgUnit.effective_from,
     effective_to: orgUnit.effective_to ?? '',
-    status: orgUnit.status,
+    status: orgUnit.status === 'DELETED' ? 'INACTIVE' : orgUnit.status,
     is_active: orgUnit.is_active,
   }
 }

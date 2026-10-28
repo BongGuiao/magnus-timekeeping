@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from elasticsearch import AsyncElasticsearch
@@ -46,6 +46,7 @@ class CreateEmployeeScheduleAssignmentSchema(BaseModel):
     schedule_template_id: UUID
     rest_day_pattern_id: UUID | None = None
     assignment_type: str = Field(min_length=1, max_length=30)
+    attendance_mode: Literal["PUNCH_REQUIRED", "SCHEDULE_CREDITED"] = "PUNCH_REQUIRED"
     effective_from: date
     effective_to: date | None = None
     reason: str | None = None
@@ -69,6 +70,7 @@ class UpdateEmployeeScheduleAssignmentSchema(BaseModel):
     schedule_template_id: UUID | None = None
     rest_day_pattern_id: UUID | None = None
     assignment_type: str | None = Field(default=None, min_length=1, max_length=30)
+    attendance_mode: Literal["PUNCH_REQUIRED", "SCHEDULE_CREDITED"] | None = None
     effective_from: date | None = None
     effective_to: date | None = None
     reason: str | None = None

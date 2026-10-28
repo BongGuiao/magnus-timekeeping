@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Pencil, Plus } from 'lucide-react'
+import { LoaderCircle, Pencil, Plus, Trash2 } from 'lucide-react'
 import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
@@ -10,7 +10,7 @@ import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import { fetchCompanies } from '../lib/companyApi'
-import { createGeofence, fetchGeofence, fetchGeofences, updateGeofence } from '../lib/geofenceApi'
+import { createGeofence, deleteGeofence, fetchGeofence, fetchGeofences, updateGeofence } from '../lib/geofenceApi'
 import type { GeofenceWritePayload } from '../lib/geofenceApi'
 import { fetchLocations } from '../lib/locationApi'
 import type { Company } from '../types/company'
@@ -132,6 +132,8 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [showDeleted, setShowDeleted] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
@@ -142,7 +144,7 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
     Promise.allSettled([
       fetchCompanies(),
       companyId ? fetchLocations(companyId) : Promise.resolve([]),
-      companyId ? fetchGeofences(companyId) : Promise.resolve([]),
+      companyId ? fetchGeofences(companyId, showDeleted) : Promise.resolve([]),
     ])
       .then(([companyResult, locationResult, geofenceResult]) => {
         if (!isCurrent) return
@@ -161,7 +163,7 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
     return () => {
       isCurrent = false
     }
-  }, [companyId])
+  }, [companyId, showDeleted])
 
   useEffect(() => {
     if (!successMessage) return
@@ -293,6 +295,28 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
     }
   }
 
+  async function removeGeofence(geofence: Geofence) {
+    const confirmed = window.confirm(
+      `Delete geofence ${geofence.geofence_code} — ${geofence.geofence_name}?\n\n`
+      + 'Employees can no longer clock in with it, but past attendance and requests that used it are kept.',
+    )
+    if (!confirmed) return
+    setErrorMessage('')
+    setSuccessMessage('')
+    setDeletingId(geofence.id)
+    try {
+      const deleted = await deleteGeofence(geofence.id)
+      setGeofences((current) => showDeleted
+        ? current.map((item) => item.id === deleted.id ? deleted : item)
+        : current.filter((item) => item.id !== deleted.id))
+      setSuccessMessage(`Geofence ${deleted.geofence_code} deleted. Its history is kept.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not delete the geofence.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const columns: DataTableColumn<Geofence>[] = [
     {
       key: 'geofence',
@@ -324,11 +348,18 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
       header: 'Status',
       value: (geofence) => geofence.status,
       render: (geofence) => (
-        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
-          geofence.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
-        }`}>
-          {geofence.status}
-        </span>
+        <div>
+          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
+            geofence.status === 'ACTIVE'
+              ? 'bg-emerald-50 text-emerald-700'
+              : geofence.status === 'DELETED' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {geofence.status}
+          </span>
+          {geofence.deleted_at && (
+            <p className="mt-1 text-[11px] text-slate-500">Deleted {formatDate(geofence.deleted_at)}</p>
+          )}
+        </div>
       ),
     },
     {
@@ -337,16 +368,30 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
       value: () => '',
       sortable: false,
       searchable: false,
-      render: (geofence) => (
-        <button
-          type="button"
-          onClick={() => openEdit(geofence)}
-          disabled={loadingEditId === geofence.id}
-          aria-label={`Edit ${geofence.geofence_code}`}
-          className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50"
-        >
-          <Pencil className="h-4 w-4" />
-        </button>
+      render: (geofence) => geofence.deleted_at ? null : (
+        <div className="flex items-center">
+          <button
+            type="button"
+            onClick={() => openEdit(geofence)}
+            disabled={loadingEditId === geofence.id}
+            aria-label={`Edit ${geofence.geofence_code}`}
+            className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50"
+          >
+            <Pencil className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void removeGeofence(geofence)}
+            disabled={deletingId === geofence.id}
+            aria-label={`Delete ${geofence.geofence_code}`}
+            title="Delete geofence"
+            className="rounded-md p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+          >
+            {deletingId === geofence.id
+              ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+              : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        </div>
       ),
     },
   ]
@@ -356,7 +401,7 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="geofences" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] py-6">
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-3">
           <p className="text-xs text-slate-500">Configure circle and polygon boundaries for attendance and operational rules.</p>
         </div>
@@ -371,15 +416,26 @@ export default function Geofences({ employeeName, onNavigate, onLoggedOut }: Pro
           searchPlaceholder="Search code, name, company, or type"
           emptyMessage={isLoading ? 'Loading geofences…' : 'No geofences match your search.'}
           toolbar={(
-            <button
-              type="button"
-              onClick={openCreate}
-              disabled={isLoading || !companyId}
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Plus className="h-4 w-4" />
-              New geofence
-            </button>
+            <div className="flex items-center gap-3">
+              <label className="inline-flex items-center gap-2 whitespace-nowrap text-xs font-semibold text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={showDeleted}
+                  onChange={(event) => setShowDeleted(event.target.checked)}
+                  className="h-4 w-4 accent-indigo-600"
+                />
+                Show deleted
+              </label>
+              <button
+                type="button"
+                onClick={openCreate}
+                disabled={isLoading || !companyId}
+                className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                New geofence
+              </button>
+            </div>
           )}
         />
       </main>

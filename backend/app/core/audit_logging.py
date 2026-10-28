@@ -29,7 +29,7 @@ def log_entity_change(
     *,
     entity_name: str,
     action: str,
-    entity_id: UUID | None,
+    entity_id: UUID | str | None,
     actor_id: UUID,
     before: EntityT | None,
     after: EntityT,

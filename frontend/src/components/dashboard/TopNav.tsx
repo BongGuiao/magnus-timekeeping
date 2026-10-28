@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Settings2,
   SlidersHorizontal,
+  Tags,
   Upload,
   UsersRound,
   Wallet,
@@ -44,6 +45,7 @@ export type NavView =
   | 'enrollment'
   | 'attendance'
   | 'attendance-detail-report'
+  | 'attendance-org-unit-summary'
   | 'attendance-recalculation'
   | 'my-schedule'
   | 'schedule-uploads'
@@ -51,7 +53,9 @@ export type NavView =
   | 'emergency-schedule-approvals'
   | 'companies'
   | 'org-units'
+  | 'org-unit-types'
   | 'locations'
+  | 'location-types'
   | 'geofences'
   | 'employees'
   | 'payroll-groups'
@@ -111,6 +115,8 @@ const payrollManagementViews: NavView[] = [
 
 const companyContextViews: NavView[] = [
   ...companySetupTabViews,
+  'org-unit-types',
+  'location-types',
   'payroll-statutory',
   'payroll-system-parameters',
   'payroll-groups',
@@ -141,13 +147,16 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   dashboard: LayoutDashboard,
   attendance: ClipboardCheck,
   'attendance-detail-report': ChartColumn,
+  'attendance-org-unit-summary': ChartColumn,
   'attendance-recalculation': RefreshCw,
   'my-schedule': CalendarDays,
   'schedule-uploads': Upload,
   'emergency-schedule-approvals': Clock3,
   companies: Building2,
   'org-units': Building2,
+  'org-unit-types': Tags,
   locations: MapPin,
+  'location-types': Tags,
   geofences: MapPinned,
   employees: UsersRound,
   'payroll-groups': UsersRound,
@@ -227,6 +236,11 @@ const navLinks: NavLink[] = [
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
       },
       {
+        label: 'Attendance Summary by Org Unit',
+        view: 'attendance-org-unit-summary',
+        permission: 'payroll.manage',
+      },
+      {
         label: 'Payroll Calculation Review',
         view: 'payroll-review',
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
@@ -250,8 +264,22 @@ const navLinks: NavLink[] = [
             label: 'Organization',
             children: [
               { label: 'Companies', view: 'companies', permission: 'company.setup' },
-              { label: 'Org Units', view: 'org-units', permission: 'company.setup' },
-              { label: 'Locations', view: 'locations', permission: 'company.setup' },
+              {
+                label: 'Org Units',
+                view: 'org-units',
+                permission: 'company.setup',
+                children: [
+                  { label: 'Org Unit Types', view: 'org-unit-types', permission: 'company.setup' },
+                ],
+              },
+              {
+                label: 'Locations',
+                view: 'locations',
+                permission: 'company.setup',
+                children: [
+                  { label: 'Location Types', view: 'location-types', permission: 'company.setup' },
+                ],
+              },
               { label: 'Geofences', view: 'geofences', permission: 'company.setup' },
             ],
           },
@@ -524,6 +552,8 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                       || (link.label === 'Payroll' && payrollManagementViews.includes(activeView))
                       || (link.label === 'Settings' && (
                         companySetupTabViews.includes(activeView)
+                        || activeView === 'org-unit-types'
+                        || activeView === 'location-types'
                         || activeView === 'payroll-statutory'
                         || activeView === 'payroll-system-parameters'
                       ))
@@ -560,11 +590,16 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                                 {section.label}
                               </h3>
                               {section.children?.map((setupLink) => (
+                                <div key={setupLink.label}>
                                 <button
-                                  key={setupLink.label}
                                   type="button"
                                   onClick={() => navigateTo(setupLink.view)}
-                                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-semibold transition-colors ${setupLink.view === activeView ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-900 hover:bg-white hover:text-indigo-700'}`}
+                                  aria-current={setupLink.view === activeView ? 'page' : undefined}
+                                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm font-semibold transition-colors ${
+                                    setupLink.view === activeView || setupLink.children?.some((child) => child.view === activeView)
+                                      ? 'bg-indigo-100 text-indigo-700 shadow-sm'
+                                      : 'text-slate-900 hover:bg-white hover:text-indigo-700'
+                                  }`}
                                 >
                                   {(() => {
                                     const Icon = iconForLink(setupLink)
@@ -572,6 +607,22 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                                   })()}
                                   {setupLink.label}
                                 </button>
+                                {setupLink.children?.map((subLink) => (
+                                  <button
+                                    key={subLink.label}
+                                    type="button"
+                                    onClick={() => navigateTo(subLink.view)}
+                                    aria-current={subLink.view === activeView ? 'page' : undefined}
+                                    className={`ml-6 flex w-[calc(100%-1.5rem)] items-center gap-2 rounded-lg border-l-2 px-2 py-1.5 text-left text-xs font-semibold transition-colors ${
+                                      subLink.view === activeView
+                                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                                        : 'border-slate-200 text-slate-600 hover:border-indigo-300 hover:bg-white hover:text-indigo-700'
+                                    }`}
+                                  >
+                                    {subLink.label}
+                                  </button>
+                                ))}
+                                </div>
                               ))}
                             </div>
                           ))}
@@ -758,20 +809,39 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                             </h3>
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                               {section.children?.map((link) => (
-                                <button
-                                  key={link.label}
-                                  type="button"
-                                  onClick={() => navigateTo(link.view)}
-                                  className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
-                                    link.view === activeView ? 'bg-indigo-50 text-indigo-700' : 'text-slate-900 hover:bg-slate-50'
-                                  }`}
-                                >
-                                  {(() => {
-                                    const Icon = iconForLink(link)
-                                    return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
-                                  })()}
-                                  {link.label}
-                                </button>
+                                <div key={link.label} className={link.children?.length ? 'col-span-full' : undefined}>
+                                  <button
+                                    type="button"
+                                    onClick={() => navigateTo(link.view)}
+                                    aria-current={link.view === activeView ? 'page' : undefined}
+                                    className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                                      link.view === activeView || link.children?.some((child) => child.view === activeView)
+                                        ? 'bg-indigo-50 text-indigo-700'
+                                        : 'text-slate-900 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    {(() => {
+                                      const Icon = iconForLink(link)
+                                      return Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null
+                                    })()}
+                                    {link.label}
+                                  </button>
+                                  {link.children?.map((child) => (
+                                    <button
+                                      key={child.label}
+                                      type="button"
+                                      onClick={() => navigateTo(child.view)}
+                                      aria-current={child.view === activeView ? 'page' : undefined}
+                                      className={`ml-6 flex min-h-9 w-[calc(100%-1.5rem)] items-center rounded-lg border-l-2 px-3 py-1.5 text-left text-xs font-semibold transition ${
+                                        child.view === activeView
+                                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                                          : 'border-slate-200 text-slate-600 hover:border-indigo-300 hover:bg-slate-50 hover:text-indigo-700'
+                                      }`}
+                                    >
+                                      {child.label}
+                                    </button>
+                                  ))}
+                                </div>
                               ))}
                             </div>
                           </section>

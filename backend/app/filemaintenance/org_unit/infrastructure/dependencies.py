@@ -4,6 +4,8 @@ from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.org_unit.application.use_case import (
     CreateOrgUnitUseCase,
     CreateOrgUnitTypeUseCase,
+    DeleteOrgUnitTypeUseCase,
+    DeleteOrgUnitUseCase,
     GetOrgUnitTypeUseCase,
     GetOrgUnitUseCase,
     ListOrgUnitsUseCase,
@@ -11,6 +13,12 @@ from app.filemaintenance.org_unit.application.use_case import (
     UpdateOrgUnitTypeUseCase,
     UpdateOrgUnitUseCase,
 )
+
+
+def get_delete_org_unit_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> DeleteOrgUnitUseCase:
+    return DeleteOrgUnitUseCase(uow)
 
 
 def get_create_org_unit_use_case(
@@ -59,3 +67,9 @@ def get_update_org_unit_type_use_case(
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ) -> UpdateOrgUnitTypeUseCase:
     return UpdateOrgUnitTypeUseCase(uow)
+
+
+def get_delete_org_unit_type_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> DeleteOrgUnitTypeUseCase:
+    return DeleteOrgUnitTypeUseCase(uow)

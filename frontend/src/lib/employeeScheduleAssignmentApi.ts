@@ -8,6 +8,7 @@ export interface EmployeeScheduleAssignment {
   schedule_template_id: string
   rest_day_pattern_id: string | null
   assignment_type: string
+  attendance_mode: 'PUNCH_REQUIRED' | 'SCHEDULE_CREDITED'
   effective_from: string
   effective_to: string | null
   reason: string | null
@@ -27,6 +28,7 @@ export interface EmployeeScheduleAssignmentPayload {
   schedule_template_id: string
   rest_day_pattern_id: string | null
   assignment_type: string
+  attendance_mode: 'PUNCH_REQUIRED' | 'SCHEDULE_CREDITED'
   effective_from: string
   effective_to: string | null
   reason: string | null

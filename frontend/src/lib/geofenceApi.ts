@@ -5,7 +5,7 @@ import type { Geofence } from '../types/geofence'
 
 export type GeofenceWritePayload = Omit<
   Geofence,
-  'id' | 'created_at' | 'created_by' | 'updated_at' | 'updated_by' | 'row_version'
+  'id' | 'created_at' | 'created_by' | 'updated_at' | 'updated_by' | 'row_version' | 'deleted_at' | 'deleted_by'
 >
 
 function rethrowApiError(error: unknown, fallback: string): never {
@@ -16,11 +16,12 @@ function rethrowApiError(error: unknown, fallback: string): never {
   throw error
 }
 
-export async function fetchGeofences(companyId?: string): Promise<Geofence[]> {
+export async function fetchGeofences(companyId?: string, includeDeleted = false): Promise<Geofence[]> {
   try {
-    const response = await apiClient.get<ApiSuccessEnvelope<Geofence[]>>('/geofences/list', {
-      params: companyId ? { company_id: companyId } : undefined,
-    })
+    const params: Record<string, string | boolean> = {}
+    if (companyId) params.company_id = companyId
+    if (includeDeleted) params.include_deleted = true
+    const response = await apiClient.get<ApiSuccessEnvelope<Geofence[]>>('/geofences/list', { params })
     const geofences = response.data?.data
     if (!Array.isArray(geofences)) {
       throw new Error('The geofences API returned an invalid response.')
@@ -58,5 +59,14 @@ export async function updateGeofence(geofenceId: string, payload: GeofenceWriteP
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not update the geofence.')
+  }
+}
+
+export async function deleteGeofence(geofenceId: string): Promise<Geofence> {
+  try {
+    const response = await apiClient.delete<ApiSuccessEnvelope<Geofence>>(`/geofences/${geofenceId}`)
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not delete the geofence.')
   }
 }

@@ -27,3 +27,5 @@ class GeofenceEntity:
     row_version: int = 1
     is_active: bool = True
     id: UUID | None = None
+    deleted_at: datetime | None = None
+    deleted_by: UUID | None = None

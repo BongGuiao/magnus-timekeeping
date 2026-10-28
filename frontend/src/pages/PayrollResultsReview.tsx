@@ -52,7 +52,7 @@ function ResultTable({ rows }: { rows: EmployeeCutoffResult[] }) {
             <th className="px-3 py-3">Night regular</th>
             <th className="px-3 py-3">Night OT</th>
             <th className="px-3 py-3">Exceptions</th>
-            <th className="px-3 py-3">Payroll</th>
+            <th className="px-3 py-3">Cutoff status</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -87,7 +87,13 @@ function ResultTable({ rows }: { rows: EmployeeCutoffResult[] }) {
                 <td className="px-3 py-3">{formatMinutes(row.night_regular_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.night_ot_minutes)}</td>
                 <td className="px-3 py-3">{row.exception_count}</td>
-                <td className="px-3 py-3">{row.payroll_status}</td>
+                <td className="px-3 py-3">
+                  {row.cutoff_locked_at
+                    ? 'Payroll locked'
+                    : row.attendance_finalized_at
+                      ? 'Attendance finalized'
+                      : 'Attendance open'}
+                </td>
               </tr>
             )
           })}
@@ -111,8 +117,48 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
       ? 'My team’s calculations'
       : 'Organization calculations'
   const [results, setResults] = useState<EmployeeCutoffResult[]>([])
+  const [selectedCutoffId, setSelectedCutoffId] = useState('latest')
+  const [selectedGroup, setSelectedGroup] = useState('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const cutoffs = Array.from(
+    new Map(
+      results.map((row) => [
+        row.cutoff_id,
+        {
+          id: row.cutoff_id,
+          code: row.cutoff_code || row.cutoff_id,
+          periodStart: row.period_start,
+          periodEnd: row.period_end,
+        },
+      ]),
+    ).values(),
+  ).sort((left, right) => (right.periodEnd ?? '').localeCompare(left.periodEnd ?? ''))
+  const operationalGroups = Array.from(
+    new Map(
+      results
+        .filter(
+          (row): row is EmployeeCutoffResult & { operational_group: string } =>
+            row.operational_group !== null,
+        )
+        .map((row) => [
+          row.operational_group,
+          { id: row.operational_group, name: row.operational_group },
+        ]),
+    ).values(),
+  ).sort((left, right) => left.name.localeCompare(right.name))
+  const effectiveCutoffId = selectedCutoffId === 'latest'
+    ? cutoffs[0]?.id ?? 'all'
+    : selectedCutoffId
+  const filteredResults = results.filter((row) => (
+    (effectiveCutoffId === 'all' || row.cutoff_id === effectiveCutoffId)
+    && (
+      reportScope === 'own'
+      || selectedGroup === 'all'
+      || row.operational_group === selectedGroup
+    )
+  ))
 
   const loadResults = useCallback(async () => {
     setLoading(true)
@@ -124,6 +170,8 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
           ? await fetchMyTeamPayrollCutoffResults()
           : await fetchOrganizationPayrollCutoffResults()
       setResults(data)
+      setSelectedCutoffId('latest')
+      setSelectedGroup('all')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not load payroll results for review.')
     } finally {
@@ -138,7 +186,7 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
   return (
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="payroll-review" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
+      <main className="flex w-full flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-xl font-bold text-slate-900">Payroll Calculation Review</h1>
@@ -157,9 +205,43 @@ export default function PayrollResultsReview({ employeeName, onNavigate, onLogge
           <div className="border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-bold text-slate-900">{scopeTitle}</h2>
             <p className="text-xs text-slate-500">View-only cutoff totals. Raise corrections with HR before the cutoff's attendance deadline.</p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                Cut-off
+                <select
+                  value={effectiveCutoffId}
+                  onChange={(event) => setSelectedCutoffId(event.target.value)}
+                  disabled={cutoffs.length === 0}
+                  className="min-w-56 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                >
+                  <option value="all">All cut-offs</option>
+                  {cutoffs.map((cutoff) => (
+                    <option key={cutoff.id} value={cutoff.id}>
+                      {cutoff.code} ({cutoff.periodStart ?? '—'} to {cutoff.periodEnd ?? '—'})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {reportScope !== 'own' && (
+                <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                  Group
+                  <select
+                    value={selectedGroup}
+                    onChange={(event) => setSelectedGroup(event.target.value)}
+                    disabled={operationalGroups.length === 0}
+                    className="min-w-56 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
+                  >
+                    <option value="all">All groups</option>
+                    {operationalGroups.map((group) => (
+                      <option key={group.id} value={group.id}>{group.name}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
           </div>
           {loading ? <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading results…</p> : (
-            <ResultTable rows={results} />
+            <ResultTable rows={filteredResults} />
           )}
         </section>
       </main>

@@ -60,7 +60,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
     <div className="scrollbar-hidden flex h-svh flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-slate-100 md:overflow-hidden">
       <TopNav employeeName={employeeName} activeView="enrollment" onNavigate={onNavigate} onSignOut={logout} />
 
-      <main className="mx-auto flex min-h-max w-[95%] max-w-3xl flex-none flex-col py-4 md:min-h-0 md:flex-1">
+      <main className="flex min-h-max w-full flex-none flex-col px-4 py-4 sm:px-6 lg:px-8 md:min-h-0 md:flex-1">
         <header className="mb-3 shrink-0">
           <p className="text-xs font-bold uppercase tracking-[0.15em] text-indigo-600">Biometrics</p>
           <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight text-slate-900">Face ID Enrollment</h1>

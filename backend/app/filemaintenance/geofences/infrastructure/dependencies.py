@@ -3,10 +3,17 @@ from fastapi import Depends
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.geofences.application.use_case import (
     CreateGeofenceUseCase,
+    DeleteGeofenceUseCase,
     GetGeofenceUseCase,
     ListGeofencesUseCase,
     UpdateGeofenceUseCase,
 )
+
+
+def get_delete_geofence_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> DeleteGeofenceUseCase:
+    return DeleteGeofenceUseCase(uow)
 
 
 def get_create_geofence_use_case(

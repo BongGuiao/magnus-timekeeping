@@ -183,7 +183,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="overtime-application" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="mx-auto w-[95%] max-w-6xl space-y-5 py-6">
+      <main className="w-full space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Employee self-service</p>

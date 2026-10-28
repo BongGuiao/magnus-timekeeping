@@ -189,6 +189,129 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
         self.assertEqual(totals[0].night_regular_minutes, 450)
         self.assertEqual(totals[0].ordinary_ot_minutes, 60)
 
+    def test_schedule_credited_day_splits_work_leave_and_official_business(self) -> None:
+        employee_id = uuid4()
+        timezone = ZoneInfo("Asia/Manila")
+        work_date = date(2026, 10, 8)
+        totals = calculate_employee_cutoff_totals(
+            employee_ids=[employee_id],
+            attendance=[],
+            leaves=[
+                LeaveFact(
+                    employee_id=employee_id,
+                    start_at=datetime(2026, 10, 8, 8, tzinfo=timezone),
+                    end_at=datetime(2026, 10, 8, 10, tzinfo=timezone),
+                    paid_minutes=60,
+                    unpaid_minutes=60,
+                    days=(LeaveDayFact(work_date, 60, 60),),
+                )
+            ],
+            overtime=[],
+            official_business=[
+                OfficialBusinessFact(
+                    employee_id,
+                    datetime(2026, 10, 8, 13, tzinfo=timezone),
+                    datetime(2026, 10, 8, 15, tzinfo=timezone),
+                    120,
+                )
+            ],
+            exceptions=[],
+            period_start=work_date,
+            period_end=work_date,
+            scheduled_days=[
+                ScheduledDayFact(
+                    employee_id,
+                    work_date,
+                    datetime(2026, 10, 8, 8, tzinfo=timezone),
+                    datetime(2026, 10, 8, 17, tzinfo=timezone),
+                    480,
+                    schedule_credited=True,
+                )
+            ],
+        )
+
+        self.assertEqual(totals[0].required_work_minutes, 480)
+        self.assertEqual(totals[0].regular_minutes, 240)
+        self.assertEqual(totals[0].paid_leave_minutes, 60)
+        self.assertEqual(totals[0].unpaid_leave_minutes, 60)
+        self.assertEqual(totals[0].official_business_minutes, 120)
+        self.assertEqual(totals[0].absence_minutes, 0)
+        self.assertEqual(totals[0].late_minutes, 0)
+        self.assertEqual(totals[0].undertime_minutes, 0)
+        self.assertEqual(totals[0].paid_days, 1)
+
+    def test_schedule_credited_attendance_ignores_punch_tardiness_and_undertime(self) -> None:
+        employee_id = uuid4()
+        totals = calculate_employee_cutoff_totals(
+            employee_ids=[employee_id],
+            attendance=[
+                AttendanceFact(
+                    employee_id=employee_id,
+                    work_date=date(2026, 10, 1),
+                    is_absent=False,
+                    approved_hours_worked=6,
+                    approved_night_diff=0,
+                    scheduled_minutes=480,
+                    work_type="REG",
+                    day_type="REG",
+                    late_minutes=45,
+                    undertime_minutes=75,
+                    schedule_credited=True,
+                )
+            ],
+            leaves=[],
+            overtime=[],
+            official_business=[],
+            exceptions=[],
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 15),
+        )
+
+        self.assertEqual(totals[0].regular_minutes, 480)
+        self.assertEqual(totals[0].late_minutes, 0)
+        self.assertEqual(totals[0].undertime_minutes, 0)
+        self.assertEqual(totals[0].absence_minutes, 0)
+
+    def test_schedule_credited_days_respect_holiday_work_requirements_and_type(self) -> None:
+        employee_id = uuid4()
+        timezone = ZoneInfo("Asia/Manila")
+        totals = calculate_employee_cutoff_totals(
+            employee_ids=[employee_id],
+            attendance=[],
+            leaves=[],
+            overtime=[],
+            official_business=[],
+            exceptions=[],
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 2),
+            scheduled_days=[
+                ScheduledDayFact(
+                    employee_id,
+                    date(2026, 10, 1),
+                    datetime(2026, 10, 1, 8, tzinfo=timezone),
+                    datetime(2026, 10, 1, 17, tzinfo=timezone),
+                    480,
+                    schedule_credited=True,
+                    day_type="RH",
+                ),
+                ScheduledDayFact(
+                    employee_id,
+                    date(2026, 10, 2),
+                    datetime(2026, 10, 2, 8, tzinfo=timezone),
+                    datetime(2026, 10, 2, 17, tzinfo=timezone),
+                    480,
+                    schedule_credited=True,
+                    day_type="SWH",
+                ),
+            ],
+        )
+
+        self.assertEqual(totals[0].scheduled_days, 1)
+        self.assertEqual(totals[0].required_work_minutes, 480)
+        self.assertEqual(totals[0].regular_minutes, 0)
+        self.assertEqual(totals[0].special_day_minutes, 480)
+        self.assertEqual(totals[0].holiday_minutes, 0)
+
     def test_maps_rest_holiday_night_overtime_and_exception_totals(self) -> None:
         employee_id = uuid4()
         totals = calculate_employee_cutoff_totals(

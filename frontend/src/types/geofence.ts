@@ -20,4 +20,6 @@ export interface Geofence {
   updated_by: string | null
   row_version: number
   is_active: boolean
+  deleted_at?: string | null
+  deleted_by?: string | null
 }

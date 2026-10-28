@@ -31,6 +31,7 @@ export interface PayrollCutoffOption {
   periodStart: string
   periodEnd: string
   locked: boolean
+  attendanceFinalized?: boolean
 }
 
 export interface EmployeeCompensation {

@@ -1,4 +1,4 @@
-export type OrgUnitStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE'
+export type OrgUnitStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE' | 'DELETED'
 
 export interface OrgUnit {
   id: string
@@ -18,4 +18,6 @@ export interface OrgUnit {
   updated_by: string | null
   row_version: number
   is_active: boolean
+  deleted_at?: string | null
+  deleted_by?: string | null
 }
