@@ -27,7 +27,11 @@ export async function fetchOperationalGroups(companyId: string, includeInactive 
     const response = await apiClient.get<ApiSuccessEnvelope<OperationalGroup[]>>('/operational-groups/list', {
       params: { company_id: companyId, include_inactive: includeInactive },
     })
-    return response.data.data
+    const groups = response.data?.data
+    if (!Array.isArray(groups)) {
+      throw new Error('Invalid operational groups response: expected a JSON list. Check the deployed backend and Nginx API routing.')
+    }
+    return groups
   } catch (error) {
     return rethrowApiError(error, 'Could not load operational groups.')
   }

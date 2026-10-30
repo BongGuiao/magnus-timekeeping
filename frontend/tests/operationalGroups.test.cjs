@@ -74,6 +74,27 @@ test('unexpected errors are not disguised as empty lookup lists', async () => {
   await assert.rejects(api.fetchOperationalGroups('company-a'), (error) => error === failure)
 })
 
+test('invalid API responses surface a routing error instead of crashing the table', async () => {
+  for (const body of [
+    '<!doctype html><html></html>',
+    {},
+    { data: null },
+    { data: {} },
+  ]) {
+    const { api } = loadApi({ get: async () => ({ data: body }) })
+    await assert.rejects(
+      api.fetchOperationalGroups('company-a'),
+      /Invalid operational groups response.*JSON list.*API routing/,
+    )
+  }
+})
+
+test('an empty operational groups list is a valid response', async () => {
+  const groups = []
+  const { api } = loadApi({ get: async () => ({ data: { data: groups } }) })
+  assert.equal(await api.fetchOperationalGroups('company-a'), groups)
+})
+
 test('both nginx environments and Vite proxy the new API prefix', () => {
   for (const parts of [['nginx', 'dev.conf'], ['nginx', 'default.conf'], ['frontend', 'vite.config.ts']]) {
     const source = readFileSync(join(__dirname, '..', '..', ...parts), 'utf8')

@@ -34,6 +34,15 @@ No database migration is needed; deploy backend and frontend together.
 
 ## Operational groups
 
+Deploy the updated Nginx configuration with the frontend and backend:
+`operational-groups` must be included in the backend API routing allowlist.
+Test the configuration inside `nginx_proxy` with `nginx -t`, then reload it
+with `nginx -s reload`. An unauthenticated request to
+`/operational-groups/list?company_id=00000000-0000-0000-0000-000000000000`
+should receive an authentication error from the API, not HTTP 200 with HTML.
+HTML means the request is falling through to the frontend. The lookup reports
+an explicit response error instead of passing invalid data to the table.
+
 Under Company Setup, Operational Groups manages company-specific group codes,
 display names, sort order, and active status using the existing `company.setup`
 permission. Codes are immutable; deactivate rather than delete a group.
