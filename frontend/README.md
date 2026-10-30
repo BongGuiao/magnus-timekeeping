@@ -45,8 +45,33 @@ an explicit response error instead of passing invalid data to the table.
 
 Under Company Setup, Operational Groups manages company-specific group codes,
 display names, sort order, and active status using the existing `company.setup`
-permission. Codes are immutable; deactivate rather than delete a group.
+permission. Codes are immutable and remain reserved after deletion.
+Delete is a soft delete: the record, deletion timestamp and deleting user are
+retained, and existing employee assignments keep their original group code.
+Deleted groups are excluded from normal lookups and cannot be newly assigned.
+Editing an existing assignment can retain the same deleted group in the same
+company. Use **Show deleted** to view deleted groups and **Restore** to recover
+one. Restored groups are inactive until explicitly reactivated through Edit.
+Delete, Restore, and metadata updates use the existing `company.setup`
+permission and audit logging.
 New companies start with no groups; add the groups they need in this page.
+
+### Deploying soft delete to an existing installation
+
+Back up the database first. After the original operational groups migration,
+apply `backend/sql/20261030_soft_delete_operational_groups.sql` **once**, or use
+Alembic revision `d9a0123e4f56` instead (not both). Do not rerun the original
+table-creation script. The new migration only adds nullable deletion metadata;
+it does not delete groups or change employment assignments.
+
+On the production Linux server, from the project directory:
+
+```bash
+docker cp ./backend/sql/20261030_soft_delete_operational_groups.sql postgres_db:/tmp/soft_delete_operational_groups.sql &&
+docker exec postgres_db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/soft_delete_operational_groups.sql'
+```
+
+Confirm `COMMIT`, then deploy the updated backend and frontend together.
 
 Employment Assignments loads its dropdown from `GET /operational-groups/list`
 for the selected company. Inactive groups cannot be newly assigned, but an

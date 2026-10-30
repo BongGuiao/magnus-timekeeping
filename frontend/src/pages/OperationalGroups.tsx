@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Pencil, Plus } from 'lucide-react'
+import { Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
@@ -9,7 +9,10 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import { useLogout } from '../hooks/useLogout'
-import { createOperationalGroup, fetchOperationalGroups, updateOperationalGroup } from '../lib/operationalGroupApi'
+import {
+  createOperationalGroup, deleteOperationalGroup, fetchOperationalGroups,
+  restoreOperationalGroup, updateOperationalGroup,
+} from '../lib/operationalGroupApi'
 import type { OperationalGroup } from '../lib/operationalGroupApi'
 
 interface Props {
@@ -48,11 +51,13 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
+  const [showDeleted, setShowDeleted] = useState(false)
+  const [changingCode, setChangingCode] = useState<string | null>(null)
 
   useEffect(() => {
     let isCurrent = true
     if (companyId) {
-      fetchOperationalGroups(companyId, true)
+      fetchOperationalGroups(companyId, true, showDeleted)
         .then((items) => { if (isCurrent) setGroups(items) })
         .catch((error: unknown) => {
           if (isCurrent) setErrorMessage(error instanceof Error ? error.message : 'Could not load operational groups.')
@@ -60,7 +65,7 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
         .finally(() => { if (isCurrent) setIsLoading(false) })
     }
     return () => { isCurrent = false }
-  }, [companyId, reloadKey])
+  }, [companyId, reloadKey, showDeleted])
 
   useEffect(() => {
     if (!successMessage) return
@@ -73,6 +78,32 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
     setSuccessMessage('')
     setEditingGroup(group)
     setIsFormOpen(true)
+  }
+
+  async function changeDeletedState(group: OperationalGroup) {
+    const restoring = Boolean(group.deleted_at)
+    if (!restoring && !window.confirm(
+      `Delete operational group "${group.display_name}"? Existing assignments and history will be preserved.`,
+    )) return
+    setChangingCode(group.operational_group)
+    setErrorMessage('')
+    setSuccessMessage('')
+    try {
+      const saved = restoring
+        ? await restoreOperationalGroup(companyId, group.operational_group)
+        : await deleteOperationalGroup(companyId, group.operational_group)
+      setGroups((current) => current.flatMap((item) => {
+        if (item.operational_group !== saved.operational_group) return [item]
+        return saved.deleted_at && !showDeleted ? [] : [saved]
+      }))
+      setSuccessMessage(restoring
+        ? `Operational group ${saved.operational_group} restored as inactive. Edit it to reactivate.`
+        : `Operational group ${saved.operational_group} deleted. Existing assignments and history were preserved.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not change the operational group.')
+    } finally {
+      setChangingCode(null)
+    }
   }
 
   async function saveGroup(values: GroupFormValues) {
@@ -109,14 +140,26 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
     { key: 'code', header: 'Group code', value: (group) => group.operational_group },
     { key: 'name', header: 'Display name', value: (group) => group.display_name },
     { key: 'order', header: 'Order', value: (group) => group.sort_order },
-    { key: 'status', header: 'Status', value: (group) => group.is_active ? 'Active' : 'Inactive' },
+    { key: 'status', header: 'Status', value: (group) => group.deleted_at ? 'Deleted' : group.is_active ? 'Active' : 'Inactive' },
+    { key: 'deleted', header: 'Deleted at', value: (group) => group.deleted_at ?? '' },
     {
       key: 'actions', header: '', value: () => '', sortable: false, searchable: false,
       render: (group) => (
-        <button type="button" onClick={() => openForm(group)} aria-label={`Edit ${group.display_name}`}
-          className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700">
-          <Pencil className="h-4 w-4" aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-1">
+          {!group.deleted_at && (
+            <button type="button" onClick={() => openForm(group)} aria-label={`Edit ${group.display_name}`}
+              disabled={changingCode !== null}
+              className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
+              <Pencil className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+          <button type="button" onClick={() => void changeDeletedState(group)}
+            disabled={changingCode !== null || isFormOpen}
+            aria-label={`${group.deleted_at ? 'Restore' : 'Delete'} ${group.display_name}`}
+            className="rounded-md p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50">
+            {group.deleted_at ? <RotateCcw className="h-4 w-4" aria-hidden="true" /> : <Trash2 className="h-4 w-4" aria-hidden="true" />}
+          </button>
+        </div>
       ),
     },
   ]
@@ -126,8 +169,8 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
       <TopNav employeeName={employeeName} activeView="operational-groups" onNavigate={onNavigate} onSignOut={logout} />
       <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <p className="mb-3 text-xs text-slate-500">
-          Manage operational groups for the selected company. Codes cannot be changed or deleted.
-          Deactivate groups to prevent new assignments; existing assignments keep their group.
+          Manage operational groups for the selected company. Codes cannot be changed or reused.
+          Delete hides a group from new assignments while preserving existing assignments and history. Deleted groups can be restored.
         </p>
         {errorMessage && !isFormOpen && (
           <div role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -145,10 +188,21 @@ function CompanyOperationalGroups({ companyId, employeeName, onNavigate, onLogge
           <DataTable columns={columns} rows={groups} getRowKey={(group) => group.operational_group}
             emptyMessage={isLoading ? 'Loading operational groups...' : 'No operational groups for this company.'}
             toolbar={(
-              <button type="button" onClick={() => openForm(null)} disabled={isLoading}
+              <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <input type="checkbox" checked={showDeleted} disabled={changingCode !== null || isFormOpen}
+                  onChange={(event) => {
+                    setShowDeleted(event.target.checked)
+                    setGroups([])
+                    setIsLoading(true)
+                    setErrorMessage('')
+                  }} /> Show deleted
+              </label>
+              <button type="button" onClick={() => openForm(null)} disabled={isLoading || changingCode !== null}
                 className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
                 <Plus className="h-4 w-4" /> Add operational group
               </button>
+              </div>
             )} />
         )}
       </main>

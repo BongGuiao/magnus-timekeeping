@@ -30,9 +30,12 @@ test('lookup requests active groups for the selected company and accepts custom 
   assert.equal(request[0], '/operational-groups/list')
   assert.equal(request[1].params.company_id, 'company-a')
   assert.equal(request[1].params.include_inactive, false)
+  assert.equal(request[1].params.include_deleted, false)
   await api.fetchOperationalGroups('company-b', true)
   assert.equal(request[1].params.company_id, 'company-b')
   assert.equal(request[1].params.include_inactive, true)
+  await api.fetchOperationalGroups('company-b', true, true)
+  assert.equal(request[1].params.include_deleted, true)
 })
 
 test('creation returns the saved group and refreshes open assignment lookups', async () => {
@@ -93,6 +96,30 @@ test('an empty operational groups list is a valid response', async () => {
   const groups = []
   const { api } = loadApi({ get: async () => ({ data: { data: groups } }) })
   assert.equal(await api.fetchOperationalGroups('company-a'), groups)
+})
+
+test('delete and restore use company-scoped endpoints and refresh assignment lookups', async () => {
+  const requests = []
+  const group = { operational_group: 'ARCHIVE', is_active: false, deleted_at: '2026-10-30T12:00:00Z' }
+  const { api, events } = loadApi({
+    delete: async (...args) => { requests.push(args); return { data: { data: group } } },
+    post: async (...args) => { requests.push(args); return { data: { data: { ...group, deleted_at: null } } } },
+  })
+  assert.equal(await api.deleteOperationalGroup('company-a', 'ARCHIVE'), group)
+  assert.equal(requests[0][0], '/operational-groups/ARCHIVE')
+  assert.equal(requests[0][1].params.company_id, 'company-a')
+  assert.equal((await api.restoreOperationalGroup('company-a', 'ARCHIVE')).deleted_at, null)
+  assert.equal(requests[1][0], '/operational-groups/ARCHIVE/restore')
+  assert.equal(requests[1][2].params.company_id, 'company-a')
+  assert.deepEqual(events, [api.OPERATIONAL_GROUPS_CHANGED_EVENT, api.OPERATIONAL_GROUPS_CHANGED_EVENT])
+})
+
+test('failed delete and restore surface errors without sending success events', async () => {
+  const reject = async () => { throw new axios.AxiosError('failed', 'ERR_BAD_REQUEST', {}, {}, { status: 409, data: { detail: 'Conflict.' } }) }
+  const { api, events } = loadApi({ delete: reject, post: reject })
+  await assert.rejects(api.deleteOperationalGroup('company-a', 'ARCHIVE'), /Conflict/)
+  await assert.rejects(api.restoreOperationalGroup('company-a', 'ARCHIVE'), /Conflict/)
+  assert.deepEqual(events, [])
 })
 
 test('both nginx environments and Vite proxy the new API prefix', () => {

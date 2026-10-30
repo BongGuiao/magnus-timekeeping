@@ -13,10 +13,12 @@ from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.router import _get_user_id, _require_email
 from app.filemaintenance.operational_groups.application.use_case import (
     CreateOperationalGroupUseCase,
+    DeleteOperationalGroupUseCase,
     ListOperationalGroupsUseCase,
     OperationalGroupConflictError,
     OperationalGroupNotFoundError,
     UpdateOperationalGroupUseCase,
+    RestoreOperationalGroupUseCase,
 )
 from app.filemaintenance.operational_groups.domain.entities.operational_group import OperationalGroupEntity
 
@@ -55,15 +57,24 @@ def get_update_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> Updat
     return UpdateOperationalGroupUseCase(uow)
 
 
+def get_delete_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> DeleteOperationalGroupUseCase:
+    return DeleteOperationalGroupUseCase(uow)
+
+
+def get_restore_use_case(uow: GenUnitOfWork = Depends(get_unit_of_work)) -> RestoreOperationalGroupUseCase:
+    return RestoreOperationalGroupUseCase(uow)
+
+
 @router.get("/list", response_model=ResponseEnvelope[list[OperationalGroupEntity]])
 async def list_operational_groups(
     company_id: UUID = Query(...),
     include_inactive: bool = Query(False),
+    include_deleted: bool = Query(False),
     claims: dict[str, Any] = Depends(get_current_user_claims),
     use_case: ListOperationalGroupsUseCase = Depends(get_list_use_case),
 ):
     _require_email(claims)
-    result = await use_case.execute(company_id, include_inactive)
+    result = await use_case.execute(company_id, include_inactive, include_deleted)
     return ResponseEnvelope(status="success", data=result)
 
 
@@ -109,8 +120,62 @@ async def update_operational_group(
         before, result = await use_case.execute(company_id, code.strip().upper(), payload.model_dump(mode="python"))
     except OperationalGroupNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except OperationalGroupConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await log_entity_action(
         es_client, user_id=user_id, action="UPDATE", resource="operational_group",
+        resource_id=f"{company_id}:{result.operational_group}", before=before, after=result,
+    )
+    return ResponseEnvelope(status="success", data=result)
+
+
+@router.delete(
+    "/{code}",
+    response_model=ResponseEnvelope[OperationalGroupEntity],
+    dependencies=[Depends(require_permission("company.setup"))],
+)
+async def delete_operational_group(
+    code: str,
+    company_id: UUID = Query(...),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: DeleteOperationalGroupUseCase = Depends(get_delete_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    user_id = _get_user_id(claims)
+    try:
+        before, result = await use_case.execute(company_id, code.strip().upper(), user_id)
+    except OperationalGroupNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except OperationalGroupConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await log_entity_action(
+        es_client, user_id=user_id, action="DELETE", resource="operational_group",
+        resource_id=f"{company_id}:{result.operational_group}", before=before, after=result,
+    )
+    return ResponseEnvelope(status="success", data=result)
+
+
+@router.post(
+    "/{code}/restore",
+    response_model=ResponseEnvelope[OperationalGroupEntity],
+    dependencies=[Depends(require_permission("company.setup"))],
+)
+async def restore_operational_group(
+    code: str,
+    company_id: UUID = Query(...),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: RestoreOperationalGroupUseCase = Depends(get_restore_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    user_id = _get_user_id(claims)
+    try:
+        before, result = await use_case.execute(company_id, code.strip().upper())
+    except OperationalGroupNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except OperationalGroupConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await log_entity_action(
+        es_client, user_id=user_id, action="RESTORE", resource="operational_group",
         resource_id=f"{company_id}:{result.operational_group}", before=before, after=result,
     )
     return ResponseEnvelope(status="success", data=result)

@@ -1,11 +1,12 @@
 import importlib.util
 import io
 import unittest
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -27,10 +28,12 @@ from app.filemaintenance.employees.domain.entities.employment_assignment import 
 from app.filemaintenance.employees.infrastructure.db_model import EmploymentAssignmentModel
 from app.filemaintenance.operational_groups.application.use_case import (
     CreateOperationalGroupUseCase,
+    DeleteOperationalGroupUseCase,
     ListOperationalGroupsUseCase,
     OperationalGroupConflictError,
     OperationalGroupNotFoundError,
     UpdateOperationalGroupUseCase,
+    RestoreOperationalGroupUseCase,
     ensure_operational_group_allowed,
 )
 from app.filemaintenance.operational_groups.domain.entities.operational_group import OperationalGroupEntity
@@ -38,8 +41,10 @@ from app.filemaintenance.operational_groups.infrastructure.router import (
     OperationalGroupCreateSchema,
     OperationalGroupUpdateSchema,
     get_create_use_case,
+    get_delete_use_case,
     get_list_use_case,
     get_update_use_case,
+    get_restore_use_case,
     router,
 )
 
@@ -116,7 +121,8 @@ class OperationalGroupUseCaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_changes_metadata_and_deactivates_without_changing_code(self):
         group = group_record()
         repo = SimpleNamespace(find_one=AsyncMock(return_value=group), update=AsyncMock(side_effect=lambda value: value))
-        before, after = await UpdateOperationalGroupUseCase(FakeUnitOfWork(repo)).execute(
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        before, after = await UpdateOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(
             group.company_id, group.operational_group, {"display_name": "Updated", "sort_order": 2, "is_active": False},
         )
         self.assertEqual(before, group)
@@ -124,11 +130,90 @@ class OperationalGroupUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_group_raises_not_found_through_execution_wrapper(self):
         repo = SimpleNamespace(find_one=AsyncMock(return_value=None))
+        session = SimpleNamespace(scalar=AsyncMock(return_value=None))
         with self.assertRaises(OperationalGroupNotFoundError):
-            await UpdateOperationalGroupUseCase(FakeUnitOfWork(repo)).execute(uuid4(), "MISSING", {})
+            await UpdateOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(uuid4(), "MISSING", {})
+
+    async def test_deleted_groups_excluded_even_when_inactive_included_unless_requested(self):
+        session = SimpleNamespace(scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [])))
+        use_case = ListOperationalGroupsUseCase(FakeUnitOfWork(session=session))
+        await use_case.execute(uuid4(), True)
+        self.assertIn("deleted_at IS NULL", str(session.scalars.call_args.args[0]))
+        await use_case.execute(uuid4(), True, True)
+        self.assertNotIn("deleted_at IS NULL", str(session.scalars.call_args.args[0]))
+
+    async def test_delete_is_soft_company_scoped_locked_and_records_actor(self):
+        group = group_record()
+        actor_id = uuid4()
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        repo = SimpleNamespace(update=AsyncMock(side_effect=lambda value: value), delete=AsyncMock())
+        before, after = await DeleteOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(
+            group.company_id, group.operational_group, actor_id,
+        )
+        self.assertEqual(before, group)
+        self.assertFalse(after.is_active)
+        self.assertIsNotNone(after.deleted_at)
+        self.assertEqual(after.deleted_by, actor_id)
+        self.assertEqual(after.operational_group, group.operational_group)
+        repo.delete.assert_not_awaited()
+        query = session.scalar.call_args.args[0]
+        self.assertIn("FOR UPDATE", str(query))
+        self.assertIn(group.company_id, query.compile().params.values())
+
+    async def test_restore_keeps_group_inactive_and_does_not_change_code(self):
+        group = replace(group_record(active=False), deleted_at=datetime.now(timezone.utc), deleted_by=uuid4())
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        repo = SimpleNamespace(update=AsyncMock(side_effect=lambda value: value))
+        before, after = await RestoreOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(
+            group.company_id, group.operational_group,
+        )
+        self.assertEqual(before, group)
+        self.assertEqual(after, replace(group, deleted_at=None, deleted_by=None))
+
+    async def test_deleted_group_cannot_be_edited_or_recreated(self):
+        group = replace(group_record(active=False), deleted_at=datetime.now(timezone.utc), deleted_by=uuid4())
+        repo = SimpleNamespace(find_one=AsyncMock(return_value=group), update=AsyncMock())
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        with self.assertRaises(OperationalGroupConflictError):
+            await UpdateOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(
+                group.company_id, group.operational_group, {"is_active": True},
+            )
+        session.scalar.return_value = group.company_id
+        with self.assertRaises(OperationalGroupConflictError):
+            await CreateOperationalGroupUseCase(FakeUnitOfWork(repo, session)).execute(vars(group))
+        repo.update.assert_not_awaited()
+
+    async def test_delete_restore_conflicts_and_missing_records(self):
+        group = group_record()
+        repo = SimpleNamespace(update=AsyncMock())
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        uow = FakeUnitOfWork(repo, session)
+        with self.assertRaises(OperationalGroupConflictError):
+            await RestoreOperationalGroupUseCase(uow).execute(group.company_id, group.operational_group)
+        session.scalar.return_value = replace(group, deleted_at=datetime.now(timezone.utc))
+        with self.assertRaises(OperationalGroupConflictError):
+            await DeleteOperationalGroupUseCase(uow).execute(group.company_id, group.operational_group, uuid4())
+        session.scalar.return_value = None
+        with self.assertRaises(OperationalGroupNotFoundError):
+            await DeleteOperationalGroupUseCase(uow).execute(group.company_id, group.operational_group, uuid4())
+        with self.assertRaises(OperationalGroupNotFoundError):
+            await RestoreOperationalGroupUseCase(uow).execute(group.company_id, group.operational_group)
+        repo.update.assert_not_awaited()
 
 
 class OperationalGroupAssignmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deleted_group_cannot_be_newly_assigned_but_can_be_retained(self):
+        group = replace(group_record(active=False), deleted_at=datetime.now(timezone.utc), deleted_by=uuid4())
+        session = SimpleNamespace(scalar=AsyncMock(return_value=group))
+        uow = FakeUnitOfWork(session=session)
+        with self.assertRaisesRegex(ValueError, "deleted"):
+            await ensure_operational_group_allowed(uow, group.company_id, group.operational_group)
+        await ensure_operational_group_allowed(
+            uow, group.company_id, group.operational_group, (group.company_id, group.operational_group),
+        )
+        with self.assertRaisesRegex(ValueError, "deleted"):
+            await ensure_operational_group_allowed(uow, group.company_id, group.operational_group, (uuid4(), group.operational_group))
+
     async def test_invalid_assignment_group_type_is_validation_error_not_database_error(self):
         for code in (123, [], "", "X" * 31):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, "1 to 30 characters"):
@@ -260,6 +345,11 @@ class OperationalGroupSchemaTests(unittest.TestCase):
                 OperationalGroupCreateSchema(**(valid | changes))
         with self.assertRaises(ValueError):
             OperationalGroupUpdateSchema(display_name="New", sort_order=0, is_active=True, operational_group="CHANGED")
+        for field in ("deleted_at", "deleted_by"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                OperationalGroupUpdateSchema(
+                    display_name="New", sort_order=0, is_active=True, **{field: None},
+                )
 
 
 class OperationalGroupApiTests(unittest.TestCase):
@@ -276,12 +366,18 @@ class OperationalGroupApiTests(unittest.TestCase):
         self.list_case = SimpleNamespace(execute=AsyncMock(return_value=[self.group]))
         self.create_case = SimpleNamespace(execute=AsyncMock(return_value=self.group))
         self.update_case = SimpleNamespace(execute=AsyncMock(return_value=(self.group, self.group)))
+        self.delete_case = SimpleNamespace(execute=AsyncMock(return_value=(
+            self.group, replace(self.group, is_active=False, deleted_at=datetime.now(timezone.utc), deleted_by=uuid4()),
+        )))
+        self.restore_case = SimpleNamespace(execute=AsyncMock(return_value=(self.group, self.group)))
         self.app.dependency_overrides.update({
             get_current_user_claims: lambda: self.claims,
             get_current_authorization_use_case: lambda: self.authorization,
             get_list_use_case: lambda: self.list_case,
             get_create_use_case: lambda: self.create_case,
             get_update_use_case: lambda: self.update_case,
+            get_delete_use_case: lambda: self.delete_case,
+            get_restore_use_case: lambda: self.restore_case,
             get_audit_es_client: lambda: None,
         })
         self.client = TestClient(self.app)
@@ -295,7 +391,7 @@ class OperationalGroupApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "success")
         self.assertEqual(response.json()["data"][0]["operational_group"], "NEW_GROUP")
-        self.list_case.execute.assert_awaited_once_with(self.group.company_id, False)
+        self.list_case.execute.assert_awaited_once_with(self.group.company_id, False, False)
         self.assertEqual(self.client.get("/operational-groups/list").status_code, 422)
 
     def test_anonymous_lookup_rejected(self):
@@ -303,6 +399,12 @@ class OperationalGroupApiTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/operational-groups/list", params={"company_id": str(self.group.company_id)}).status_code, 403,
         )
+        self.assertEqual(self.client.delete(
+            "/operational-groups/NEW_GROUP", params={"company_id": str(self.group.company_id)},
+        ).status_code, 403)
+        self.assertEqual(self.client.post(
+            "/operational-groups/NEW_GROUP/restore", params={"company_id": str(self.group.company_id)},
+        ).status_code, 403)
 
     def test_authenticated_employee_can_read_lookup_but_not_manage(self):
         self.permissions = []
@@ -334,6 +436,47 @@ class OperationalGroupApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_delete_restore_require_permission_and_preserve_audit_identity(self):
+        params = {"company_id": str(self.group.company_id)}
+        with patch("app.filemaintenance.operational_groups.infrastructure.router.log_entity_action", new_callable=AsyncMock) as audit:
+            response = self.client.delete("/operational-groups/new_group", params=params)
+            self.assertEqual(response.status_code, 200)
+            self.assertIsNotNone(response.json()["data"]["deleted_at"])
+            self.delete_case.execute.assert_awaited_once_with(
+                self.group.company_id, "NEW_GROUP", UUID(self.claims["sub"]),
+            )
+            self.assertEqual(audit.call_args.kwargs["action"], "DELETE")
+            response = self.client.post("/operational-groups/new_group/restore", params=params)
+            self.assertEqual(response.status_code, 200)
+            self.restore_case.execute.assert_awaited_once_with(self.group.company_id, "NEW_GROUP")
+            self.assertEqual(audit.call_args.kwargs["action"], "RESTORE")
+        self.permissions = []
+        self.assertEqual(self.client.delete("/operational-groups/NEW_GROUP", params=params).status_code, 403)
+        self.assertEqual(self.client.post("/operational-groups/NEW_GROUP/restore", params=params).status_code, 403)
+
+    def test_deleted_filter_is_forwarded_to_use_case(self):
+        response = self.client.get("/operational-groups/list", params={
+            "company_id": str(self.group.company_id), "include_deleted": True, "include_inactive": True,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.list_case.execute.assert_awaited_once_with(self.group.company_id, True, True)
+
+    def test_delete_restore_missing_and_conflict_responses(self):
+        params = {"company_id": str(self.group.company_id)}
+        for error, status in (
+            (OperationalGroupNotFoundError("Missing."), 404),
+            (OperationalGroupConflictError("Conflict."), 409),
+        ):
+            self.delete_case.execute.side_effect = error
+            self.restore_case.execute.side_effect = error
+            self.assertEqual(self.client.delete("/operational-groups/NEW_GROUP", params=params).status_code, status)
+            self.assertEqual(self.client.post("/operational-groups/NEW_GROUP/restore", params=params).status_code, status)
+        self.update_case.execute.side_effect = OperationalGroupConflictError("Restore before editing.")
+        self.assertEqual(self.client.put(
+            "/operational-groups/NEW_GROUP", params=params,
+            json={"display_name": "New", "sort_order": 0, "is_active": True},
+        ).status_code, 409)
+
 
 class OperationalGroupMigrationTests(unittest.TestCase):
     def migration_sql(self, direction):
@@ -359,6 +502,32 @@ class OperationalGroupMigrationTests(unittest.TestCase):
         for code in ("SLI", "SLR", "ASS", "MTT", "COLLECTION", "FLEET", "WAREHOUSE", "OFFICE", "OTHER"):
             self.assertIn(f"'{code}'", sql)
         self.assertNotIn("UPDATE hr.employment_assignments", sql)
+
+    def test_soft_delete_migration_adds_nullable_metadata_without_replacing_records(self):
+        path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "d9a0123e4f56_soft_delete_operational_groups.py"
+        spec = importlib.util.spec_from_file_location("operational_groups_soft_delete_revision", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.down_revision, "c8f9012d3e45")
+        for direction in ("upgrade", "downgrade"):
+            output = io.StringIO()
+            context = MigrationContext.configure(dialect_name="postgresql", opts={"as_sql": True, "output_buffer": output})
+            with patch.object(module, "op", Operations(context)):
+                getattr(module, direction)()
+            sql = output.getvalue()
+            if direction == "upgrade":
+                self.assertIn("ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE", sql)
+                self.assertIn("ADD COLUMN deleted_by UUID", sql)
+                self.assertIn("REFERENCES identity.users (id)", sql)
+                self.assertNotIn("NOT NULL", sql)
+                self.assertNotIn("DELETE FROM", sql)
+                self.assertNotIn("employment_assignments", sql)
+            else:
+                self.assertIn("Restore deleted operational groups", sql)
+        standalone = (Path(__file__).resolve().parents[1] / "sql" / "20261030_soft_delete_operational_groups.sql").read_text()
+        self.assertIn("BEGIN;", standalone)
+        self.assertIn("COMMIT;", standalone)
+        self.assertNotIn("DROP", standalone)
 
     def test_both_upgrade_paths_allow_the_legacy_constraint_to_be_absent(self):
         standalone = (

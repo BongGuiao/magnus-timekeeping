@@ -8,6 +8,8 @@ export interface OperationalGroup {
   display_name: string
   sort_order: number
   is_active: boolean
+  deleted_at?: string | null
+  deleted_by?: string | null
 }
 
 export type OperationalGroupUpdatePayload = Pick<OperationalGroup, 'display_name' | 'sort_order' | 'is_active'>
@@ -22,10 +24,12 @@ function rethrowApiError(error: unknown, fallback: string): never {
   throw error
 }
 
-export async function fetchOperationalGroups(companyId: string, includeInactive = false): Promise<OperationalGroup[]> {
+export async function fetchOperationalGroups(
+  companyId: string, includeInactive = false, includeDeleted = false,
+): Promise<OperationalGroup[]> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<OperationalGroup[]>>('/operational-groups/list', {
-      params: { company_id: companyId, include_inactive: includeInactive },
+      params: { company_id: companyId, include_inactive: includeInactive, include_deleted: includeDeleted },
     })
     const groups = response.data?.data
     if (!Array.isArray(groups)) {
@@ -58,5 +62,29 @@ export async function updateOperationalGroup(
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not update the operational group.')
+  }
+}
+
+export async function deleteOperationalGroup(companyId: string, code: string): Promise<OperationalGroup> {
+  try {
+    const response = await apiClient.delete<ApiSuccessEnvelope<OperationalGroup>>(
+      `/operational-groups/${encodeURIComponent(code)}`, { params: { company_id: companyId } },
+    )
+    window.dispatchEvent(new Event(OPERATIONAL_GROUPS_CHANGED_EVENT))
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not delete the operational group.')
+  }
+}
+
+export async function restoreOperationalGroup(companyId: string, code: string): Promise<OperationalGroup> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<OperationalGroup>>(
+      `/operational-groups/${encodeURIComponent(code)}/restore`, null, { params: { company_id: companyId } },
+    )
+    window.dispatchEvent(new Event(OPERATIONAL_GROUPS_CHANGED_EVENT))
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not restore the operational group.')
   }
 }
