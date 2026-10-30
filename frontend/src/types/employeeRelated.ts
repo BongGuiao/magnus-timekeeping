@@ -1,7 +1,3 @@
-export const OPERATIONAL_GROUPS = ['SLI', 'SLR', 'ASS', 'MTT', 'COLLECTION', 'FLEET', 'WAREHOUSE', 'OFFICE', 'OTHER'] as const
-
-export type OperationalGroup = (typeof OPERATIONAL_GROUPS)[number]
-
 interface AuditFields {
   id: string
   created_at: string | null
@@ -20,7 +16,7 @@ export interface EmploymentAssignment extends AuditFields {
   supervisor_employee_id: string | null
   employment_type: string
   employee_category: string
-  operational_group: OperationalGroup | null
+  operational_group: string | null
   payroll_group_id: string | null
   primary_location_id: string | null
   location_ids: string[]

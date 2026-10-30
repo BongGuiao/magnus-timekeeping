@@ -35,6 +35,7 @@ import RecentAttendanceTable from '../components/dashboard/RecentAttendanceTable
 import OvertimeApprovalsPanel from '../components/dashboard/OvertimeApprovalsPanel'
 import OfficialBusinessApprovalsPanel from '../components/dashboard/OfficialBusinessApprovalsPanel'
 import SupervisorAttendanceLocationsPanel from '../features/attendance/SupervisorAttendanceLocationsPanel'
+import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendanceReviewPanel'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -1007,6 +1008,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             )}
           </div>
         </section>
+
+        {isAdmin && role === 'administrator' && <OfflineAttendanceReviewPanel />}
 
         {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOvertimeApprovalPanelOpen && (
           <OvertimeApprovalsPanel

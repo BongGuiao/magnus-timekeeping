@@ -229,6 +229,9 @@ class FlexibleBreakSegmentValidationTests(unittest.IsolatedAsyncioTestCase):
 class BreakUow:
     def __init__(self, repos):
         self.repos = repos
+        self.session = SimpleNamespace(
+            scalar=AsyncMock(side_effect=lambda statement: repos[UserEntity].get.return_value),
+        )
 
     async def __aenter__(self):
         return self

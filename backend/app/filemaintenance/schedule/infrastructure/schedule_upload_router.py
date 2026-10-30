@@ -4,7 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.dependencies import get_current_authorization_use_case, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     ApproveScheduleUploadBatchUseCase,
@@ -21,6 +22,8 @@ from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     ReviewScheduleUploadBatchInput,
     ScheduleUploadFileInput,
     SubmitScheduleUploadUseCase,
+    PreviewHrScheduleUploadUseCase,
+    SubmitHrScheduleUploadUseCase,
 )
 from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     EmployeeScheduleView,
@@ -39,6 +42,8 @@ from app.filemaintenance.schedule.infrastructure.schedule_upload_dependencies im
     get_preview_schedule_upload_use_case,
     get_reject_schedule_upload_batch_use_case,
     get_submit_schedule_upload_use_case,
+    get_preview_hr_schedule_upload_use_case,
+    get_submit_hr_schedule_upload_use_case,
 )
 from app.filemaintenance.schedule.infrastructure.schedule_upload_http_errors import (
     schedule_upload_http_errors,
@@ -71,6 +76,7 @@ class ScheduleUploadRowResultSchema(BaseModel):
     is_valid: bool
     errors: list[str]
     effects: list[str]
+    supervisor_employee_code: str | None = None
 
 
 class ScheduleUploadPreviewSchema(BaseModel):
@@ -157,6 +163,7 @@ def _preview_schema(validation: ScheduleUploadValidation) -> ScheduleUploadPrevi
                 is_valid=row.is_valid,
                 errors=list(row.errors),
                 effects=list(row.effects),
+                supervisor_employee_code=row.supervisor_employee_code,
             )
             for row in validation.rows
         ],
@@ -244,7 +251,7 @@ def _employee_id(claims: dict) -> UUID:
     return _claim_uuid(claims, "employee_id", NOT_LINKED_TO_EMPLOYEE)
 
 
-async def _file_input(claims: dict, file: UploadFile) -> ScheduleUploadFileInput:
+async def _file_input(claims: dict, file: UploadFile, *, hr_admin: bool = False) -> ScheduleUploadFileInput:
     file_name = (file.filename or "").strip() or "upload.csv"
     if not file_name.lower().endswith(".csv"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload a .csv file.")
@@ -255,11 +262,63 @@ async def _file_input(claims: dict, file: UploadFile) -> ScheduleUploadFileInput
             detail="The file is larger than 1 MB. Split it into smaller uploads.",
         )
     return ScheduleUploadFileInput(
-        supervisor_employee_id=_employee_id(claims),
+        supervisor_employee_id=None if hr_admin else _employee_id(claims),
         uploaded_by=_user_id(claims),
         file_name=file_name[-MAX_FILE_NAME_LENGTH:],
         content=content,
     )
+
+
+async def require_hr_upload_mode(
+    dashboard_role_code: str = Query(...),
+    claims: dict = Depends(require_permission(UPLOAD_PERMISSION)),
+    authorization: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> dict:
+    current = await authorization.execute(_user_id(claims))
+    if dashboard_role_code != "HR_ADMIN" or "HR_ADMIN" not in current.role_codes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="HR schedule uploads require the HR_ADMIN role and HR_ADMIN dashboard mode.",
+        )
+    return claims
+
+
+@router.get("/hr-admin/template")
+async def download_hr_schedule_upload_template(
+    _claims: dict = Depends(require_hr_upload_mode),
+):
+    return Response(
+        content=schedule_upload_csv_template(include_supervisor=True),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{TEMPLATE_FILE_NAME}"'},
+    )
+
+
+@router.post("/hr-admin/preview", response_model=ResponseEnvelope[ScheduleUploadPreviewSchema])
+async def preview_hr_schedule_upload(
+    file: UploadFile = File(...),
+    claims: dict = Depends(require_hr_upload_mode),
+    use_case: PreviewHrScheduleUploadUseCase = Depends(get_preview_hr_schedule_upload_use_case),
+):
+    data = await _file_input(claims, file, hr_admin=True)
+    with schedule_upload_http_errors():
+        validation = await use_case.execute(data)
+    return ResponseEnvelope(status="success", data=_preview_schema(validation))
+
+
+@router.post(
+    "/hr-admin", response_model=ResponseEnvelope[list[ScheduleUploadBatchSchema]],
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_hr_schedule_upload(
+    file: UploadFile = File(...),
+    claims: dict = Depends(require_hr_upload_mode),
+    use_case: SubmitHrScheduleUploadUseCase = Depends(get_submit_hr_schedule_upload_use_case),
+):
+    data = await _file_input(claims, file, hr_admin=True)
+    with schedule_upload_http_errors():
+        batches = await use_case.execute(data)
+    return ResponseEnvelope(status="success", data=[_batch_schema(batch) for batch in batches])
 
 
 @router.get("/template")

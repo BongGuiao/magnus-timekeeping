@@ -11,6 +11,7 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     ScheduleUploadRow,
     ScheduleUploadRowResult,
     ScheduleUploadValidation,
+    SupervisorEmployee,
 )
 from app.filemaintenance.schedule.domain.schedule_timeline import (
     ScheduleOverride,
@@ -19,6 +20,7 @@ from app.filemaintenance.schedule.domain.schedule_timeline import (
 )
 from app.filemaintenance.schedule.domain.schedule_upload_rules import (
     MAX_ROWS_PER_UPLOAD,
+    MAX_CODE_LENGTH,
     find_overlapping_rows,
     parse_row,
     rest_day_pattern_errors,
@@ -53,6 +55,7 @@ def _row_result(
         schedule_name=resolved.template.schedule_name if resolved else None,
         errors=tuple(errors),
         effects=tuple(effects),
+        supervisor_employee_code=raw.supervisor_employee_code.strip() or None,
     )
 
 
@@ -65,10 +68,11 @@ class ScheduleUploadValidator:
     async def evaluate(
         self,
         *,
-        supervisor_employee_id: UUID,
+        supervisor_employee_id: UUID | None,
         raw_rows: Sequence[RawScheduleUploadRow],
         today: date,
         file_errors: Sequence[str] = (),
+        supervisors_by_code: dict[str, SupervisorEmployee] | None = None,
     ) -> ScheduleUploadEvaluation:
         if file_errors:
             return ScheduleUploadEvaluation(ScheduleUploadValidation(file_errors=tuple(file_errors)))
@@ -93,7 +97,27 @@ class ScheduleUploadValidator:
         for row_no, overlap_errors in find_overlapping_rows(parsed_rows).items():
             errors_by_row[row_no].extend(overlap_errors)
 
-        resolved_by_row = await self._resolve(supervisor_employee_id, parsed_rows, today, errors_by_row)
+        if supervisors_by_code is None:
+            if supervisor_employee_id is None:
+                raise ValueError("A supervisor is required for a team schedule upload.")
+            resolved_by_row = await self._resolve(supervisor_employee_id, parsed_rows, today, errors_by_row)
+        else:
+            rows_by_supervisor: dict[UUID, list[ScheduleUploadRow]] = defaultdict(list)
+            for raw in raw_rows:
+                code = raw.supervisor_employee_code.strip()
+                if not code:
+                    errors_by_row[raw.row_no].append("supervisor_employee_code is required.")
+                elif len(code) > MAX_CODE_LENGTH:
+                    errors_by_row[raw.row_no].append(
+                        f"supervisor_employee_code must be at most {MAX_CODE_LENGTH} characters."
+                    )
+                elif code not in supervisors_by_code:
+                    errors_by_row[raw.row_no].append(f"Supervisor {code} was not found or is not active.")
+                elif (parsed := parsed_by_row[raw.row_no].row) is not None:
+                    rows_by_supervisor[supervisors_by_code[code].employee_id].append(parsed)
+            resolved_by_row = {}
+            for supervisor_id, rows in rows_by_supervisor.items():
+                resolved_by_row.update(await self._resolve(supervisor_id, rows, today, errors_by_row))
 
         valid_resolved = [
             resolved for row_no, resolved in resolved_by_row.items() if not errors_by_row[row_no]
@@ -187,5 +211,5 @@ class ScheduleUploadValidator:
                     errors.extend(rest_day_pattern_errors(pattern))
 
             if template is not None:
-                resolved[row.row_no] = ResolvedScheduleUploadRow(row, employee, template, pattern)
+                resolved[row.row_no] = ResolvedScheduleUploadRow(row, employee, template, pattern, supervisor_employee_id)
         return resolved

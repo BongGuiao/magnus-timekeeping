@@ -11,6 +11,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -732,6 +733,27 @@ class PayrollOpeningYtdBalanceModel(Base):
     )
     created_by: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=False
+    )
+
+
+class GlobalPayrollSystemParametersModel(Base):
+    __tablename__ = "system_parameters"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_payroll_system_parameters_singleton"),
+        {"schema": "payroll"},
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger, primary_key=True, server_default=text("1")
+    )
+    year_end_wtax_reconciliation_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), nullable=True
     )
 
 

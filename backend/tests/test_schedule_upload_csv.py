@@ -58,6 +58,18 @@ class CsvScheduleUploadReaderTests(unittest.TestCase):
         self.assertEqual(result.file_errors, ())
         self.assertEqual(result.rows, ())
 
+    def test_hr_template_requires_supervisor_header_and_preserves_codes(self):
+        reader = CsvScheduleUploadReader(include_supervisor=True)
+        template = schedule_upload_csv_template(include_supervisor=True)
+        result = reader.read((template + " S001 ,E001,DAY,REGULAR,2026-11-01,,,\n").encode())
+        self.assertEqual(result.file_errors, ())
+        self.assertEqual(result.rows[0].supervisor_employee_code.strip(), "S001")
+        self.assertIn("supervisor_employee_code", " ".join(reader.read(schedule_upload_csv_template().encode()).file_errors))
+
+    def test_normal_supervisor_reader_rejects_hr_column_instead_of_ignoring_it(self):
+        result = self.reader.read(schedule_upload_csv_template(include_supervisor=True).encode())
+        self.assertIn("Unknown column(s): supervisor_employee_code", " ".join(result.file_errors))
+
 
 if __name__ == "__main__":
     unittest.main()

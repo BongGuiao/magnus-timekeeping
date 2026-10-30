@@ -28,6 +28,7 @@ class RawScheduleUploadRow:
     effective_to: str = ""
     rest_day_pattern_code: str = ""
     reason: str = ""
+    supervisor_employee_code: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,12 @@ class TeamEmployee:
     employee_code: str
     employee_name: str
     company_id: UUID
+
+
+@dataclass(frozen=True)
+class SupervisorEmployee:
+    employee_id: UUID
+    employee_code: str
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,7 @@ class ResolvedScheduleUploadRow:
     employee: TeamEmployee
     template: ScheduleTemplateRef
     rest_day_pattern: RestDayPatternRef | None
+    supervisor_employee_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,7 @@ class ScheduleUploadRowResult:
     schedule_name: str | None = None
     errors: tuple[str, ...] = ()
     effects: tuple[str, ...] = ()
+    supervisor_employee_code: str | None = None
 
     @property
     def is_valid(self) -> bool:

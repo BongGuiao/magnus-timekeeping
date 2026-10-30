@@ -1,7 +1,7 @@
 from uuid import UUID
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,7 +10,23 @@ from app.core.database import Base
 
 class OrgUnitType(Base):
     __tablename__ = "org_unit_types"
-    __table_args__ = {"schema": "core"}
+    __table_args__ = (
+        CheckConstraint(
+            "length(btrim(org_unit_type)) > 0",
+            name="ck_org_unit_types_code_not_empty",
+        ),
+        CheckConstraint(
+            "length(btrim(display_name)) > 0",
+            name="ck_org_unit_types_display_name_not_empty",
+        ),
+        Index(
+            "uq_org_unit_types_single_default_per_company",
+            "company_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+        {"schema": "core"},
+    )
 
     company_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),

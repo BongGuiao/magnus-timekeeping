@@ -70,7 +70,6 @@ class EmployeeModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
 
 
-OPERATIONAL_GROUPS = ("SLI", "SLR", "ASS", "MTT", "COLLECTION", "FLEET", "WAREHOUSE", "OFFICE", "OTHER")
 
 
 class EmployeeWfhLocationModel(Base):
@@ -100,11 +99,10 @@ class EmployeeWfhLocationModel(Base):
 class EmploymentAssignmentModel(Base):
     __tablename__ = "employment_assignments"
     __table_args__ = (
-        CheckConstraint(
-            "operational_group IS NULL OR operational_group IN ("
-            + ", ".join(f"'{group}'" for group in OPERATIONAL_GROUPS)
-            + ")",
-            name="ck_employment_assignments_operational_group",
+        ForeignKeyConstraint(
+            ["company_id", "operational_group"],
+            ["core.operational_groups.company_id", "core.operational_groups.operational_group"],
+            name="fk_assignment_operational_group",
         ),
         CheckConstraint(
             "effective_to IS NULL OR effective_to >= effective_from",

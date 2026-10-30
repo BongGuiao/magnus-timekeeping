@@ -23,7 +23,7 @@ import {
   EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
 } from '../lib/employeeRelatedApi'
 import type { EmploymentAssignmentWritePayload } from '../types/employeeRelated'
-import { OPERATIONAL_GROUPS } from '../types/employeeRelated'
+import { fetchOperationalGroups } from '../lib/operationalGroupApi'
 import { fetchLocations } from '../lib/locationApi'
 import type { Location } from '../types/location'
 import { fetchPayrollGroups } from '../lib/payrollGroupApi'
@@ -532,6 +532,13 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
 
     try {
       const parsedRows = parseEmploymentAssignmentCsv(await file.text())
+      const companyIds = new Set(parsedRows.flatMap(({ values }) => {
+        const company = companies.find((item) => item.company_code.trim().toLocaleLowerCase() === values.company_code.trim().toLocaleLowerCase())
+        return company ? [company.id] : []
+      }))
+      const groupsByCompany = new Map(await Promise.all(
+        [...companyIds].map(async (companyId) => [companyId, await fetchOperationalGroups(companyId)] as const),
+      ))
       const seenPairs = new Set<string>()
       const previewRows = parsedRows.map(({ rowNumber, values }) => {
         const errors: string[] = []
@@ -608,10 +615,11 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         if (!employeeCategory) errors.push('Employee category is required.')
         if (employeeCategory.length > 30) errors.push('Employee category must be 30 characters or fewer.')
 
-        const operationalGroupInput = values.operational_group.trim().toUpperCase()
-        const operationalGroup = OPERATIONAL_GROUPS.find((group) => group === operationalGroupInput) ?? null
+        const operationalGroupInput = (values.operational_group ?? '').trim().toUpperCase()
+        const operationalGroup = (groupsByCompany.get(company?.id ?? '') ?? [])
+          .find((group) => group.operational_group === operationalGroupInput)?.operational_group ?? null
         if (operationalGroupInput && !operationalGroup) {
-          errors.push(`Operational group must be one of: ${OPERATIONAL_GROUPS.join(', ')}.`)
+          errors.push(`Operational group "${operationalGroupInput}" is not active or was not found for this company.`)
         }
         const status = (values.status.trim() || 'ACTIVE').toUpperCase()
         if (status !== 'ACTIVE' && status !== 'INACTIVE') errors.push('Status must be ACTIVE or INACTIVE.')

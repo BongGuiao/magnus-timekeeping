@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { ScheduleUploadBatchDetails, ScheduleUploadStatusBadge } from '../components/scheduleUpload/ScheduleUploadParts'
@@ -10,9 +10,13 @@ import {
   fetchMyScheduleUploads,
   previewScheduleUpload,
   submitScheduleUpload,
+  submitHrScheduleUpload,
+  isHrScheduleUploadMode,
+  SCHEDULE_UPLOAD_STATUS_LABELS,
 } from '../lib/scheduleUploadApi'
 import type { ScheduleUploadBatch, ScheduleUploadBatchSummary, ScheduleUploadPreview } from '../lib/scheduleUploadApi'
 import { formatDateTime, formatPeriod } from '../lib/scheduleUploadFormat'
+import { getAvailableRoleCodes, getSelectedDashboardRoleCode } from '../types/role'
 
 interface Props {
   employeeName: string
@@ -30,13 +34,14 @@ const COLUMN_GUIDE: { name: string; required: boolean; description: string }[] =
   { name: 'reason', required: false, description: 'Up to 500 characters.' },
 ]
 
-function PreviewTable({ preview }: { preview: ScheduleUploadPreview }) {
+function PreviewTable({ preview, hrAdmin }: { preview: ScheduleUploadPreview; hrAdmin: boolean }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200">
       <table className="w-full min-w-[900px] text-left text-xs">
         <thead className="bg-slate-50 uppercase text-slate-500">
           <tr>
             <th className="px-3 py-2">Row</th>
+            {hrAdmin && <th className="px-3 py-2">Supervisor code</th>}
             <th className="px-3 py-2">Employee</th>
             <th className="px-3 py-2">Schedule</th>
             <th className="px-3 py-2">Type</th>
@@ -49,6 +54,7 @@ function PreviewTable({ preview }: { preview: ScheduleUploadPreview }) {
           {preview.rows.map((row) => (
             <tr key={row.row_no} className={row.is_valid ? '' : 'bg-rose-50/60'}>
               <td className="px-3 py-2 align-top text-slate-500">{row.row_no}</td>
+              {hrAdmin && <td className="px-3 py-2 align-top">{row.supervisor_employee_code || 'Missing'}</td>}
               <td className="px-3 py-2 align-top">
                 <p className="font-medium text-slate-800">{row.employee_name ?? row.employee_code}</p>
                 {row.employee_name && <p className="text-[11px] text-slate-500">{row.employee_code}</p>}
@@ -84,7 +90,21 @@ function PreviewTable({ preview }: { preview: ScheduleUploadPreview }) {
   )
 }
 
-export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut }: Props) {
+function subscribeToDashboardRole(onChange: () => void) {
+  window.addEventListener('dashboard-role-change', onChange)
+  return () => window.removeEventListener('dashboard-role-change', onChange)
+}
+
+function getHrUploadMode() {
+  return isHrScheduleUploadMode(getAvailableRoleCodes(), getSelectedDashboardRoleCode())
+}
+
+export default function ScheduleUploads(props: Props) {
+  const hrAdmin = useSyncExternalStore(subscribeToDashboardRole, getHrUploadMode, () => false)
+  return <ScheduleUploadsContent key={hrAdmin ? 'hr-admin' : 'team'} hrAdmin={hrAdmin} {...props} />
+}
+
+function ScheduleUploadsContent({ hrAdmin, employeeName, onNavigate, onLoggedOut }: Props & { hrAdmin: boolean }) {
   const { logout } = useLogout({ onLoggedOut })
   const fileInput = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -137,7 +157,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
   }
 
   const downloadTemplate = () => run(async () => {
-    const blob = await downloadScheduleUploadTemplate()
+    const blob = await downloadScheduleUploadTemplate(hrAdmin)
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -148,17 +168,20 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
 
   const checkFile = () => run(async () => {
     if (!file) return
-    setPreview(await previewScheduleUpload(file))
+    setPreview(null)
+    setPreview(await previewScheduleUpload(file, hrAdmin))
   })
 
   const submitFile = () => run(async () => {
     if (!file) return
-    const batch = await submitScheduleUpload(file)
-    setSuccess(`Batch ${batch.batch_no} was approved and applied successfully.`)
+    const submitted = hrAdmin ? await submitHrScheduleUpload(file) : [await submitScheduleUpload(file)]
+    setSuccess(submitted.map((batch) => (
+      `Batch ${batch.batch_no} (${batch.supervisor_name}): ${SCHEDULE_UPLOAD_STATUS_LABELS[batch.status]}${batch.status === 'APPROVED' ? ' and applied' : ''}.`
+    )).join(' '))
     setFile(null)
     setPreview(null)
     if (fileInput.current) fileInput.current.value = ''
-    setSelected(batch)
+    setSelected(submitted[0] ?? null)
     reloadBatches()
   })
 
@@ -181,8 +204,10 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
         <header>
           <h1 className="text-xl font-bold text-slate-900">Team Schedule Upload</h1>
           <p className="mt-1 text-xs text-slate-600">
-            Upload schedules for your direct reports as a CSV file. After successful validation, the batch is approved
-            and applied immediately. A new schedule ends or pauses the employee’s current schedule automatically.
+            {hrAdmin
+              ? 'HR_ADMIN mode: upload on behalf of multiple supervisors using supervisor_employee_code. Employees must already report to the specified supervisor. One batch is created per supervisor.'
+              : 'Upload schedules for your direct reports as a CSV file.'}
+            {' '}Each batch follows the existing company approval settings. Approved schedules end or pause the employee’s current schedule automatically.
           </p>
         </header>
 
@@ -205,10 +230,16 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
             </button>
           </div>
           <ul className="mt-3 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+            {hrAdmin && (
+              <li><code className="font-semibold text-slate-800">supervisor_employee_code</code>
+                <span className="text-rose-600"> *</span> — Active supervisor employee number for this row. Does not change reporting assignments.
+              </li>
+            )}
             {COLUMN_GUIDE.map((column) => (
               <li key={column.name}>
                 <code className="font-semibold text-slate-800">{column.name}</code>
-                {column.required ? <span className="text-rose-600"> *</span> : null} — {column.description}
+                {column.required ? <span className="text-rose-600"> *</span> : null} — {hrAdmin && column.name === 'employee_code'
+                  ? 'Employee number of a direct report of the supervisor specified on this row.' : column.description}
               </li>
             ))}
           </ul>
@@ -241,7 +272,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
               disabled={!file || !preview?.is_valid || busy}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              Submit and apply schedules
+              Submit schedules
             </button>
           </div>
           {preview && (
@@ -256,7 +287,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
                   {preview.file_errors.map((message) => <li key={message}>{message}</li>)}
                 </ul>
               )}
-              {preview.rows.length > 0 && <PreviewTable preview={preview} />}
+              {preview.rows.length > 0 && <PreviewTable preview={preview} hrAdmin={hrAdmin} />}
             </div>
           )}
         </section>
@@ -275,6 +306,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
                 <thead className="bg-slate-50 uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-2">Batch</th>
+                    <th className="px-4 py-2">Supervisor</th>
                     <th className="px-4 py-2">File</th>
                     <th className="px-4 py-2">Rows</th>
                     <th className="px-4 py-2">Submitted</th>
@@ -286,6 +318,7 @@ export default function ScheduleUploads({ employeeName, onNavigate, onLoggedOut 
                   {batches.map((batch) => (
                     <tr key={batch.id} className={selected?.id === batch.id ? 'bg-indigo-50/50' : ''}>
                       <td className="px-4 py-2 font-semibold text-slate-800">{batch.batch_no}</td>
+                      <td className="px-4 py-2">{batch.supervisor_name}</td>
                       <td className="break-all px-4 py-2">{batch.file_name}</td>
                       <td className="px-4 py-2">{batch.row_count}</td>
                       <td className="whitespace-nowrap px-4 py-2">{formatDateTime(batch.submitted_at)}</td>

@@ -17,12 +17,13 @@ import { fetchGeofences } from '../../lib/geofenceApi'
 import { fetchLocations } from '../../lib/locationApi'
 import { fetchPayrollGroups } from '../../lib/payrollGroupApi'
 import type { PayrollGroup } from '../../lib/payrollGroupApi'
+import { fetchOperationalGroups, OPERATIONAL_GROUPS_CHANGED_EVENT } from '../../lib/operationalGroupApi'
+import type { OperationalGroup } from '../../lib/operationalGroupApi'
 import { hasPermission } from '../../types/role'
 import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
 import type { Geofence } from '../../types/geofence'
 import type { Location } from '../../types/location'
-import { OPERATIONAL_GROUPS } from '../../types/employeeRelated'
 import type {
   EmployeeSkill,
   EmployeeSkillWritePayload,
@@ -228,7 +229,7 @@ const assignmentSchema = z.object({
   supervisor_employee_id: z.string(),
   employment_type: z.string().trim().min(1, 'Employment type is required.').max(30),
   employee_category: z.string().trim().min(1, 'Employee category is required.').max(30),
-  operational_group: z.union([z.literal(''), z.enum(OPERATIONAL_GROUPS)]),
+  operational_group: z.string().max(30),
   payroll_group_id: optionalUuid,
   primary_location_id: optionalUuid,
   location_ids: z.array(z.uuid()),
@@ -313,6 +314,22 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
     resolver: zodResolver(assignmentSchema),
   })
   const selectedCompanyId = watch('company_id')
+  const selectedOperationalGroup = watch('operational_group')
+  const [groupsReloadKey, setGroupsReloadKey] = useState(0)
+  const [operationalGroupsLoad, setOperationalGroupsLoad] = useState<{
+    companyId: string
+    groups: OperationalGroup[]
+    loaded: boolean
+    error: string
+  }>({ companyId: '', groups: [], loaded: false, error: '' })
+  const operationalGroups = operationalGroupsLoad.companyId === selectedCompanyId ? operationalGroupsLoad.groups : []
+  const isLoadingOperationalGroups = Boolean(selectedCompanyId)
+    && (operationalGroupsLoad.companyId !== selectedCompanyId || !operationalGroupsLoad.loaded)
+  const operationalGroupsError = operationalGroupsLoad.companyId === selectedCompanyId ? operationalGroupsLoad.error : ''
+  const originalAssignment = related.records.find((assignment) => assignment.id === editingId)
+  const retainedOperationalGroup = originalAssignment?.company_id === selectedCompanyId
+    ? originalAssignment.operational_group : null
+  const availableOperationalGroups = operationalGroups.filter((group) => group.is_active || group.operational_group === retainedOperationalGroup)
   const autoLoaded = useRef(false)
   const [locations, setLocations] = useState<Location[]>([])
   const [locationsError, setLocationsError] = useState('')
@@ -325,6 +342,29 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
     loaded: boolean
     error: string
   }>({ loaded: !canManagePayroll, error: '' })
+
+  useEffect(() => {
+    const reload = () => setGroupsReloadKey((key) => key + 1)
+    window.addEventListener(OPERATIONAL_GROUPS_CHANGED_EVENT, reload)
+    return () => window.removeEventListener(OPERATIONAL_GROUPS_CHANGED_EVENT, reload)
+  }, [])
+
+  useEffect(() => {
+    if (!selectedCompanyId) return
+    let isCurrent = true
+    setOperationalGroupsLoad({ companyId: selectedCompanyId, groups: [], loaded: false, error: '' })
+    fetchOperationalGroups(selectedCompanyId, true)
+      .then((groups) => {
+        if (isCurrent) setOperationalGroupsLoad({ companyId: selectedCompanyId, groups, loaded: true, error: '' })
+      })
+      .catch((error: unknown) => {
+        if (isCurrent) setOperationalGroupsLoad({
+          companyId: selectedCompanyId, groups: [], loaded: true,
+          error: errorText(error, 'Could not load operational groups.'),
+        })
+      })
+    return () => { isCurrent = false }
+  }, [selectedCompanyId, groupsReloadKey])
 
   useEffect(() => {
     let isCurrent = true
@@ -436,6 +476,14 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   async function save(values: AssignmentFormValues) {
     related.setErrorMessage('')
     related.setSuccessMessage('')
+    if (isLoadingOperationalGroups || operationalGroupsError) {
+      related.setErrorMessage(operationalGroupsError || 'Wait for operational groups to finish loading.')
+      return
+    }
+    if (values.operational_group && !availableOperationalGroups.some((group) => group.operational_group === values.operational_group)) {
+      related.setErrorMessage('Select an available operational group for this company.')
+      return
+    }
     const hasOtherActiveAssignment = related.records.some((assignment) =>
       assignment.id !== editingId
       && assignment.is_active
@@ -536,6 +584,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
             <select {...register('company_id', {
               onChange: () => {
                 setValue('org_unit_id', '')
+                setValue('operational_group', '')
                 setValue('primary_location_id', '')
                 setValue('location_ids', [])
                 setValue('authorized_geofence_ids', [])
@@ -566,10 +615,24 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           <label className={labelClassName}>Employment type<input {...register('employment_type')} placeholder="e.g. REGULAR" className={inputClassName} /><FieldError message={errors.employment_type?.message} /></label>
           <label className={labelClassName}>Employee category<input {...register('employee_category')} placeholder="e.g. RANK_AND_FILE" className={inputClassName} /><FieldError message={errors.employee_category?.message} /></label>
           <label className={labelClassName}>Operational group
-            <select {...register('operational_group')} className={inputClassName}>
-              <option value="">None</option>
-              {OPERATIONAL_GROUPS.map((group) => <option key={group} value={group}>{group}</option>)}
+            <select {...register('operational_group')} value={selectedOperationalGroup} disabled={!selectedCompanyId || isLoadingOperationalGroups || Boolean(operationalGroupsError)} className={inputClassName}>
+              <option value="">{isLoadingOperationalGroups ? 'Loading operational groups...' : operationalGroupsError ? 'Operational groups unavailable' : 'None'}</option>
+              {selectedOperationalGroup && !availableOperationalGroups.some((group) => group.operational_group === selectedOperationalGroup) && (
+                <option value={selectedOperationalGroup}>{selectedOperationalGroup}</option>
+              )}
+              {availableOperationalGroups.map((group) => (
+                <option key={group.operational_group} value={group.operational_group}>
+                  {group.operational_group} - {group.display_name}{group.is_active ? '' : ' (inactive)'}
+                </option>
+              ))}
             </select>
+            {operationalGroupsError && (
+              <span role="alert" className="mt-1 block text-xs text-rose-600">
+                {operationalGroupsError}
+                <button type="button" className="ml-2 underline" onClick={() => setGroupsReloadKey((key) => key + 1)}>Retry</button>
+              </span>
+            )}
+            <FieldError message={errors.operational_group?.message} />
           </label>
           <label className={labelClassName}>Hire date<input type="date" {...register('hire_date')} className={inputClassName} /><FieldError message={errors.hire_date?.message} /></label>
           <label className={labelClassName}>Effective from<input type="date" {...register('effective_from')} className={inputClassName} /><FieldError message={errors.effective_from?.message} /></label>

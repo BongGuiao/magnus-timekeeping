@@ -54,6 +54,7 @@ export type NavView =
   | 'companies'
   | 'org-units'
   | 'org-unit-types'
+  | 'operational-groups'
   | 'locations'
   | 'location-types'
   | 'geofences'
@@ -116,6 +117,7 @@ const payrollManagementViews: NavView[] = [
 const companyContextViews: NavView[] = [
   ...companySetupTabViews,
   'org-unit-types',
+  'operational-groups',
   'location-types',
   'payroll-statutory',
   'payroll-system-parameters',
@@ -155,6 +157,7 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   companies: Building2,
   'org-units': Building2,
   'org-unit-types': Tags,
+  'operational-groups': Tags,
   locations: MapPin,
   'location-types': Tags,
   geofences: MapPinned,
@@ -270,6 +273,7 @@ const navLinks: NavLink[] = [
                 permission: 'company.setup',
                 children: [
                   { label: 'Org Unit Types', view: 'org-unit-types', permission: 'company.setup' },
+                  { label: 'Operational Groups', view: 'operational-groups', permission: 'company.setup' },
                 ],
               },
               {
@@ -408,6 +412,11 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const [companies, setCompanies] = useState<Company[]>([])
   const [companyLoadError, setCompanyLoadError] = useState('')
   const [roleCode, setRoleCode] = useState<string>(getSelectedDashboardRoleCode)
+  useEffect(() => {
+    const updateRoleCode = () => setRoleCode(getSelectedDashboardRoleCode())
+    window.addEventListener('dashboard-role-change', updateRoleCode)
+    return () => window.removeEventListener('dashboard-role-change', updateRoleCode)
+  }, [])
   const roleCodes = getAvailableRoleCodes()
   const canPreviewRoles = canPreviewDashboardRoles()
   const hasMultipleAssignedDashboardRoles = new Set(
@@ -553,6 +562,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                       || (link.label === 'Settings' && (
                         companySetupTabViews.includes(activeView)
                         || activeView === 'org-unit-types'
+                        || activeView === 'operational-groups'
                         || activeView === 'location-types'
                         || activeView === 'payroll-statutory'
                         || activeView === 'payroll-system-parameters'

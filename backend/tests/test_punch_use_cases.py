@@ -1,3 +1,4 @@
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -121,6 +122,10 @@ class ClockPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_success_refreshes_the_employee_snapshot_and_audits_as_face_recognition(self):
         data = self.punch()
+        event_loop_thread = threading.get_ident()
+        self.refresher.request_refresh.side_effect = lambda user_id: self.assertNotEqual(
+            threading.get_ident(), event_loop_thread,
+        )
         await self.use_case(FakeProofs(proof())).execute(data)
         self.refresher.request_refresh.assert_called_once_with(data.user_id)
         kwargs = self.audit.record.await_args.kwargs
@@ -153,6 +158,10 @@ class BreakPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_proven_device_and_metadata_are_passed_to_the_break_use_case(self):
         device = proof()
         proofs = FakeProofs(device)
+        event_loop_thread = threading.get_ident()
+        self.refresher.request_refresh.side_effect = lambda user_id: self.assertNotEqual(
+            threading.get_ident(), event_loop_thread,
+        )
         await self.use_case(proofs).execute(self.data)
         self.assertEqual(proofs.consume_calls, [(self.data.user_id, self.data.device_challenge_id, "BREAK", "sig")])
         dto = self.record_break.execute.await_args.args[0]

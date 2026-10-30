@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
+from anyio import to_thread
+
 from app.attendance.application.punch_ports import DeviceAction, DeviceProofService
 from app.attendance.application.ports import AuditTrail, RecentAttendanceRefresher
 from app.attendance.application.use_case import (
@@ -118,7 +120,7 @@ class SubmitClockPunchUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 gps_accuracy_meters=data.gps_accuracy_meters,
             )
         )
-        self._refresher.request_refresh(data.user_id)
+        await to_thread.run_sync(self._refresher.request_refresh, data.user_id)
         await self._audit.record(
             user_id=SYSTEM_ACTOR,
             action="CREATE",
@@ -167,7 +169,7 @@ class SubmitBreakPunchUseCase(BaseUseCase[RecordBreakOutputDTO]):
                 punch_metadata=data.punch_metadata,
             )
         )
-        self._refresher.request_refresh(data.user_id)
+        await to_thread.run_sync(self._refresher.request_refresh, data.user_id)
         await self._audit.record(
             user_id=SYSTEM_ACTOR,
             action="CREATE",

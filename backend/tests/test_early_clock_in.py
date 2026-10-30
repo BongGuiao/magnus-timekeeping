@@ -81,6 +81,9 @@ class EarlyClockInValidationTests(unittest.TestCase):
 class ClockUow:
     def __init__(self, repos):
         self.repos = repos
+        self.session = SimpleNamespace(
+            scalar=AsyncMock(side_effect=lambda statement: repos[UserEntity].get.return_value),
+        )
 
     async def __aenter__(self):
         return self
@@ -169,7 +172,7 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
             work_date=self.start.date() - timedelta(days=1),
             clock_in_at=self.now - timedelta(hours=24),
         )
-        self.attendance.find_all.return_value = [stale_attendance]
+        self.attendance.find_all.side_effect = [[stale_attendance], []]
 
         await self.clock_in()
 

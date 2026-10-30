@@ -19,8 +19,11 @@ def init_db_models():
         OfficialBusinessRequestModel,
         OvertimeApplicationModel,
     )
+    from app.attendance.infrastructure.offline_models import OfflinePermitModel, OfflinePunchEventModel  # noqa: F401
     from app.filemaintenance.companies.infrastructure.db_model import CompanyModel  # noqa: F401
     from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit  # noqa: F401
+    from app.filemaintenance.org_unit.infrastructure.org_unit_type_db_model import OrgUnitType  # noqa: F401
+    from app.filemaintenance.operational_groups.infrastructure.db_model import OperationalGroupModel  # noqa: F401
     from app.filemaintenance.holidays.calendar.infrastructure.db_model import (  # noqa: F401
         HolidayCalendarModel,
     )
@@ -46,6 +49,7 @@ def init_db_models():
         EmployeeCompensationModel,
         BenefitTypeModel,
         CutoffBenefitModel,
+        GlobalPayrollSystemParametersModel,
         GrossPayResultModel,
         GrossPayRunModel,
         PayrollEarningRuleModel,

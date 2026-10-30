@@ -20,6 +20,7 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     ScheduleUploadBatchStatus,
     ScheduleWorkSegment,
     TeamEmployee,
+    SupervisorEmployee,
 )
 from app.filemaintenance.schedule.domain.schedule_timeline import AssignmentRevision
 from app.filemaintenance.schedule.infrastructure.db_model import (
@@ -66,6 +67,29 @@ def _approved_assignment_conditions():
 class SqlAlchemyScheduleUploadRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def find_supervisors(
+        self, employee_codes: Collection[str], on_date: date,
+    ) -> list[SupervisorEmployee]:
+        if not employee_codes:
+            return []
+        assignment = EmploymentAssignmentModel
+        rows = await self._session.execute(
+            select(EmployeeModel.id, EmployeeModel.employee_no)
+            .join(assignment, assignment.employee_id == EmployeeModel.id)
+            .where(
+                EmployeeModel.employee_no.in_(employee_codes),
+                EmployeeModel.is_active.is_(True),
+                EmployeeModel.record_status == "ACTIVE",
+                assignment.is_active.is_(True),
+                assignment.status == "ACTIVE",
+                assignment.effective_from <= on_date,
+                or_(assignment.effective_to.is_(None), assignment.effective_to >= on_date),
+                or_(assignment.separation_date.is_(None), assignment.separation_date >= on_date),
+            )
+            .distinct()
+        )
+        return [SupervisorEmployee(employee_id, code) for employee_id, code in rows]
 
     async def schedule_approval_required(self, company_ids: Collection[UUID]) -> bool:
         ids = set(company_ids)

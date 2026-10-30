@@ -18,6 +18,7 @@ export interface ScheduleUploadRowResult {
   is_valid: boolean
   errors: string[]
   effects: string[]
+  supervisor_employee_code?: string | null
 }
 
 export interface ScheduleUploadPreview {
@@ -104,21 +105,30 @@ function fileForm(file: File): FormData {
 // The client defaults to JSON, which would make axios serialize FormData as JSON.
 const multipart = { headers: { 'Content-Type': 'multipart/form-data' } }
 
-export async function downloadScheduleUploadTemplate(): Promise<Blob> {
+const hrModeParams = { dashboard_role_code: 'HR_ADMIN' }
+
+export function isHrScheduleUploadMode(roleCodes: string[], selectedRoleCode: string): boolean {
+  return selectedRoleCode === 'HR_ADMIN' && roleCodes.includes('HR_ADMIN')
+}
+
+export async function downloadScheduleUploadTemplate(hrAdmin = false): Promise<Blob> {
   try {
-    const response = await apiClient.get<Blob>('/schedule-uploads/template', { responseType: 'blob' })
+    const response = await apiClient.get<Blob>(
+      hrAdmin ? '/schedule-uploads/hr-admin/template' : '/schedule-uploads/template',
+      { responseType: 'blob', ...(hrAdmin ? { params: hrModeParams } : {}) },
+    )
     return response.data
   } catch (error) {
     return rethrowApiError(error, 'Could not download the schedule upload template.')
   }
 }
 
-export async function previewScheduleUpload(file: File): Promise<ScheduleUploadPreview> {
+export async function previewScheduleUpload(file: File, hrAdmin = false): Promise<ScheduleUploadPreview> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<ScheduleUploadPreview>>(
-      '/schedule-uploads/preview',
+      hrAdmin ? '/schedule-uploads/hr-admin/preview' : '/schedule-uploads/preview',
       fileForm(file),
-      multipart,
+      { ...multipart, ...(hrAdmin ? { params: hrModeParams } : {}) },
     )
     return response.data.data
   } catch (error) {
@@ -136,6 +146,17 @@ export async function submitScheduleUpload(file: File): Promise<ScheduleUploadBa
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not submit the schedule file.')
+  }
+}
+
+export async function submitHrScheduleUpload(file: File): Promise<ScheduleUploadBatch[]> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<ScheduleUploadBatch[]>>(
+      '/schedule-uploads/hr-admin', fileForm(file), { ...multipart, params: hrModeParams },
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not submit the HR schedule file.')
   }
 }
 

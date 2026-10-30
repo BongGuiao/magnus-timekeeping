@@ -157,6 +157,7 @@ class WfhGeofenceTests(unittest.IsolatedAsyncioTestCase):
                 uow = AsyncMock()
                 uow.__aenter__.return_value = SimpleNamespace(
                     get_repo=Mock(side_effect=[user_repo, employee_repo, enrollment_repo, attendance_repo]),
+                    session=SimpleNamespace(scalar=AsyncMock(return_value=user_repo.get.return_value)),
                 )
                 face = SimpleNamespace(
                     extract_face_encoding=lambda image: [1],

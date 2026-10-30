@@ -13,7 +13,6 @@ from app.filemaintenance.employees.domain.entities.employee import EmployeeEntit
 from app.filemaintenance.employees.domain.entities.employee_skill import EmployeeSkillEntity
 from app.filemaintenance.employees.domain.entities.employment_assignment import EmploymentAssignmentEntity
 from app.filemaintenance.employees.infrastructure.db_model import (
-    OPERATIONAL_GROUPS,
     EmployeeModel,
     EmployeeSkillModel,
     EmploymentAssignmentModel,
@@ -27,6 +26,7 @@ from app.filemaintenance.location.domain.entities.location import LocationEntity
 from app.filemaintenance.location.infrastructure.db_model import Location
 from app.filemaintenance.payroll_groups.domain.entities.payroll_group import PayrollGroupEntity
 from app.filemaintenance.payroll_groups.infrastructure.db_model import PayrollGroupModel
+from app.filemaintenance.operational_groups.application.use_case import ensure_operational_group_allowed
 
 ASSIGNMENT_DATE_FIELDS = ("hire_date", "effective_from", "effective_to", "separation_date")
 ASSIGNMENT_UUID_FIELDS = (
@@ -82,6 +82,8 @@ def _apply_changes(existing: Any, payload: dict[str, Any]) -> Any:
 
 def _normalize_assignment(payload: dict[str, Any]) -> dict[str, Any]:
     values = _normalize(payload, ASSIGNMENT_DATE_FIELDS, ASSIGNMENT_UUID_FIELDS)
+    if isinstance(values.get("operational_group"), str):
+        values["operational_group"] = values["operational_group"].upper()
     if "location_ids" in values:
         try:
             values["location_ids"] = [UUID(str(item)) for item in (values["location_ids"] or [])]
@@ -256,12 +258,16 @@ async def _ensure_single_active_assignment(
         )
 
 
-async def _validate_assignment(uow: GenUnitOfWork, values: dict[str, Any]) -> None:
+async def _validate_assignment(
+    uow: GenUnitOfWork,
+    values: dict[str, Any],
+    existing_assignment: tuple[UUID, str | None] | None = None,
+) -> None:
     _require(values, ("employee_id", "company_id", "employment_type", "employee_category", "hire_date", "effective_from"))
 
-    operational_group = values.get("operational_group")
-    if operational_group is not None and operational_group not in OPERATIONAL_GROUPS:
-        raise ValueError(f"operational_group must be one of: {', '.join(OPERATIONAL_GROUPS)}.")
+    await ensure_operational_group_allowed(
+        uow, values["company_id"], values.get("operational_group"), existing_assignment,
+    )
 
     effective_from, effective_to = values.get("effective_from"), values.get("effective_to")
     if effective_to is not None and effective_to < effective_from:
@@ -528,7 +534,9 @@ class UpdateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity])
             await _ensure_single_active_assignment(uow, validation_values, assignment_id)
             if "location_ids" not in normalized_payload:
                 validation_values.pop("location_ids", None)
-            await _validate_assignment(uow, validation_values)
+            await _validate_assignment(
+                uow, validation_values, (existing.company_id, existing.operational_group),
+            )
             updated.location_ids = validation_values["location_ids"]
             updated.primary_location_id = validation_values["primary_location_id"]
             updated.authorized_geofence_ids = validation_values["authorized_geofence_ids"]

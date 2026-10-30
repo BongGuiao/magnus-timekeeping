@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+from collections import defaultdict
 from datetime import datetime
 from typing import Callable
 from uuid import UUID
@@ -21,20 +22,21 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     ScheduleUploadBatchRow,
     ScheduleUploadBatchStatus,
     ScheduleUploadValidation,
+    ResolvedScheduleUploadRow,
 )
 from app.filemaintenance.schedule.domain.schedule_upload_exceptions import (
     ScheduleUploadNoLongerApplicableError,
     ScheduleUploadNotFoundError,
     ScheduleUploadRejectedFileError,
 )
-from app.filemaintenance.schedule.domain.schedule_upload_rules import format_batch_no
+from app.filemaintenance.schedule.domain.schedule_upload_rules import MAX_CODE_LENGTH, MAX_ROWS_PER_UPLOAD, format_batch_no
 
 MAX_LISTED_BATCHES = 200
 
 
 @dataclass(frozen=True)
 class ScheduleUploadFileInput:
-    supervisor_employee_id: UUID
+    supervisor_employee_id: UUID | None
     uploaded_by: UUID
     file_name: str
     content: bytes
@@ -79,40 +81,106 @@ class SubmitScheduleUploadUseCase(_FileUploadUseCase, BaseUseCase[ScheduleUpload
             if not evaluation.validation.is_valid:
                 raise ScheduleUploadRejectedFileError(evaluation.validation.error_count)
 
-            repository = uow.schedule_uploads
-            sequence = await repository.next_batch_sequence()
-            batch_id = await repository.add_batch(
-                NewScheduleUploadBatch(
-                    batch_no=format_batch_no(ph_today(self._clock()).year, sequence),
-                    supervisor_employee_id=data.supervisor_employee_id,
-                    uploaded_by=data.uploaded_by,
-                    file_name=data.file_name,
-                    rows=tuple(
-                        ScheduleUploadBatchRow(
-                            row_no=resolved.row.row_no,
-                            employee_id=resolved.employee.employee_id,
-                            employee_code=resolved.employee.employee_code,
-                            employee_name=resolved.employee.employee_name,
-                            schedule_code=resolved.row.schedule_code,
-                            assignment_type=resolved.row.assignment_type,
-                            effective_from=resolved.row.effective_from,
-                            effective_to=resolved.row.effective_to,
-                            rest_day_pattern_code=resolved.row.rest_day_pattern_code,
-                            reason=resolved.row.reason,
-                        )
-                        for resolved in evaluation.resolved_rows
-                    ),
-                )
+            if data.supervisor_employee_id is None:
+                raise ValueError("A supervisor is required for a team schedule upload.")
+            return await _save_upload_batch(
+                uow, data, data.supervisor_employee_id, evaluation, self._clock(),
             )
-            batch = await repository.get_batch(batch_id)
-            if batch is None:
-                raise RuntimeError("The schedule upload batch could not be reloaded after saving.")
-            company_ids = {resolved.employee.company_id for resolved in evaluation.resolved_rows}
-            if await repository.schedule_approval_required(company_ids):
-                return batch
+
+
+async def _save_upload_batch(
+    uow: ScheduleUploadUnitOfWork,
+    data: ScheduleUploadFileInput,
+    supervisor_id: UUID,
+    evaluation: ScheduleUploadEvaluation,
+    now: datetime,
+) -> ScheduleUploadBatch:
+    repository = uow.schedule_uploads
+    sequence = await repository.next_batch_sequence()
+    batch_id = await repository.add_batch(
+        NewScheduleUploadBatch(
+            batch_no=format_batch_no(ph_today(now).year, sequence),
+            supervisor_employee_id=supervisor_id,
+            uploaded_by=data.uploaded_by,
+            file_name=data.file_name,
+            rows=tuple(
+                ScheduleUploadBatchRow(
+                    row_no=resolved.row.row_no,
+                    employee_id=resolved.employee.employee_id,
+                    employee_code=resolved.employee.employee_code,
+                    employee_name=resolved.employee.employee_name,
+                    schedule_code=resolved.row.schedule_code,
+                    assignment_type=resolved.row.assignment_type,
+                    effective_from=resolved.row.effective_from,
+                    effective_to=resolved.row.effective_to,
+                    rest_day_pattern_code=resolved.row.rest_day_pattern_code,
+                    reason=resolved.row.reason,
+                )
+                for resolved in evaluation.resolved_rows
+            ),
+        )
+    )
+    batch = await repository.get_batch(batch_id)
+    if batch is None:
+        raise RuntimeError("The schedule upload batch could not be reloaded after saving.")
+    company_ids = {resolved.employee.company_id for resolved in evaluation.resolved_rows}
+    if await repository.schedule_approval_required(company_ids):
+        return batch
+    approved = batch.approve_on_submission(now)
+    if data.supervisor_employee_id is None:
+        approved = replace(
+            approved, review_remarks="Automatically approved on HR submission under company approval settings.",
+        )
+    return await _apply_schedule_upload(uow, batch, approved, data.uploaded_by, now)
+
+
+class _HrFileUploadUseCase(_FileUploadUseCase):
+    async def _evaluate(self, uow: ScheduleUploadUnitOfWork, data: ScheduleUploadFileInput) -> ScheduleUploadEvaluation:
+        upload = self._reader.read(data.content)
+        today = ph_today(self._clock())
+        codes = {
+            row.supervisor_employee_code.strip()
+            for row in upload.rows
+            if 0 < len(row.supervisor_employee_code.strip()) <= MAX_CODE_LENGTH
+        }
+        supervisors = await uow.schedule_uploads.find_supervisors(codes, today) if (
+            not upload.file_errors and len(upload.rows) <= MAX_ROWS_PER_UPLOAD and codes
+        ) else []
+        return await ScheduleUploadValidator(uow.schedule_uploads).evaluate(
+            supervisor_employee_id=None, raw_rows=upload.rows, today=today,
+            file_errors=upload.file_errors,
+            supervisors_by_code={supervisor.employee_code: supervisor for supervisor in supervisors},
+        )
+
+
+class PreviewHrScheduleUploadUseCase(_HrFileUploadUseCase, BaseUseCase[ScheduleUploadValidation]):
+    async def _execute(self, data: ScheduleUploadFileInput) -> ScheduleUploadValidation:
+        async with self._uow as uow:
+            return (await self._evaluate(uow, data)).validation
+
+
+class SubmitHrScheduleUploadUseCase(_HrFileUploadUseCase, BaseUseCase[list[ScheduleUploadBatch]]):
+    async def _execute(self, data: ScheduleUploadFileInput) -> list[ScheduleUploadBatch]:
+        async with self._uow as uow:
+            evaluation = await self._evaluate(uow, data)
+            if not evaluation.validation.is_valid:
+                raise ScheduleUploadRejectedFileError(evaluation.validation.error_count)
+            grouped: dict[UUID, list[ResolvedScheduleUploadRow]] = defaultdict(list)
+            for resolved in evaluation.resolved_rows:
+                if resolved.supervisor_employee_id is None:
+                    raise RuntimeError("A resolved HR upload row has no supervisor.")
+                grouped[resolved.supervisor_employee_id].append(resolved)
+            # Lock the whole file in a stable order before any per-batch auto-application.
+            await uow.schedule_uploads.lock_employees({
+                resolved.employee.employee_id for resolved in evaluation.resolved_rows
+            })
+            batches: list[ScheduleUploadBatch] = []
             now = self._clock()
-            approved = batch.approve_on_submission(now)
-            return await _apply_schedule_upload(uow, batch, approved, data.uploaded_by, now)
+            for supervisor_id, rows in grouped.items():
+                batches.append(await _save_upload_batch(
+                    uow, data, supervisor_id, replace(evaluation, resolved_rows=tuple(rows)), now,
+                ))
+            return batches
 
 
 @dataclass(frozen=True)

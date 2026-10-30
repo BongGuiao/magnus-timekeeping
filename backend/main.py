@@ -2,10 +2,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from elasticsearch import AsyncElasticsearch
-from sqlalchemy import text
 from app.core.config import settings
 from app.core.request_logging import RequestLoggingMiddleware, configure_audit_logger
-from app.core.database import engine, Base, init_db_models
 from app.core.exception_handlers import register_exception_handlers
 from app.auth.infrastructure.router import router as auth_router
 from app.enrollment.infrastructure.router import router as enrollment_router
@@ -13,6 +11,7 @@ from app.attendance.infrastructure.router import router as attendance_router
 from app.attendance.infrastructure.official_business_router import router as official_business_router
 from app.filemaintenance.companies.infrastructure.router import router as companies_router
 from app.filemaintenance.org_unit.infrastructure.router import router as org_units_router
+from app.filemaintenance.operational_groups.infrastructure.router import router as operational_groups_router
 from app.filemaintenance.holidays.calendar.infrastructure.router import router as holiday_calendars_router
 from app.filemaintenance.holidays.holiday.infrastructure.router import router as holidays_router
 from app.filemaintenance.announcements.infrastructure.router import router as announcements_router
@@ -62,33 +61,6 @@ from app.psgc.infrastructure.router import router as psgc_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_audit_logger(settings.REQUEST_LOG_DIRECTORY)
-    init_db_models()
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS core"))
-        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS payroll"))
-        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS schedule"))
-        await conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM pg_type AS t
-                        JOIN pg_namespace AS ns ON ns.oid = t.typnamespace
-                        WHERE ns.nspname = 'core'
-                          AND t.typname = 'positive_minutes'
-                          AND t.typtype = 'd'
-                    ) THEN
-                        CREATE DOMAIN core.positive_minutes AS integer
-                        CHECK (VALUE >= 0);
-                    END IF;
-                END
-                $$;
-                """
-            )
-        )
-        await conn.run_sync(Base.metadata.create_all)
     audit_es_client = (
         AsyncElasticsearch(
             settings.ELASTICSEARCH_URL,
@@ -135,6 +107,7 @@ app.include_router(official_business_router)
 app.include_router(attendance_router)
 app.include_router(companies_router)
 app.include_router(org_units_router)
+app.include_router(operational_groups_router)
 app.include_router(holiday_calendars_router)
 app.include_router(holidays_router)
 app.include_router(announcements_router)

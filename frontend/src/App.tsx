@@ -12,6 +12,7 @@ import EmergencyScheduleApprovals from './pages/EmergencyScheduleApprovals'
 import Companies from './pages/Companies'
 import OrgUnits from './pages/OrgUnits'
 import OrgUnitTypes from './pages/OrgUnitTypes'
+import OperationalGroups from './pages/OperationalGroups'
 import Employees from './pages/Employees'
 import Locations from './pages/Locations'
 import LocationTypes from './pages/LocationTypes'
@@ -57,7 +58,7 @@ const offCyclePayrollUseCases = new OffCyclePayrollUseCases(new HttpOffCyclePayr
 
 const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-org-unit-summary', 'attendance-recalculation', 'companies', 'org-units', 'org-unit-types', 'locations', 'location-types',
-  'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
+  'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
   'overtime-application', 'official-business', 'change-password', 'my-schedule', 'schedule-uploads',
@@ -253,6 +254,7 @@ function App() {
       companies: 'company.setup',
       'org-units': 'company.setup',
       'org-unit-types': 'company.setup',
+      'operational-groups': 'company.setup',
       locations: 'company.setup',
       'location-types': 'company.setup',
       geofences: 'company.setup',
@@ -364,6 +366,9 @@ function App() {
 
     if (view === 'org-unit-types') {
       return <OrgUnitTypes employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+    if (view === 'operational-groups') {
+      return <OperationalGroups employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'locations') {

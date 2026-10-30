@@ -10,6 +10,8 @@ from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     PreviewScheduleUploadUseCase,
     RejectScheduleUploadBatchUseCase,
     SubmitScheduleUploadUseCase,
+    PreviewHrScheduleUploadUseCase,
+    SubmitHrScheduleUploadUseCase,
 )
 from app.filemaintenance.schedule.infrastructure.schedule_upload_csv import CsvScheduleUploadReader
 from app.filemaintenance.schedule.infrastructure.schedule_upload_repository import (
@@ -33,6 +35,18 @@ def get_submit_schedule_upload_use_case(
     uow: SqlAlchemyScheduleUploadUnitOfWork = Depends(get_schedule_upload_unit_of_work),
 ) -> SubmitScheduleUploadUseCase:
     return SubmitScheduleUploadUseCase(uow, CsvScheduleUploadReader())
+
+
+def get_preview_hr_schedule_upload_use_case(
+    uow: SqlAlchemyScheduleUploadUnitOfWork = Depends(get_schedule_upload_unit_of_work),
+) -> PreviewHrScheduleUploadUseCase:
+    return PreviewHrScheduleUploadUseCase(uow, CsvScheduleUploadReader(include_supervisor=True))
+
+
+def get_submit_hr_schedule_upload_use_case(
+    uow: SqlAlchemyScheduleUploadUnitOfWork = Depends(get_schedule_upload_unit_of_work),
+) -> SubmitHrScheduleUploadUseCase:
+    return SubmitHrScheduleUploadUseCase(uow, CsvScheduleUploadReader(include_supervisor=True))
 
 
 def get_list_schedule_upload_batches_use_case(

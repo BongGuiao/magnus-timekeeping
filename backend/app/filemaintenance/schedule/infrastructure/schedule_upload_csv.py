@@ -24,12 +24,17 @@ def _decode(content: bytes) -> str | None:
     return None
 
 
-def schedule_upload_csv_template() -> str:
-    return ",".join(CSV_COLUMNS) + "\r\n"
+def schedule_upload_csv_template(include_supervisor: bool = False) -> str:
+    columns = ("supervisor_employee_code", *CSV_COLUMNS) if include_supervisor else CSV_COLUMNS
+    return ",".join(columns) + "\r\n"
 
 
 class CsvScheduleUploadReader:
     """Reads the supervisor schedule upload CSV format into raw rows."""
+
+    def __init__(self, include_supervisor: bool = False):
+        self._columns = ("supervisor_employee_code", *CSV_COLUMNS) if include_supervisor else CSV_COLUMNS
+        self._required = REQUIRED_COLUMNS | {"supervisor_employee_code"} if include_supervisor else REQUIRED_COLUMNS
 
     def read(self, content: bytes) -> ScheduleUploadFile:
         text = _decode(content)
@@ -56,21 +61,20 @@ class CsvScheduleUploadReader:
                 file_errors.append(f"Row {line_no} has more values than there are columns.")
                 continue
             record = dict(zip(header, values))
-            rows.append(RawScheduleUploadRow(row_no=line_no, **{column: record.get(column, "") for column in CSV_COLUMNS}))
+            rows.append(RawScheduleUploadRow(row_no=line_no, **{column: record.get(column, "") for column in self._columns}))
         return ScheduleUploadFile(rows=tuple(rows), file_errors=tuple(file_errors))
 
-    @staticmethod
-    def _header_errors(header: list[str]) -> list[str]:
+    def _header_errors(self, header: list[str]) -> list[str]:
         errors: list[str] = []
         duplicates = sorted({column for column in header if column and header.count(column) > 1})
         if duplicates:
             errors.append(f"Duplicate column(s): {', '.join(duplicates)}.")
-        unknown = [column for column in header if column and column not in CSV_COLUMNS]
+        unknown = [column for column in header if column and column not in self._columns]
         if unknown:
             errors.append(
-                f"Unknown column(s): {', '.join(unknown)}. Allowed columns: {', '.join(CSV_COLUMNS)}."
+                f"Unknown column(s): {', '.join(unknown)}. Allowed columns: {', '.join(self._columns)}."
             )
-        missing = [column for column in CSV_COLUMNS if column in REQUIRED_COLUMNS and column not in header]
+        missing = [column for column in self._columns if column in self._required and column not in header]
         if missing:
             errors.append(f"Missing required column(s): {', '.join(missing)}.")
         return errors

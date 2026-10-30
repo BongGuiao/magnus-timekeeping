@@ -1,5 +1,71 @@
 # React + TypeScript + Vite
 
+## HR team schedule uploads
+
+Team Schedule Upload offers an HR CSV format only when the account has the exact
+`HR_ADMIN` role and the selected dashboard role is `HR_ADMIN`. The existing
+`schedule.upload_team` permission is still required. Template, preview, and
+submission use the `/schedule-uploads/hr-admin` endpoints with
+`dashboard_role_code=HR_ADMIN`; the backend checks the user's current assigned
+roles, rather than trusting a browser role or JWT role label alone.
+
+The HR template adds the required `supervisor_employee_code` column. Each row
+must specify an active supervisor employee number, and the employee must already
+be an active direct report of that supervisor. This upload does not change
+employment assignments or reporting relationships. HR uploaders do not need an
+employee profile linked to their own account.
+
+A file may contain several supervisors. Preview shows supervisor codes and
+original CSV row numbers. Submission revalidates the entire file, then creates
+one batch per supervisor in one transaction, retaining the HR user as uploader.
+Any invalid row or persistence/application failure rejects the entire file;
+overlapping rows for an employee are checked across supervisor groups too.
+Existing per-company approval settings still apply to each batch: batches wait
+for an independent reviewer when required, or are auto-approved and applied when
+that setting is disabled. The UI displays the returned status for every batch.
+My uploads shows the supervisor for each batch.
+
+Ordinary supervisor uploads retain their current CSV format and own-team scope.
+Changing between HR and other dashboard modes clears the selected file and
+preview so a file cannot accidentally be submitted using the other mode.
+Role selectors in all open workspace modules stay synchronized with the selected
+dashboard mode, including accounts assigned both HR_ADMIN and SUPERVISOR.
+No database migration is needed; deploy backend and frontend together.
+
+## Operational groups
+
+Under Company Setup, Operational Groups manages company-specific group codes,
+display names, sort order, and active status using the existing `company.setup`
+permission. Codes are immutable; deactivate rather than delete a group.
+New companies start with no groups; add the groups they need in this page.
+
+Employment Assignments loads its dropdown from `GET /operational-groups/list`
+for the selected company. Inactive groups cannot be newly assigned, but an
+existing assignment can keep its inactive group while other fields are edited.
+Changing company clears the selection. `None` remains a nullable group.
+Loading failures are displayed with a Retry action and block assignment saves.
+Saving a group refreshes lookups in open assignment panels. CSV imports also
+resolve active group codes through the API, rather than a fixed frontend list.
+Payroll review continues filtering the codes recorded on assignment results.
+
+Deploy backend and frontend together **after** applying the operational groups
+migration, and reload/recreate Nginx with the updated API proxy configuration.
+Alembic-managed installations use revision `c8f9012d3e45` via
+`alembic -c alembic.ini upgrade head`. Existing installations without a reviewed
+Alembic baseline can instead apply
+[`20261030_create_operational_groups.sql`](../backend/sql/20261030_create_operational_groups.sql)
+once using `psql -v ON_ERROR_STOP=1 -f ...`; do not run both migration paths.
+Do not run the fresh-install Alembic baseline or blindly stamp an existing
+database. Back up first and pause assignment/group writes during the migration.
+The migration seeds the nine existing choices for every current company and
+preserves existing non-null assignment codes before replacing the fixed-list
+constraint with a company-and-code foreign key. No assignment codes are renamed.
+Downgrade refuses to proceed while custom group codes exist.
+Installations without the legacy named check constraint are supported.
+If an attempt fails inside the script's transaction, run `ROLLBACK;` on the same
+connection before rerunning the complete corrected script, not just its remaining
+statements. The script is a one-time migration, not a general rerunnable installer.
+
 ## Attendance actions
 
 The web attendance page uses **Clock In** and **Clock Out**, matching the native

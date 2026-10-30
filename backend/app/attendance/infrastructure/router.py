@@ -8,11 +8,13 @@ from app.attendance.infrastructure.authorized_location_router import router as a
 from app.attendance.infrastructure.clock_router import router as clock_router
 from app.attendance.infrastructure.device_challenge_router import router as device_challenge_router
 from app.attendance.infrastructure.overtime_router import router as overtime_router
+from app.attendance.infrastructure.offline_router import router as offline_router
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 for feature_router in (
     clock_router,
+    offline_router,
     device_challenge_router,
     overtime_router,
     attendance_review_router,

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from anyio import CapacityLimiter, to_thread
 from geoalchemy2 import Geography, Geometry
 from sqlalchemy import and_, case, cast, or_, select, func, false
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +67,26 @@ DEFAULT_EXPECTED_CLOCK_IN = time(9, 0)
 DEFAULT_EXPECTED_CLOCK_OUT = time(18, 0)
 MAX_OPEN_ATTENDANCE_AGE = timedelta(hours=24)
 MAX_FACE_MATCH_CANDIDATES = 10000
+FACE_EXTRACTION_LIMITER = CapacityLimiter(1)
+
+
+async def lock_attendance_user(
+    session: AsyncSession, user_id: UUID, employee_id: UUID,
+) -> None:
+    # Lock the stable account row: a new clock-in has no attendance row to lock yet.
+    user = await session.scalar(
+        select(UserModel)
+        .where(UserModel.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        user is None
+        or not user.is_active
+        or user.account_status != AccountStatus.ACTIVE.value
+        or user.employee_id != employee_id
+    ):
+        raise ValueError("Matched account is inactive or no longer exists.")
 
 
 def circle_contains_gps(
@@ -509,6 +530,8 @@ class ClockAttendanceInputDTO:
     longitude: float | None = None
     gps_accuracy_meters: float | None = None
     allow_wfh: bool = False
+    captured_at: datetime | None = None
+    requested_action: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1229,7 +1252,12 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         return await resolve_schedule_day(uow.session, employee_id, work_date)
 
     async def _execute(self, input_dto: ClockAttendanceInputDTO) -> ClockAttendanceOutputDTO:
-        candidate_encoding = self.face_recognition_service.extract_face_encoding(input_dto.image_bytes)
+        request_started_at = datetime.now(timezone.utc)
+        candidate_encoding = await to_thread.run_sync(
+            self.face_recognition_service.extract_face_encoding,
+            input_dto.image_bytes,
+            limiter=FACE_EXTRACTION_LIMITER,
+        )
         async with self.uow as uow:
             user_repo = uow.get_repo(UserEntity, UserModel)
             user = await user_repo.get(input_dto.user_id)
@@ -1263,8 +1291,10 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             if matched_employee_id != employee.id:
                 raise ValueError("Face does not match the selected employee.")
 
+            await lock_attendance_user(uow.session, input_dto.user_id, employee.id)
+
             # 2. Timezone logic
-            now_utc = datetime.now(timezone.utc)
+            now_utc = input_dto.captured_at or datetime.now(timezone.utc)
             ph_timezone = ZoneInfo("Asia/Manila")
             now_local = now_utc.astimezone(ph_timezone)
             today = now_local.date()
@@ -1299,8 +1329,26 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     existing = None
             approval_required = False
             schedule_template_id: UUID | None = None
+            if input_dto.requested_action is not None:
+                resolved_action = "clock_out" if existing else "clock_in"
+                if input_dto.requested_action != resolved_action:
+                    raise ValueError("Offline punch conflicts with the current shift. HR review is required.")
             # 3. Simplify to Clock In vs Clock Out logic
             if not existing:
+                closed_during_request = await attendance_repo.find_all(
+                    AttendanceModel.user_id == input_dto.user_id,
+                    or_(
+                        AttendanceModel.clock_out_at >= request_started_at,
+                        AttendanceModel.corrected_clock_out_at >= request_started_at,
+                    ),
+                    limit=1,
+                )
+                if closed_during_request:
+                    raise ValueError(
+                        "This shift was clocked out by another request. "
+                        "Refresh your attendance before punching again."
+                    )
+
                 # CLOCK IN
                 schedule = await self._resolve_schedule_day(
                     uow,
@@ -1601,6 +1649,7 @@ class RecordBreakInputDTO:
     image_bytes: bytes
     device_proof: Optional[Dict[str, str]] = None
     punch_metadata: dict[str, Any] | None = None
+    captured_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -1619,7 +1668,11 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
         self.face_recognition_service = face_recognition_service
 
     async def _execute(self, input_dto: RecordBreakInputDTO) -> RecordBreakOutputDTO:
-        candidate_encoding = self.face_recognition_service.extract_face_encoding(input_dto.image_bytes)
+        candidate_encoding = await to_thread.run_sync(
+            self.face_recognition_service.extract_face_encoding,
+            input_dto.image_bytes,
+            limiter=FACE_EXTRACTION_LIMITER,
+        )
         async with self.uow as uow:
             user_repo = uow.get_repo(UserEntity, UserModel)
             user = await user_repo.get(input_dto.user_id)
@@ -1647,8 +1700,10 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
             if not match or match[0] != employee.id:
                 raise ValueError("Face not recognized for this employee. Please enroll or try again.")
 
+            await lock_attendance_user(uow.session, input_dto.user_id, employee.id)
+
             # 2. Get current local date in Philippine Time
-            now_utc = datetime.now(timezone.utc)
+            now_utc = input_dto.captured_at or datetime.now(timezone.utc)
             ph_timezone = ZoneInfo("Asia/Manila")
             now_local = now_utc.astimezone(ph_timezone)
             today = now_local.date()

@@ -13,6 +13,7 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     ScheduleUploadBatchStatus,
     ScheduleUploadFile,
     TeamEmployee,
+    SupervisorEmployee,
 )
 from app.filemaintenance.schedule.domain.schedule_timeline import AssignmentRevision
 
@@ -22,6 +23,10 @@ class ScheduleUploadFileReader(Protocol):
 
 
 class ScheduleUploadLookups(Protocol):
+    async def find_supervisors(
+        self, employee_codes: Collection[str], on_date: date,
+    ) -> list[SupervisorEmployee]: ...
+
     async def find_team_employees(
         self,
         supervisor_employee_id: UUID,
