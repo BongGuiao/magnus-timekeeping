@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
 import { Briefcase, LoaderCircle, Pencil, Save, Send, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -235,6 +236,7 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
           <button type="button" onClick={() => onNavigate?.('dashboard')} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700">Back to dashboard</button>
         </div>
         {previewOnly && <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">Employee preview only. Use an employee-linked account to view and file official business requests.</p>}
+        {!previewOnly && <AttendanceDeadlines />}
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{success}</p>}
 

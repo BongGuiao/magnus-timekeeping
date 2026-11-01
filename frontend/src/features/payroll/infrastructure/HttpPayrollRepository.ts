@@ -144,6 +144,7 @@ interface BackendPayrollSystemParameters {
   thirteenth_month_enabled: boolean
   schedule_assignment_approval_required: boolean
   statutory_contribution_timing: 'PER_CUTOFF' | 'FINAL_CUTOFF'
+  holiday_pay_attendance_rule: 'BEFORE_ONLY' | 'BEFORE_AND_AFTER'
 }
 
 interface BackendThirteenthMonthRun {
@@ -1001,6 +1002,7 @@ export class HttpPayrollRepository implements PayrollRepository {
         scheduleAssignmentApprovalRequired:
           response.data.data.schedule_assignment_approval_required,
         statutoryContributionTiming: response.data.data.statutory_contribution_timing,
+        holidayPayAttendanceRule: response.data.data.holiday_pay_attendance_rule,
       }
     } catch (error) {
       return rethrowApiError(error, 'Could not load payroll system parameters.')
@@ -1021,6 +1023,9 @@ export class HttpPayrollRepository implements PayrollRepository {
           schedule_assignment_approval_required:
             parameters.scheduleAssignmentApprovalRequired,
           statutory_contribution_timing: parameters.statutoryContributionTiming,
+          ...(parameters.holidayPayAttendanceRule
+            ? { holiday_pay_attendance_rule: parameters.holidayPayAttendanceRule }
+            : {}),
         },
         { params: { company_id: companyId } },
       )
@@ -1031,6 +1036,7 @@ export class HttpPayrollRepository implements PayrollRepository {
         scheduleAssignmentApprovalRequired:
           response.data.data.schedule_assignment_approval_required,
         statutoryContributionTiming: response.data.data.statutory_contribution_timing,
+        holidayPayAttendanceRule: response.data.data.holiday_pay_attendance_rule,
       }
     } catch (error) {
       return rethrowApiError(error, 'Could not update payroll system parameters.')

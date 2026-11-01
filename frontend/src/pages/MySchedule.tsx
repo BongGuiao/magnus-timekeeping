@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
 import type { FormEvent } from 'react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -152,6 +153,7 @@ export default function MySchedule({ employeeName, onNavigate, onLoggedOut }: Pr
           <h1 className="text-xl font-bold text-slate-900">My Schedule</h1>
           <p className="mt-1 text-xs text-slate-600">Your current and upcoming approved work schedules.</p>
         </header>
+        {hasPermission('schedule.request_emergency') && <AttendanceDeadlines />}
 
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
@@ -210,6 +211,7 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
           </p>
         )}
 
+        {!previewOnly && <AttendanceDeadlines />}
         {error && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}
 

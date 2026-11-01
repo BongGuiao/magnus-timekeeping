@@ -9,6 +9,7 @@ from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
     require_attendance_open,
     require_cutoff_open,
     validate_attendance_deadline,
+    validate_cutoff_deadlines,
 )
 
 NOW = datetime(2026, 10, 16, 12, tzinfo=timezone.utc)
@@ -29,6 +30,40 @@ def make_cutoff(**changes):
 
 
 class DeadlinePolicyTests(unittest.TestCase):
+    def test_filing_closes_before_approval_and_boundary_is_inclusive(self):
+        cutoff = make_cutoff(
+            employee_filing_deadline=NOW,
+            attendance_deadline=datetime(2026, 10, 17, 12, tzinfo=timezone.utc),
+        )
+        require_cutoff_open(cutoff, NOW, stage="FILING")
+        later = datetime(2026, 10, 16, 12, 0, 1, tzinfo=timezone.utc)
+        with self.assertRaisesRegex(CutoffDeadlineError, "employee filing deadline"):
+            require_cutoff_open(cutoff, later, stage="FILING")
+        require_cutoff_open(cutoff, later)
+
+    def test_legacy_deadline_is_used_for_filing_when_no_separate_deadline(self):
+        cutoff = make_cutoff(attendance_deadline=datetime(2026, 10, 16, 11, tzinfo=timezone.utc))
+        with self.assertRaises(CutoffDeadlineError):
+            require_cutoff_open(cutoff, NOW, stage="FILING")
+
+    def test_finalization_and_lock_close_both_stages(self):
+        for values in ({"attendance_finalized_at": NOW}, {"locked_at": NOW}, {"status": "LOCKED"}):
+            for stage in ("FILING", "APPROVAL"):
+                with self.subTest(values=values, stage=stage):
+                    with self.assertRaises(CutoffDeadlineError):
+                        require_cutoff_open(make_cutoff(**values), NOW, stage=stage)
+
+    def test_deadline_order_and_timezone_validation(self):
+        end = date(2026, 10, 15)
+        validate_cutoff_deadlines(end, NOW, NOW)
+        validate_cutoff_deadlines(end, None, None)
+        with self.assertRaisesRegex(ValueError, "supervisor approval deadline"):
+            validate_cutoff_deadlines(end, None, NOW)
+        with self.assertRaisesRegex(ValueError, "cannot be after"):
+            validate_cutoff_deadlines(end, NOW, datetime(2026, 10, 17, 12, tzinfo=timezone.utc))
+        with self.assertRaisesRegex(ValueError, "timezone"):
+            validate_cutoff_deadlines(end, datetime(2026, 10, 17), None)
+
     def test_expired_attendance_deadline_closes_cutoff(self):
         cutoff = make_cutoff(attendance_deadline=datetime(2026, 10, 16, 11, tzinfo=timezone.utc))
 
@@ -79,6 +114,16 @@ class FakeSession:
 
 
 class AttendanceRangeDeadlineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_range_uses_filing_stage_without_closing_approvals(self):
+        cutoff = make_cutoff(
+            employee_filing_deadline=datetime(2026, 10, 16, 11, tzinfo=timezone.utc),
+            attendance_deadline=datetime(2026, 10, 17, 12, tzinfo=timezone.utc),
+        )
+        assignment = SimpleNamespace(effective_from=date(2026, 9, 1), effective_to=None, separation_date=None)
+        session = FakeSession([(cutoff, assignment)])
+        with self.assertRaisesRegex(CutoffDeadlineError, "employee filing"):
+            await require_attendance_open(session, uuid4(), date(2026, 10, 10), date(2026, 10, 12), NOW, stage="FILING")
+        await require_attendance_open(session, uuid4(), date(2026, 10, 10), date(2026, 10, 12), NOW)
     async def test_only_cutoffs_overlapping_the_request_and_assignment_are_checked(self):
         covered = make_cutoff(
             attendance_deadline=datetime(2026, 10, 16, 11, tzinfo=timezone.utc),

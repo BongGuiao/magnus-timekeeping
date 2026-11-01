@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AxiosError } from 'axios'
 import { AlertCircle, CalendarDays, Check, CheckCircle2, LoaderCircle, Pencil, Plus, ShieldCheck, UserRoundCog, X } from 'lucide-react'
+import SearchableSelect from '../../components/common/SearchableSelect'
 import {
   createUserRoleAssignment,
   fetchAvailableRoles,
@@ -297,10 +298,8 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
           </div>
           <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(150px,0.8fr)_minmax(150px,0.8fr)_auto] lg:items-end">
             <label className={labelClassName}>Role <span className="font-normal text-slate-400">(required)</span>
-              <select value={roleId} onChange={(event) => setRoleId(event.target.value)} className={inputClassName}>
-                <option value="">Select a role</option>
-                {roles.map((role) => <option key={role.id} value={role.id}>{role.role_name} ({role.role_code})</option>)}
-              </select>
+              <SearchableSelect label="Role" value={roleId} onChange={setRoleId} className={inputClassName}
+                options={[{ value: '', label: 'Select a role' }, ...roles.map((role) => ({ value: role.id, label: `${role.role_name} (${role.role_code})` }))]} />
             </label>
             <label className={labelClassName}>Employment assignment company
               <select value={companyId} disabled className={inputClassName}>
@@ -315,10 +314,8 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
               </select>
             </label>
             <label className={labelClassName}>Org unit scope
-              <select value={orgUnitId} onChange={(event) => setOrgUnitId(event.target.value)} disabled={!companyId} className={inputClassName}>
-                <option value="">All org units</option>
-                {scopedOrgUnits.map((orgUnit) => <option key={orgUnit.id} value={orgUnit.id}>{orgUnit.org_unit_code} — {orgUnit.org_unit_name}</option>)}
-              </select>
+              <SearchableSelect label="Org unit scope" value={orgUnitId} onChange={setOrgUnitId} disabled={!companyId} className={inputClassName}
+                options={[{ value: '', label: 'All org units' }, ...scopedOrgUnits.map((unit) => ({ value: unit.id, label: `${unit.org_unit_code} — ${unit.org_unit_name}` }))]} />
             </label>
             <label className={labelClassName}>Effective from <span className="font-normal text-slate-400">(required)</span>
               <input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className={inputClassName} />

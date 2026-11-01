@@ -1,3 +1,5 @@
+FROM postgres:16-bookworm AS postgres_tools
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -20,9 +22,12 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 4. Remove build tools and install runtime dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 libopenblas0 liblapack3 \
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 libopenblas0 liblapack3 liblz4-1 libzstd1 \
     && apt-get purge -y --auto-remove gcc g++ make cmake libopenblas-dev liblapack-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=postgres_tools /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=postgres_tools /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore
 
 # 5. Copy the rest of the application code
 COPY . /app/

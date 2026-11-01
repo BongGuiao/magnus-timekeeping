@@ -589,19 +589,13 @@ async def create_official_business_request(
         session = _active_session(active_uow)
         employee = await _employee_for_user(session, user_id, lock=True)
         await _validate_request(session, employee.id, payload)
-        if payload.submit:
-            try:
-                await require_attendance_open(
-                    session,
-                    employee.id,
-                    _local_date(payload.start_at),
-                    _local_date(payload.end_at),
-                )
-            except CutoffDeadlineError as error:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=str(error),
-                ) from error
+        try:
+            await require_attendance_open(
+                session, employee.id, _local_date(payload.start_at),
+                _local_date(payload.end_at - timedelta(microseconds=1)), stage="FILING",
+            )
+        except CutoffDeadlineError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         request = OfficialBusinessRequestModel(
             request_no=f"OB-{_local_date(payload.start_at):%Y%m%d}-{uuid4().hex[:12].upper()}",
             employee_id=employee.id,
@@ -637,6 +631,17 @@ async def update_official_business_request(
         session = _active_session(active_uow)
         employee = await _employee_for_user(session, user_id, lock=True)
         request = await _own_request(session, request_id, employee.id, payload.row_version, ("DRAFT",))
+        try:
+            for start_at, end_at in (
+                (request.start_at, request.end_at), (payload.start_at, payload.end_at),
+            ):
+                await require_attendance_open(
+                    session, employee.id, _local_date(start_at),
+                    _local_date(end_at - timedelta(microseconds=1)),
+                    stage="FILING",
+                )
+        except CutoffDeadlineError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         await _validate_request(session, employee.id, payload, exclude_request_id=request.id)
         _apply_payload(request, payload)
         request.updated_by = user_id
@@ -672,7 +677,8 @@ async def submit_official_business_request(
                 session,
                 request.employee_id,
                 _local_date(request.start_at),
-                _local_date(request.end_at),
+                _local_date(request.end_at - timedelta(microseconds=1)),
+                stage="FILING",
             )
         except CutoffDeadlineError as error:
             raise HTTPException(
@@ -727,6 +733,13 @@ async def cancel_official_business_request(
         request = await _own_request(
             session, request_id, employee.id, payload.row_version, ("DRAFT", "PENDING"),
         )
+        try:
+            await require_attendance_open(
+                session, employee.id, _local_date(request.start_at),
+                _local_date(request.end_at - timedelta(microseconds=1)), stage="FILING",
+            )
+        except CutoffDeadlineError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
         previous_status = request.status
         request.status = "CANCELLED"
         request.updated_by = user_id
@@ -818,7 +831,7 @@ async def decide_official_business_request(
                 session,
                 request.employee_id,
                 _local_date(request.start_at),
-                _local_date(request.end_at),
+                _local_date(request.end_at - timedelta(microseconds=1)),
             )
         except CutoffDeadlineError as error:
             raise HTTPException(

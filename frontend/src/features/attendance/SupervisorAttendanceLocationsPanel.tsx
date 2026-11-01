@@ -162,11 +162,12 @@ export default function SupervisorAttendanceLocationsPanel() {
           disabled={isLoading || isLoadingEmployees || !employeeCode.trim() || !workDate}
           aria-label={isLoading ? 'Loading locations' : result ? 'Hide locations' : 'Show locations'}
           title={isLoading ? 'Loading locations' : result ? 'Hide locations' : 'Show locations'}
-          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-indigo-200 bg-white text-indigo-600 transition hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isLoading
             ? <LoaderCircle className="h-5 w-5 animate-spin" aria-hidden="true" />
             : <MapPin className="h-5 w-5" aria-hidden="true" />}
+          <span>{isLoading ? 'Loading...' : result ? 'Hide locations' : 'Show locations'}</span>
         </button>
       </form>
 

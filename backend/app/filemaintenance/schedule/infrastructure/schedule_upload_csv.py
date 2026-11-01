@@ -1,28 +1,12 @@
 import csv
 import io
 
+from app.core.csv_upload import decode_csv_text, normalize_csv_header
 from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     RawScheduleUploadRow,
     ScheduleUploadFile,
 )
 from app.filemaintenance.schedule.domain.schedule_upload_rules import CSV_COLUMNS, REQUIRED_COLUMNS
-
-# Excel on Windows saves "CSV (Comma delimited)" as cp1252 and "CSV UTF-8" with a BOM.
-_ENCODINGS = ("utf-8-sig", "cp1252")
-
-
-def _normalize_header(value: str) -> str:
-    return "_".join(value.strip().lower().split())
-
-
-def _decode(content: bytes) -> str | None:
-    for encoding in _ENCODINGS:
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return None
-
 
 def schedule_upload_csv_template(include_supervisor: bool = False) -> str:
     columns = ("supervisor_employee_code", *CSV_COLUMNS) if include_supervisor else CSV_COLUMNS
@@ -37,7 +21,7 @@ class CsvScheduleUploadReader:
         self._required = REQUIRED_COLUMNS | {"supervisor_employee_code"} if include_supervisor else REQUIRED_COLUMNS
 
     def read(self, content: bytes) -> ScheduleUploadFile:
-        text = _decode(content)
+        text = decode_csv_text(content)
         if text is None:
             return ScheduleUploadFile(file_errors=("The file is not a readable text CSV file.",))
 
@@ -48,7 +32,7 @@ class CsvScheduleUploadReader:
         if not records:
             return ScheduleUploadFile(file_errors=("The file is empty.",))
 
-        header = [_normalize_header(value) for value in records[0]]
+        header = [normalize_csv_header(value) for value in records[0]]
         file_errors = self._header_errors(header)
         if file_errors:
             return ScheduleUploadFile(file_errors=tuple(file_errors))

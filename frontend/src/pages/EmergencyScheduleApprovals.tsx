@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
@@ -73,6 +74,7 @@ export default function EmergencyScheduleApprovals({
         onSignOut={logout}
       />
       <main className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+        <AttendanceDeadlines scope="team" />
         <header>
           <h1 className="text-xl font-bold text-slate-900">Emergency Schedule Approvals</h1>
           <p className="mt-1 text-xs text-slate-600">

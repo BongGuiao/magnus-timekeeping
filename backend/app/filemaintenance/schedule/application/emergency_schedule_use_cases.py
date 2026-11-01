@@ -21,6 +21,7 @@ from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import require_attendance_open
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
@@ -516,6 +517,9 @@ class SubmitEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
             )
             if account_employee_id != employee.id:
                 raise ValueError("This account is not linked to the requested employee profile.")
+            await require_attendance_open(
+                uow.session, employee.id, data.work_date, data.work_date, stage="FILING",
+            )
             is_retroactive = await _validate_retroactive_work_date(
                 uow, data.employee_id, data.work_date
             )
@@ -683,6 +687,10 @@ class ReviewEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
             )
             if supervisor_assignment is None:
                 raise ValueError("Only the employee's assigned supervisor may review this request.")
+            await require_attendance_open(
+                uow.session, request.employee_id, request.work_date, request.work_date,
+                stage="APPROVAL",
+            )
             if data.decision == "APPROVED":
                 is_retroactive = request.work_date < ph_today(utc_now())
                 if is_retroactive:

@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.request_logging import RequestLoggingMiddleware, configure_audit_logger
 from app.core.exception_handlers import register_exception_handlers
 from app.auth.infrastructure.router import router as auth_router
+from app.backup.router import router as backup_router
 from app.enrollment.infrastructure.router import router as enrollment_router
 from app.attendance.infrastructure.router import router as attendance_router
 from app.attendance.infrastructure.official_business_router import router as official_business_router
@@ -102,6 +103,7 @@ if settings.REQUEST_LOGGING_ENABLED:
     )
 
 app.include_router(auth_router)
+app.include_router(backup_router)
 app.include_router(enrollment_router)
 app.include_router(official_business_router)
 app.include_router(attendance_router)

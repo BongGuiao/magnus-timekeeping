@@ -7,6 +7,8 @@ import type {
   ChangePasswordResult,
   CurrentAuthorization,
   LoginRequest,
+  PasswordResetTarget,
+  ResetPasswordResult,
   TokenResponse,
   UserSummary,
 } from '../types/auth'
@@ -73,6 +75,36 @@ export async function changePassword(payload: ChangePasswordRequest): Promise<Ch
     if (err instanceof AxiosError) {
       const body = err.response?.data as { detail?: unknown } | undefined
       throw new Error(formatErrorDetail(body?.detail, 'Your password could not be changed. Please try again.'))
+    }
+    throw err
+  }
+}
+
+export async function lookupPasswordResetTarget(employeeCode: string): Promise<PasswordResetTarget> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<PasswordResetTarget>>('/auth/password-reset/lookup', {
+      params: { employee_code: employeeCode },
+    })
+    return response.data.data
+  } catch (err) {
+    if (err instanceof AxiosError) {
+      const body = err.response?.data as { detail?: unknown } | undefined
+      throw new Error(formatErrorDetail(body?.detail, 'The employee code could not be found.'))
+    }
+    throw err
+  }
+}
+
+export async function resetPasswordToDefault(employeeCode: string): Promise<ResetPasswordResult> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<ResetPasswordResult>>('/auth/password-reset', {
+      employee_code: employeeCode,
+    })
+    return response.data.data
+  } catch (err) {
+    if (err instanceof AxiosError) {
+      const body = err.response?.data as { detail?: unknown } | undefined
+      throw new Error(formatErrorDetail(body?.detail, 'The password could not be reset. Please try again.'))
     }
     throw err
   }

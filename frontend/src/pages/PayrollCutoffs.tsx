@@ -29,6 +29,7 @@ interface CutoffForm {
   period_end: string
   pay_date: string
   attendance_deadline: string
+  employee_filing_deadline: string
   status: string
   calculation_version: string
   export_batch_id: string
@@ -46,6 +47,7 @@ const blankForm: CutoffForm = {
   period_end: '',
   pay_date: '',
   attendance_deadline: '',
+  employee_filing_deadline: '',
   status: 'SCHEDULED',
   calculation_version: '',
   export_batch_id: '',
@@ -195,6 +197,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
       period_end: cutoff.period_end,
       pay_date: cutoff.pay_date,
       attendance_deadline: toLocalDateTime(cutoff.attendance_deadline),
+      employee_filing_deadline: toLocalDateTime(cutoff.employee_filing_deadline ?? null),
       status: cutoff.status,
       calculation_version: cutoff.calculation_version ?? '',
       export_batch_id: cutoff.export_batch_id ?? '',
@@ -252,6 +255,7 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
       period_end: form.period_end,
       pay_date: form.pay_date,
       attendance_deadline: toUtcDateTime(form.attendance_deadline),
+      employee_filing_deadline: toUtcDateTime(form.employee_filing_deadline),
       status: form.status.trim(),
       calculation_version: form.calculation_version.trim() || null,
       export_batch_id: form.export_batch_id.trim() || null,
@@ -386,9 +390,13 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             <label className="text-sm font-semibold text-slate-700">Pay date
               <input className={inputClass} type="date" required value={form.pay_date} onChange={(event) => setField('pay_date', event.target.value)} />
             </label>
-            <label className="text-sm font-semibold text-slate-700">Attendance deadline
-              <input className={inputClass} type="datetime-local" value={form.attendance_deadline} onChange={(event) => setField('attendance_deadline', event.target.value)} />
-              <span className="mt-1 block text-xs font-normal text-slate-500">After this, attendance, leave, OT and official business for the cutoff are frozen. HR approves payroll after it passes.</span>
+            <label className="text-sm font-semibold text-slate-700">Employee filing deadline (optional)
+              <input className={inputClass} type="datetime-local" max={form.attendance_deadline || undefined} value={form.employee_filing_deadline} onChange={(event) => setField('employee_filing_deadline', event.target.value)} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">Enter in your browser&apos;s local time. Employees must finish filing and editing requests by this time. If blank, the supervisor approval deadline also applies to filing.</span>
+            </label>
+            <label className="text-sm font-semibold text-slate-700">Supervisor approval deadline (Attendance deadline)
+              <input className={inputClass} type="datetime-local" required={Boolean(form.employee_filing_deadline)} min={form.employee_filing_deadline || undefined} value={form.attendance_deadline} onChange={(event) => setField('attendance_deadline', event.target.value)} />
+              <span className="mt-1 block text-xs font-normal text-slate-500">Supervisors must finish approvals by this time. HR can then finalize attendance and approve payroll. Finalizing or locking closes both stages.</span>
             </label>
             <label className="text-sm font-semibold text-slate-700">Calculation version (optional)
               <input className={inputClass} maxLength={50} value={form.calculation_version} onChange={(event) => setField('calculation_version', event.target.value)} />
@@ -453,7 +461,8 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                     <td className="px-4 py-3">{formatDate(cutoff.period_start)} → {formatDate(cutoff.period_end)}</td>
                     <td className="px-4 py-3">{formatDate(cutoff.pay_date)}</td>
                     <td className="px-4 py-3 text-xs">
-                      <p>{deadlineText(cutoff.attendance_deadline)}</p>
+                      <p>Filing: {deadlineText(cutoff.employee_filing_deadline ?? cutoff.attendance_deadline)}</p>
+                      <p>Approval: {deadlineText(cutoff.attendance_deadline)}</p>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${

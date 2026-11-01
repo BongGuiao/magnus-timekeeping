@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Check, Pencil, Plus, Power, X } from 'lucide-react'
+import SearchableSelect from '../../components/common/SearchableSelect'
 import {
   approveEmployeeScheduleAssignment,
   createEmployeeScheduleAssignment,
@@ -25,6 +26,7 @@ import type { Employee } from '../../types/employee'
 
 interface Props {
   employee: Employee | null
+  refreshVersion?: number
 }
 
 type AssignmentForm = Omit<EmployeeScheduleAssignmentPayload, 'employee_id'>
@@ -48,7 +50,7 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Could not load employee schedule assignments.'
 }
 
-export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
+export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVersion = 0 }: Props) {
   const employeeId = employee?.id ?? ''
   const [assignments, setAssignments] = useState<EmployeeScheduleAssignment[]>([])
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([])
@@ -134,7 +136,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
       current = false
       window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     }
-  }, [employeeId])
+  }, [employeeId, refreshVersion])
 
   if (!employee) {
     return (
@@ -312,16 +314,14 @@ export default function EmployeeScheduleAssignmentsPanel({ employee }: Props) {
         </div>
         <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
           <label className={labelClassName}>Schedule template
-            <select className={inputClassName} required value={form.schedule_template_id} onChange={(event) => updateField('schedule_template_id', event.target.value)} disabled={isLoading}>
-              <option value="">Select schedule template</option>
-              {templates.map((template) => <option key={template.id} value={template.id}>{template.schedule_code} — {template.schedule_name}</option>)}
-            </select>
+            <SearchableSelect label="Schedule template" className={inputClassName} required value={form.schedule_template_id}
+              onChange={(value) => updateField('schedule_template_id', value)} disabled={isLoading}
+              options={[{ value: '', label: 'Select schedule template' }, ...templates.map((template) => ({ value: template.id, label: `${template.schedule_code} — ${template.schedule_name}` }))]} />
           </label>
           <label className={labelClassName}>Rest-day pattern
-            <select className={inputClassName} value={form.rest_day_pattern_id ?? ''} onChange={(event) => updateField('rest_day_pattern_id', event.target.value || null)} disabled={isLoading}>
-              <option value="">No rest-day pattern</option>
-              {patterns.map((pattern) => <option key={pattern.id} value={pattern.id}>{pattern.pattern_code} — {pattern.pattern_name}</option>)}
-            </select>
+            <SearchableSelect label="Rest-day pattern" className={inputClassName} value={form.rest_day_pattern_id ?? ''}
+              onChange={(value) => updateField('rest_day_pattern_id', value || null)} disabled={isLoading}
+              options={[{ value: '', label: 'No rest-day pattern' }, ...patterns.map((pattern) => ({ value: pattern.id, label: `${pattern.pattern_code} — ${pattern.pattern_name}` }))]} />
           </label>
           <label className={labelClassName}>Assignment type
             <input className={inputClassName} required maxLength={30} value={form.assignment_type} onChange={(event) => updateField('assignment_type', event.target.value)} placeholder="e.g. REGULAR" />

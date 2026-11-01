@@ -11,6 +11,8 @@ export type PayrollComponentCode =
   | 'HOLIDAY_OT'
   | 'NIGHT_REGULAR'
   | 'NIGHT_OT'
+  | 'UNWORKED_HOLIDAY'
+  | 'UNWORKED_DOUBLE_HOLIDAY'
 
 export interface PayrollEmployeeOption {
   id: string
@@ -140,11 +142,15 @@ export interface WithholdingTaxSchedule extends StatutoryScheduleBase {
   calculationBasis: 'ANNUAL_YTD' | 'SEMI_MONTHLY'
 }
 
+export type HolidayPayAttendanceRule = 'BEFORE_ONLY' | 'BEFORE_AND_AFTER'
+
 export interface PayrollSystemParameters {
   yearEndWtaxReconciliationEnabled: boolean
   thirteenthMonthEnabled: boolean
   scheduleAssignmentApprovalRequired: boolean
   statutoryContributionTiming: 'PER_CUTOFF' | 'FINAL_CUTOFF'
+  /** Omitted on update to keep the company's current rule. */
+  holidayPayAttendanceRule?: HolidayPayAttendanceRule
 }
 
 export interface ThirteenthMonthResult {
@@ -429,6 +435,8 @@ export const payrollComponentCodes: PayrollComponentCode[] = [
   'HOLIDAY_OT',
   'NIGHT_REGULAR',
   'NIGHT_OT',
+  'UNWORKED_HOLIDAY',
+  'UNWORKED_DOUBLE_HOLIDAY',
 ]
 
 export const payrollComponentLabels: Record<PayrollComponentCode, string> = {
@@ -444,4 +452,6 @@ export const payrollComponentLabels: Record<PayrollComponentCode, string> = {
   HOLIDAY_OT: 'Holiday overtime',
   NIGHT_REGULAR: 'Night differential',
   NIGHT_OT: 'Night overtime differential',
+  UNWORKED_HOLIDAY: 'Unworked regular holiday',
+  UNWORKED_DOUBLE_HOLIDAY: 'Unworked double holiday',
 }

@@ -325,6 +325,19 @@ class SubmitOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
             await self.submit()
         self.assertNothingPersisted()
 
+    async def test_submission_after_filing_but_before_approval_is_rejected(self):
+        self.cutoff.employee_filing_deadline = NOW - timedelta(seconds=1)
+        self.cutoff.attendance_deadline = NOW + timedelta(days=1)
+        with self.assertRaisesRegex(ConflictError, "employee filing deadline"):
+            await self.submit()
+        self.assertNothingPersisted()
+
+    async def test_finalized_cutoff_rejects_submission(self):
+        self.cutoff.attendance_finalized_at = NOW
+        with self.assertRaisesRegex(ConflictError, "finalized"):
+            await self.submit()
+        self.assertNothingPersisted()
+
     async def test_missing_cutoff_does_not_fall_back_to_older_attendance(self):
         self.repository.cutoff = None
         with self.assertRaisesRegex(RuleViolationError, "Contact HR"):
@@ -506,6 +519,25 @@ class DecideOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.repository.saved_application, self.application)
         self.refresher.request_refresh.assert_called_once_with(self.repository.employee_user_id)
         self.assertEqual(self.audit.record.await_args.kwargs["action"], "APPROVED")
+
+    async def test_approval_allowed_after_filing_but_before_approval_deadline(self):
+        self.repository.cutoff = OvertimeCutoff(
+            "OCT-1", date(2026, 10, 1), date(2026, 10, 15),
+            employee_filing_deadline=NOW - timedelta(seconds=1),
+            attendance_deadline=NOW + timedelta(days=1),
+        )
+        record = await self.decide()
+        self.assertEqual(record.application.status, "APPROVED")
+
+    async def test_approval_rejected_after_approval_deadline(self):
+        self.repository.cutoff = OvertimeCutoff(
+            "OCT-1", date(2026, 10, 1), date(2026, 10, 15),
+            attendance_deadline=NOW - timedelta(seconds=1),
+        )
+        with self.assertRaisesRegex(ConflictError, "attendance deadline"):
+            await self.decide()
+        self.assertEqual(self.application.status, "PENDING")
+        self.audit.record.assert_not_awaited()
 
     async def test_rejection_requires_zero_minutes_and_pays_nothing(self):
         with self.assertRaisesRegex(RuleViolationError, "zero approved minutes"):

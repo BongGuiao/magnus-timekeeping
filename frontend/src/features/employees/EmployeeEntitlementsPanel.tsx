@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
+import SearchableSelect from '../../components/common/SearchableSelect'
+import EntitlementUpload from './EntitlementUpload'
 import {
   EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
   fetchEmploymentAssignments,
@@ -210,10 +212,13 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
 
   return (
     <div className="space-y-4">
-      <div>
+      <EntitlementUpload onUploaded={async (result) => {
+        if (editing && result.entitlement_ids.includes(editing.id)) resetForm()
+        setEntitlements(await fetchEmployeeEntitlements(employeeId))
+      }}>
         <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Employee entitlements</h3>
         <p className="mt-1 text-xs text-slate-500">Leave balances for {employee.employee_no} based on the unit configured for each leave type.</p>
-      </div>
+      </EntitlementUpload>
       {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
       {successMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
 
@@ -268,13 +273,14 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
         </div>
         <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
           <label className={labelClassName}>Leave code
-            <select
+            <SearchableSelect
+              label="Leave code"
               className={inputClassName}
               required
               disabled={isLoading || !assignment}
               value={form.leave_type_id}
-              onChange={(event) => {
-                const leaveType = availableLeaveTypes.find((type) => type.id === event.target.value)
+              onChange={(value) => {
+                const leaveType = availableLeaveTypes.find((type) => type.id === value)
                 setForm((current) => ({
                   ...current,
                   leave_type_id: leaveType?.id ?? '',
@@ -282,10 +288,8 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
                 }))
                 setErrorMessage('')
               }}
-            >
-              <option value="">Select leave code</option>
-              {availableLeaveTypes.map((type) => <option key={type.id} value={type.id}>{type.leave_code} — {type.leave_name}</option>)}
-            </select>
+              options={[{ value: '', label: 'Select leave code' }, ...availableLeaveTypes.map((type) => ({ value: type.id, label: `${type.leave_code} — ${type.leave_name}` }))]}
+            />
             {isLoading && <p className="mt-1 font-normal text-slate-500">Loading employee assignment…</p>}
             {!isLoading && !assignment && <p className="mt-1 font-normal text-amber-700">Add an active employment assignment before selecting a leave type.</p>}
           </label>

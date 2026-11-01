@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import AttendanceDeadlines from '../common/AttendanceDeadlines'
 import {
   decideOfficialBusinessRequest,
   fetchPendingOfficialBusinessRequests,
@@ -8,7 +9,7 @@ import {
 } from '../../lib/officialBusinessApi'
 
 interface Props {
-  onPendingCountChange?: (count: number) => void
+  onPendingCountChange?: (count: number | null) => void
 }
 
 export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }: Props) {
@@ -28,7 +29,10 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
         onPendingCountChange?.(records.length)
       })
       .catch((cause: unknown) => {
-        if (current) setError(cause instanceof Error ? cause.message : 'Could not load pending official business requests.')
+        if (current) {
+          setError(cause instanceof Error ? cause.message : 'Could not load pending official business requests.')
+          onPendingCountChange?.(null)
+        }
       })
       .finally(() => { if (current) setIsLoading(false) })
     return () => { current = false }
@@ -63,6 +67,7 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
 
   return (
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <AttendanceDeadlines scope="team" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-lg font-extrabold text-slate-900">Official business requests</h2>
@@ -71,7 +76,7 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
           </p>
         </div>
         <span className="rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">
-          {requests.length} pending
+          {isLoading ? 'Loading...' : error ? 'Unavailable' : `${requests.length} pending`}
         </span>
       </div>
 
@@ -79,7 +84,7 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
       {success && <p role="status" className="mt-4 text-sm text-emerald-700">{success}</p>}
       {isLoading ? (
         <p className="mt-5 text-sm text-slate-500">Loading official business requests…</p>
-      ) : requests.length === 0 ? (
+      ) : error && requests.length === 0 ? null : requests.length === 0 ? (
         <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
           There are no pending official business requests.
         </p>
@@ -147,7 +152,7 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
                           type="button"
                           disabled={isSaving}
                           onClick={() => void decide(request, 'APPROVED')}
-                          className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Approve
                         </button>
@@ -155,7 +160,7 @@ export default function OfficialBusinessApprovalsPanel({ onPendingCountChange }:
                           type="button"
                           disabled={isSaving}
                           onClick={() => void decide(request, 'REJECTED')}
-                          className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-50"
+                          className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 shadow-sm transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Reject
                         </button>

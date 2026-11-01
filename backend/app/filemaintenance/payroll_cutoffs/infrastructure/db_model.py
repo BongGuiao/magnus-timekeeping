@@ -35,6 +35,11 @@ class PayrollCutoffModel(Base):
             "cutoff_half IS NULL OR cutoff_half IN ('FIRST_HALF', 'SECOND_HALF')",
             name="ck_cutoffs_cutoff_half",
         ),
+        CheckConstraint(
+            "employee_filing_deadline IS NULL OR "
+            "(attendance_deadline IS NOT NULL AND employee_filing_deadline <= attendance_deadline)",
+            name="ck_cutoffs_filing_before_approval",
+        ),
         {"schema": "payroll"},
     )
 
@@ -56,6 +61,9 @@ class PayrollCutoffModel(Base):
     attendance_deadline: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+    employee_filing_deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )
     status: Mapped[str] = mapped_column(
         String(30),

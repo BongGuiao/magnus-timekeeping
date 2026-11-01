@@ -42,6 +42,8 @@ import { HttpOffCyclePayrollRepository } from './features/payroll/infrastructure
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
+import ResetPassword from './pages/ResetPassword'
+import DatabaseBackup from './pages/DatabaseBackup'
 import type { NavView } from './components/dashboard/TopNav'
 import { WorkspaceTabsProvider } from './components/dashboard/WorkspaceTabsContext'
 import ErrorBoundary from './components/common/ErrorBoundary'
@@ -51,6 +53,7 @@ import {
   hasAnyPermission,
   hasEmployeeRoleCode,
   hasPermission,
+  isSystemAdmin,
 } from './types/role'
 
 const payrollUseCases = new PayrollUseCases(new HttpPayrollRepository())
@@ -61,7 +64,7 @@ const navViews: NavView[] = [
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
-  'overtime-application', 'official-business', 'change-password', 'my-schedule', 'schedule-uploads',
+  'overtime-application', 'official-business', 'change-password', 'reset-password', 'database-backup', 'my-schedule', 'schedule-uploads',
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
 ]
@@ -300,6 +303,18 @@ function App() {
 
     if (view === 'change-password') {
       return <ChangePassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'reset-password') {
+      return isSystemAdmin()
+        ? <ResetPassword employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'database-backup') {
+      return isSystemAdmin()
+        ? <DatabaseBackup employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'enrollment') {

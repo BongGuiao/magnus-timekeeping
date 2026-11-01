@@ -31,6 +31,7 @@ import type { PayrollGroup } from '../lib/payrollGroupApi'
 import { EmployeeSkillsPanel, EmploymentAssignmentsPanel } from '../features/employees/EmployeeRelatedPanels'
 import EmployeeEntitlementsPanel from '../features/employees/EmployeeEntitlementsPanel'
 import EmployeeScheduleAssignmentsPanel from '../features/employees/EmployeeScheduleAssignmentsPanel'
+import { ScheduleUploadPanel } from './ScheduleUploads'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
 import EmployeeWfhPanel from '../features/employees/EmployeeWfhPanel'
 import EmployeeRolePanel from '../features/employees/EmployeeRolePanel'
@@ -183,6 +184,9 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [assignmentCsvError, setAssignmentCsvError] = useState('')
   const [assignmentCsvMessage, setAssignmentCsvMessage] = useState('')
   const [isImportingAssignmentCsv, setIsImportingAssignmentCsv] = useState(false)
+  const [assignmentRefreshVersion, setAssignmentRefreshVersion] = useState(0)
+  const [isScheduleUploadOpen, setIsScheduleUploadOpen] = useState(false)
+  const [scheduleRefreshVersion, setScheduleRefreshVersion] = useState(0)
   const [assignmentLookups, setAssignmentLookups] = useState<{
     locations: Location[]
     payrollGroups: PayrollGroup[]
@@ -194,11 +198,13 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const canManageEmployees = hasPermission('employees.manage')
   const canManageRoles = hasPermission('system.manage')
   const canManagePayroll = hasPermission('payroll.manage')
+  const canUploadSchedules = hasPermission('schedule.upload_team')
   const visibleEmployeeTabs = employeeTabs.filter((tab) =>
-    (tab.id !== 'entitlements' || localStorage.getItem('role') === 'admin')
+    (canManageEmployees || !canUploadSchedules || tab.id === 'details' || tab.id === 'schedule')
+    && (tab.id !== 'entitlements' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'wfh' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'role' || (canManageRoles && Boolean(editingEmployee)))
-    && (tab.id !== 'schedule' || (localStorage.getItem('role') === 'admin' && Boolean(editingEmployee))),
+    && (tab.id !== 'schedule' || ((localStorage.getItem('role') === 'admin' || canUploadSchedules) && Boolean(editingEmployee))),
   )
 
   useEffect(() => {
@@ -292,7 +298,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         return
       }
       setEditingEmployee(fullEmployee)
-      setActiveTab('details')
+      setActiveTab(!canManageEmployees && canUploadSchedules ? 'schedule' : 'details')
       setIsFormOpen(true)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Could not load this employee.')
@@ -309,6 +315,10 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   }
 
   async function saveEmployee(values: EmployeeFormValues) {
+    if (!canManageEmployees) {
+      setErrorMessage('You do not have permission to update employee profiles.')
+      return
+    }
     setErrorMessage('')
     setSuccessMessage('')
     const payload: EmployeeWritePayload = {
@@ -700,6 +710,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       })
       const created = await createEmploymentAssignmentsBatch(batchRows)
       window.dispatchEvent(new Event(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT))
+      setAssignmentRefreshVersion((current) => current + 1)
       setAssignmentCsvMessage(`${created.length} employment assignment${created.length === 1 ? '' : 's'} imported successfully.`)
     } catch (error) {
       setAssignmentCsvError(error instanceof Error
@@ -751,8 +762,8 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       value: () => '',
       sortable: false,
       searchable: false,
-      render: (employee) => canManageEmployees ? (
-        <button type="button" onClick={() => openEdit(employee)} disabled={loadingEditId === employee.id} aria-label={`Edit ${employee.employee_no}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
+      render: (employee) => canManageEmployees || canUploadSchedules ? (
+        <button type="button" onClick={() => openEdit(employee)} disabled={loadingEditId === employee.id} aria-label={`${canManageEmployees ? 'Edit' : 'View schedules for'} ${employee.employee_no}`} className="rounded-md p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
           <Pencil className="h-4 w-4" />
         </button>
       ) : null,
@@ -761,6 +772,99 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
 
   const inputClassName = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100'
   const labelClassName = 'text-xs font-semibold text-slate-700'
+
+  const assignmentImportActions = canManageEmployees && (
+    <div className="flex flex-wrap gap-2">
+      <button
+        type="button"
+        onClick={() => {
+          setIsAssignmentCsvImportOpen((current) => !current)
+          setAssignmentCsvError('')
+        }}
+        disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
+        className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+        aria-expanded={isAssignmentCsvImportOpen}
+        aria-controls={`${tabId}-assignment-import`}
+      >
+        <FileUp className="h-3.5 w-3.5" />
+        Import Assignments
+      </button>
+      <button type="button" onClick={downloadEmploymentAssignmentCsvTemplate} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+        <Download className="h-3.5 w-3.5" />
+        Download template
+      </button>
+    </div>
+  )
+
+  const assignmentImportPanel = canManageEmployees && isAssignmentCsvImportOpen && (
+    <section id={`${tabId}-assignment-import`} aria-label="Import employment assignments from CSV" className="space-y-4 rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
+      <div>
+        <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+          Imports assignments for existing employees. The whole file is rejected if a row is invalid, duplicates another row, or matches an existing employee/company assignment. No rows are imported unless every row passes validation.
+        </p>
+      </div>
+      <label className="block text-xs font-semibold text-slate-700">
+        Assignment CSV file
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          disabled={isImportingAssignmentCsv || !assignmentLookups.loaded || Boolean(assignmentLookups.error)}
+          onChange={(event) => void selectEmploymentAssignmentCsv(event.target.files?.[0])}
+          className="mt-1.5 block w-full rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-emerald-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-emerald-700 disabled:opacity-50"
+        />
+      </label>
+      <p className="text-[11px] leading-5 text-slate-500">
+        Required: employee_no, company_code, employment_type, employee_category, hire_date, effective_from. Optional: org_unit_code, supervisor_employee_no, operational_group, payroll_group_code, location_codes (separate multiple codes with semicolons), primary_location_code (must be included in location_codes; defaults to the first location when blank), effective_to, separation_date, status (defaults to ACTIVE), is_active (defaults to true). Dates must use YYYY-MM-DD. Maximum file size 5 MB and 500 rows.
+      </p>
+      {assignmentLookups.error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">Could not load data needed to validate assignments: {assignmentLookups.error}</p>}
+      {assignmentCsvFileName && <p className="text-xs font-medium text-slate-600">Selected: {assignmentCsvFileName}</p>}
+      {assignmentCsvError && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{assignmentCsvError}</p>}
+      {assignmentCsvMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{assignmentCsvMessage}</p>}
+      {assignmentCsvPreviewRows.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs text-slate-600">
+              {assignmentCsvPreviewRows.filter((row) => row.errors.length === 0).length} ready · {assignmentCsvPreviewRows.filter((row) => row.errors.length > 0).length} row(s) with errors
+            </p>
+            <button
+              type="button"
+              onClick={() => void importEmploymentAssignmentCsv()}
+              disabled={isImportingAssignmentCsv || assignmentCsvPreviewRows.some((row) => row.errors.length > 0 || row.payload === null)}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FileUp className="h-4 w-4" />
+              {isImportingAssignmentCsv ? 'Importing all assignments…' : 'Import all assignments'}
+            </button>
+          </div>
+          <div className="max-h-72 overflow-auto rounded-md border border-slate-200">
+            <table className="min-w-full text-left text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">CSV row</th>
+                  <th className="px-3 py-2">Employee number</th>
+                  <th className="px-3 py-2">Company code</th>
+                  <th className="px-3 py-2">Validation</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {assignmentCsvPreviewRows.map((row) => (
+                  <tr key={row.rowNumber}>
+                    <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.rowNumber}</td>
+                    <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-800">{row.employeeNo || '(blank)'}</td>
+                    <td className="whitespace-nowrap px-3 py-2 text-slate-700">{row.companyCode || '(blank)'}</td>
+                    <td className={`px-3 py-2 ${row.errors.length ? 'text-rose-700' : 'text-emerald-700'}`}>
+                      {row.errors.length ? row.errors.join(' ') : 'Ready'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  )
 
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
@@ -777,19 +881,6 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             </p>
           </div>
           {canManageEmployees && <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setIsAssignmentCsvImportOpen((current) => !current)
-                setAssignmentCsvError('')
-              }}
-              disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-expanded={isAssignmentCsvImportOpen}
-            >
-              <FileUp className="h-4 w-4" />
-              Import Assignments
-            </button>
             <button
               type="button"
               onClick={() => {
@@ -897,82 +988,6 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {isAssignmentCsvImportOpen && (
-          <section aria-label="Import employment assignments from CSV" className="mb-5 space-y-4 rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
-            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
-                <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
-                  Imports assignments for existing employees. The whole file is rejected if a row is invalid, duplicates another row, or matches an existing employee/company assignment. No rows are imported unless every row passes validation.
-                </p>
-              </div>
-              <button type="button" onClick={downloadEmploymentAssignmentCsvTemplate} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                <Download className="h-4 w-4" />
-                Download template
-              </button>
-            </div>
-            <label className="block text-xs font-semibold text-slate-700">
-              Assignment CSV file
-              <input
-                type="file"
-                accept=".csv,text/csv"
-                disabled={isImportingAssignmentCsv || !assignmentLookups.loaded || Boolean(assignmentLookups.error)}
-                onChange={(event) => void selectEmploymentAssignmentCsv(event.target.files?.[0])}
-                className="mt-1.5 block w-full rounded-md border border-slate-300 px-3 py-2 text-xs text-slate-700 file:mr-3 file:rounded file:border-0 file:bg-emerald-50 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-emerald-700 disabled:opacity-50"
-              />
-            </label>
-            <p className="text-[11px] leading-5 text-slate-500">
-              Required: employee_no, company_code, employment_type, employee_category, hire_date, effective_from. Optional: org_unit_code, supervisor_employee_no, operational_group, payroll_group_code, location_codes (separate multiple codes with semicolons), primary_location_code (must be included in location_codes; defaults to the first location when blank), effective_to, separation_date, status (defaults to ACTIVE), is_active (defaults to true). Dates must use YYYY-MM-DD. Maximum file size 5 MB and 500 rows.
-            </p>
-            {assignmentLookups.error && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">Could not load data needed to validate assignments: {assignmentLookups.error}</p>}
-            {assignmentCsvFileName && <p className="text-xs font-medium text-slate-600">Selected: {assignmentCsvFileName}</p>}
-            {assignmentCsvError && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{assignmentCsvError}</p>}
-            {assignmentCsvMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{assignmentCsvMessage}</p>}
-            {assignmentCsvPreviewRows.length > 0 && (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-slate-600">
-                    {assignmentCsvPreviewRows.filter((row) => row.errors.length === 0).length} ready · {assignmentCsvPreviewRows.filter((row) => row.errors.length > 0).length} row(s) with errors
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => void importEmploymentAssignmentCsv()}
-                    disabled={isImportingAssignmentCsv || assignmentCsvPreviewRows.some((row) => row.errors.length > 0 || row.payload === null)}
-                    className="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <FileUp className="h-4 w-4" />
-                    {isImportingAssignmentCsv ? 'Importing all assignments…' : 'Import all assignments'}
-                  </button>
-                </div>
-                <div className="max-h-72 overflow-auto rounded-md border border-slate-200">
-                  <table className="min-w-full text-left text-xs">
-                    <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
-                      <tr>
-                        <th className="px-3 py-2">CSV row</th>
-                        <th className="px-3 py-2">Employee number</th>
-                        <th className="px-3 py-2">Company code</th>
-                        <th className="px-3 py-2">Validation</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {assignmentCsvPreviewRows.map((row) => (
-                        <tr key={row.rowNumber}>
-                          <td className="whitespace-nowrap px-3 py-2 text-slate-600">{row.rowNumber}</td>
-                          <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-800">{row.employeeNo || '(blank)'}</td>
-                          <td className="whitespace-nowrap px-3 py-2 text-slate-700">{row.companyCode || '(blank)'}</td>
-                          <td className={`px-3 py-2 ${row.errors.length ? 'text-rose-700' : 'text-emerald-700'}`}>
-                            {row.errors.length ? row.errors.join(' ') : 'Ready'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
-          </section>
-        )}
-
         <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <div className="border-l-4 border-indigo-500 bg-white p-4"><p className="text-xs font-bold uppercase text-slate-400">Total</p><p className="mt-1 text-2xl font-bold text-slate-900">{employees.length}</p></div>
           <div className="border-l-4 border-emerald-500 bg-white p-4"><p className="text-xs font-bold uppercase text-slate-400">Active</p><p className="mt-1 text-2xl font-bold text-slate-900">{employees.filter((employee) => employee.record_status === 'ACTIVE' && employee.is_active).length}</p></div>
@@ -1010,7 +1025,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         resetKey={editingEmployee?.id ?? 'new'}
         resolver={zodResolver(uniqueEmployeeSchema)}
         submitLabel={editingEmployee ? 'Save changes' : 'Create employee'}
-        showSubmit={activeTab === 'details'}
+        showSubmit={canManageEmployees && activeTab === 'details'}
         onClose={closeForm}
         onSubmit={saveEmployee}
       >
@@ -1063,6 +1078,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             </div>
             <div className="grid">
             <div role="tabpanel" id={`${tabId}-details-panel`} aria-labelledby={`${tabId}-details-tab`} tabIndex={activeTab === 'details' ? 0 : -1} className={`space-y-4 [grid-area:1/1] ${activeTab === 'details' ? '' : 'invisible'}`}>
+              <fieldset disabled={!canManageEmployees} className="space-y-4">
               <input type="hidden" {...register('photo_reference')} />
               <section>
               <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Identity</h3>
@@ -1086,17 +1102,44 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                 <label className="flex items-center gap-3 self-end rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700"><input type="checkbox" {...register('is_active')} className="h-4 w-4 accent-indigo-600" />Enabled for use</label>
               </div>
               </section>
+              </fieldset>
             </div>
             {visibleEmployeeTabs.slice(1).map((tab) => (
               <div key={tab.id} role="tabpanel" id={`${tabId}-${tab.id}-panel`} aria-labelledby={`${tabId}-${tab.id}-tab`} tabIndex={activeTab === tab.id ? 0 : -1} className={`[grid-area:1/1] ${activeTab === tab.id ? '' : 'invisible'}`}>
                 {tab.id === 'assignments'
-                  ? <EmploymentAssignmentsPanel employee={editingEmployee} employees={employees} companies={companies} orgUnits={orgUnits} />
+                  ? <EmploymentAssignmentsPanel employee={editingEmployee} employees={employees} companies={companies} orgUnits={orgUnits} importActions={assignmentImportActions} importPanel={assignmentImportPanel} refreshVersion={assignmentRefreshVersion} />
                   : tab.id === 'skills'
                     ? <EmployeeSkillsPanel employee={editingEmployee} employees={employees} />
                     : tab.id === 'entitlements'
                       ? <EmployeeEntitlementsPanel employee={editingEmployee} />
                       : tab.id === 'schedule'
-                        ? <EmployeeScheduleAssignmentsPanel employee={editingEmployee} />
+                        ? (
+                          <div className="space-y-4">
+                            {canUploadSchedules && (
+                              <>
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Schedule</h3>
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsScheduleUploadOpen((current) => !current)}
+                                    aria-expanded={isScheduleUploadOpen}
+                                    aria-controls={`${tabId}-schedule-upload`}
+                                    className="inline-flex items-center justify-center gap-2 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                                  >
+                                    <FileUp className="h-3.5 w-3.5" />
+                                    Team Schedule Upload
+                                  </button>
+                                </div>
+                                {isScheduleUploadOpen && (
+                                  <section id={`${tabId}-schedule-upload`} aria-label="Team Schedule Upload">
+                                    <ScheduleUploadPanel onSubmitted={() => setScheduleRefreshVersion((current) => current + 1)} />
+                                  </section>
+                                )}
+                              </>
+                            )}
+                            {localStorage.getItem('role') === 'admin' && <EmployeeScheduleAssignmentsPanel employee={editingEmployee} refreshVersion={scheduleRefreshVersion} />}
+                          </div>
+                        )
                         : tab.id === 'wfh'
                           ? <EmployeeWfhPanel key={editingEmployee?.id} employee={editingEmployee} />
                           : tab.id === 'role'

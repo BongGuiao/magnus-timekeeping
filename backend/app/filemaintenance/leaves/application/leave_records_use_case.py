@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, TypeVar
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
+from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
+    DeadlineStage, require_attendance_open,
+)
 
 from app.core.generics.mapper import GenericMapper
 from app.core.generics.uow import GenUnitOfWork
@@ -87,16 +91,14 @@ def _with_calculated_balance(entity: EmployeeEntitlementEntity) -> EmployeeEntit
     return replace(entity, available_minutes=calculate_available_minutes(entity.__dict__))
 
 
-async def _validate_entitlement_grant(
-    session: Any,
-    employee_id: UUID,
-    leave_type_id: UUID,
+def _entitlement_assignment_query(
+    employee_ids: Collection[UUID],
     today: date,
-) -> None:
-    assignment_result = await session.execute(
+) -> Select[tuple[EmploymentAssignmentModel]]:
+    return (
         select(EmploymentAssignmentModel)
         .where(
-            EmploymentAssignmentModel.employee_id == employee_id,
+            EmploymentAssignmentModel.employee_id.in_(employee_ids),
             EmploymentAssignmentModel.primary_location_id.is_not(None),
             EmploymentAssignmentModel.is_active.is_(True),
             EmploymentAssignmentModel.status == "ACTIVE",
@@ -104,8 +106,18 @@ async def _validate_entitlement_grant(
             (EmploymentAssignmentModel.effective_to.is_(None) | (EmploymentAssignmentModel.effective_to >= today)),
             (EmploymentAssignmentModel.separation_date.is_(None) | (EmploymentAssignmentModel.separation_date >= today)),
         )
-        .order_by(EmploymentAssignmentModel.effective_from.desc())
-        .limit(1)
+        .order_by(EmploymentAssignmentModel.employee_id, EmploymentAssignmentModel.effective_from.desc())
+    )
+
+
+async def _validate_entitlement_grant(
+    session: Any,
+    employee_id: UUID,
+    leave_type_id: UUID,
+    today: date,
+) -> None:
+    assignment_result = await session.execute(
+        _entitlement_assignment_query([employee_id], today).limit(1)
     )
     assignment = assignment_result.scalar_one_or_none()
     if assignment is None:
@@ -115,6 +127,14 @@ async def _validate_entitlement_grant(
         select(LeaveTypeModel).where(LeaveTypeModel.id == leave_type_id)
     )
     leave_type = leave_type_result.scalar_one_or_none()
+    _validate_entitlement_grant_rules(assignment, leave_type, today)
+
+
+def _validate_entitlement_grant_rules(
+    assignment: EmploymentAssignmentModel,
+    leave_type: LeaveTypeModel | None,
+    today: date,
+) -> None:
     if leave_type is None or leave_type.company_id != assignment.company_id:
         raise ValueError("The leave type does not belong to the employee's assigned company.")
     if (
@@ -369,6 +389,18 @@ class EmployeeEntitlementUseCase:
             return _with_calculated_balance(_to_entity(model, EmployeeEntitlementEntity))
 
 
+async def _require_leave_open(
+    session: Any, employee_id: UUID, start_at: datetime, end_at: datetime,
+    *, stage: DeadlineStage,
+) -> None:
+    await require_attendance_open(
+        session, employee_id,
+        start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+        (end_at - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).date(),
+        stage=stage,
+    )
+
+
 class LeaveApplicationUseCase:
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
@@ -384,6 +416,10 @@ class LeaveApplicationUseCase:
                 values["employee_id"],
                 values["leave_type_id"],
                 local_start.date(),
+            )
+            await _require_leave_open(
+                session, values["employee_id"], values["start_at"], values["end_at"],
+                stage="APPROVAL" if values.get("status") == "APPROVED" else "FILING",
             )
             model = LeaveApplicationModel(**values)
             session.add(model)
@@ -410,6 +446,10 @@ class LeaveApplicationUseCase:
                 return None
             if model.status != "DRAFT":
                 raise ValueError("Only draft leave applications can be submitted for approval.")
+            await _require_leave_open(
+                active_uow.session, model.employee_id, model.start_at, model.end_at,
+                stage="FILING",
+            )
             await _validate_leave_type_company(
                 active_uow.session,
                 model.employee_id,
@@ -593,6 +633,10 @@ class LeaveApplicationUseCase:
             model = result.scalars().first()
             if model is None:
                 return None
+            await _require_leave_open(
+                active_uow.session, model.employee_id, model.start_at, model.end_at,
+                stage="APPROVAL",
+            )
             now = datetime.now(timezone.utc)
             if decision == "APPROVED":
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)
@@ -609,7 +653,7 @@ class LeaveApplicationUseCase:
         self,
         record_id: UUID,
         values: dict[str, Any],
-        actor_id: UUID,
+        actor_id: UUID | None,
     ) -> LeaveApplicationEntity | None:
         async with self.uow as active_uow:
             result = await active_uow.session.execute(
@@ -625,6 +669,19 @@ class LeaveApplicationUseCase:
             next_employee_id = values.get("employee_id", model.employee_id)
             next_leave_type_id = values.get("leave_type_id", model.leave_type_id)
             next_start_at = values.get("start_at", model.start_at)
+            stage: DeadlineStage = (
+                "APPROVAL"
+                if next_status in ("APPROVED", "REJECTED") or model.status == "APPROVED"
+                else "FILING"
+            )
+            await _require_leave_open(
+                active_uow.session, model.employee_id, model.start_at, model.end_at,
+                stage=stage,
+            )
+            await _require_leave_open(
+                active_uow.session, next_employee_id, next_start_at,
+                values.get("end_at", model.end_at), stage=stage,
+            )
             await _validate_leave_type_company(
                 active_uow.session,
                 next_employee_id,
@@ -647,6 +704,8 @@ class LeaveApplicationUseCase:
             for key, value in values.items():
                 setattr(model, key, value)
             if next_status == "APPROVED" and not was_approved:
+                if actor_id is None:
+                    raise ValueError("An actor is required to approve a leave application.")
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)
             model.row_version += 1
             model.updated_at = datetime.now(timezone.utc)
@@ -655,7 +714,12 @@ class LeaveApplicationUseCase:
             return _to_entity(model, LeaveApplicationEntity)
 
     async def update(self, record_id: UUID, values: dict[str, Any]) -> LeaveApplicationEntity | None:
-        return await _update(self.uow, LeaveApplicationModel, LeaveApplicationEntity, record_id, values)
+        before = await self.get(record_id)
+        if before is None:
+            return None
+        return await self.update_with_approval_posting(
+            record_id, values, values.get("updated_by", before.updated_by),
+        )
 
 
 class LeaveApplicationDateUseCase:
@@ -663,7 +727,28 @@ class LeaveApplicationDateUseCase:
         self.uow = uow
 
     async def create(self, values: dict[str, Any]) -> LeaveApplicationDateEntity:
-        return await _create(self.uow, LeaveApplicationDateModel, LeaveApplicationDateEntity, values)
+        async with self.uow as uow:
+            await self._require_open(uow.session, values["leave_application_id"], values["leave_date"])
+            model = LeaveApplicationDateModel(**values)
+            uow.session.add(model)
+            await uow.session.flush()
+            await uow.session.refresh(model)
+            return _to_entity(model, LeaveApplicationDateEntity)
+
+    async def _require_open(self, session: Any, application_id: UUID, leave_date: date) -> None:
+        parent = await session.scalar(
+            select(LeaveApplicationModel).where(LeaveApplicationModel.id == application_id)
+            .with_for_update()
+        )
+        if parent is None:
+            raise ValueError("Leave application not found.")
+        stage: DeadlineStage = "FILING" if parent.status == "DRAFT" else "APPROVAL"
+        await _require_leave_open(
+            session, parent.employee_id, parent.start_at, parent.end_at, stage=stage,
+        )
+        await require_attendance_open(
+            session, parent.employee_id, leave_date, leave_date, stage=stage,
+        )
 
     async def get(self, record_id: UUID) -> LeaveApplicationDateEntity | None:
         return await _get(self.uow, LeaveApplicationDateModel, LeaveApplicationDateEntity, record_id)
@@ -689,9 +774,22 @@ class LeaveApplicationDateUseCase:
         record_id: UUID,
         values: dict[str, Any],
     ) -> LeaveApplicationDateEntity | None:
-        return await _update(
-            self.uow, LeaveApplicationDateModel, LeaveApplicationDateEntity, record_id, values
-        )
+        async with self.uow as uow:
+            model = await uow.session.scalar(
+                select(LeaveApplicationDateModel).where(LeaveApplicationDateModel.id == record_id)
+                .with_for_update()
+            )
+            if model is None:
+                return None
+            await self._require_open(uow.session, model.leave_application_id, model.leave_date)
+            await self._require_open(
+                uow.session, model.leave_application_id, values.get("leave_date", model.leave_date),
+            )
+            for key, value in values.items():
+                setattr(model, key, value)
+            await uow.session.flush()
+            await uow.session.refresh(model)
+            return _to_entity(model, LeaveApplicationDateEntity)
 
     async def delete(self, record_id: UUID) -> bool:
         async with self.uow as active_uow:
@@ -703,6 +801,7 @@ class LeaveApplicationDateUseCase:
             model = result.scalar_one_or_none()
             if model is None:
                 return False
+            await self._require_open(active_uow.session, model.leave_application_id, model.leave_date)
             await active_uow.session.delete(model)
             await active_uow.session.flush()
             return True

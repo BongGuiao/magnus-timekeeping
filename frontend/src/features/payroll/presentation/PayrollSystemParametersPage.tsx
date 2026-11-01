@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import TopNav, { type NavView } from '../../../components/dashboard/TopNav'
 import { useCompanySetupSelection } from '../../../hooks/useCompanySetupSelection'
 import type { PayrollUseCases } from '../application/useCases'
+import type { HolidayPayAttendanceRule } from '../domain/payroll'
 
 interface Props {
   employeeName: string
@@ -26,6 +27,10 @@ export default function PayrollSystemParametersPage({
     useState(true)
   const [statutoryContributionTiming, setStatutoryContributionTiming] =
     useState<'PER_CUTOFF' | 'FINAL_CUTOFF'>('PER_CUTOFF')
+  const [holidayPayAttendanceRule, setHolidayPayAttendanceRule] =
+    useState<HolidayPayAttendanceRule>('BEFORE_ONLY')
+  const [holidayPayAttendanceRuleDraft, setHolidayPayAttendanceRuleDraft] =
+    useState<HolidayPayAttendanceRule>('BEFORE_ONLY')
   const [loadedCompanyId, setLoadedCompanyId] = useState('')
   const [loadErrorCompanyId, setLoadErrorCompanyId] = useState('')
   const [saving, setSaving] = useState(false)
@@ -48,6 +53,8 @@ export default function PayrollSystemParametersPage({
         setScheduleAssignmentApprovalRequired(parameters.scheduleAssignmentApprovalRequired)
         setScheduleAssignmentApprovalRequiredDraft(parameters.scheduleAssignmentApprovalRequired)
         setStatutoryContributionTiming(parameters.statutoryContributionTiming)
+        setHolidayPayAttendanceRule(parameters.holidayPayAttendanceRule ?? 'BEFORE_ONLY')
+        setHolidayPayAttendanceRuleDraft(parameters.holidayPayAttendanceRule ?? 'BEFORE_ONLY')
         setLoadedCompanyId(companyId)
         setLoadErrorCompanyId('')
         setSaved(false)
@@ -76,6 +83,7 @@ export default function PayrollSystemParametersPage({
         thirteenthMonthEnabled: thirteenthMonthDraft,
         scheduleAssignmentApprovalRequired: scheduleAssignmentApprovalRequiredDraft,
         statutoryContributionTiming,
+        holidayPayAttendanceRule: holidayPayAttendanceRuleDraft,
       })
       setYearEndWtaxReconciliationEnabled(result.yearEndWtaxReconciliationEnabled)
       setYearEndWtaxReconciliationDraft(result.yearEndWtaxReconciliationEnabled)
@@ -84,6 +92,8 @@ export default function PayrollSystemParametersPage({
       setScheduleAssignmentApprovalRequired(result.scheduleAssignmentApprovalRequired)
       setScheduleAssignmentApprovalRequiredDraft(result.scheduleAssignmentApprovalRequired)
       setStatutoryContributionTiming(result.statutoryContributionTiming)
+      setHolidayPayAttendanceRule(result.holidayPayAttendanceRule ?? 'BEFORE_ONLY')
+      setHolidayPayAttendanceRuleDraft(result.holidayPayAttendanceRule ?? 'BEFORE_ONLY')
       setSaved(true)
     } catch (cause) {
       setError(cause instanceof Error
@@ -218,6 +228,41 @@ export default function PayrollSystemParametersPage({
             </div>
           </section>
 
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-5">
+              <div className="max-w-3xl">
+                <h2 className="text-base font-bold text-slate-900">Regular holiday pay attendance</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  An employee who does not work on a regular holiday is paid for it only when
+                  present, on paid leave, or on official business on the workday immediately
+                  before the holiday. Rest days and non-working days are skipped when finding that
+                  workday, and work on the first of two successive holidays counts as presence.
+                </p>
+                <p className="mt-2 text-xs text-slate-500">
+                  “Workday before” is the statutory DOLE rule. Choose “Workday before and after”
+                  only when company policy or a CBA also requires the following workday. Monthly-paid
+                  employees who do not qualify have the holiday deducted as unpaid time.
+                  Recalculate open cutoffs after changing this setting.
+                </p>
+              </div>
+              <label className="flex flex-col gap-1 text-sm font-semibold text-slate-700">
+                Attendance required
+                <select
+                  value={holidayPayAttendanceRuleDraft}
+                  disabled={loading || saving || loadedCompanyId !== companyId}
+                  onChange={(event) => {
+                    setHolidayPayAttendanceRuleDraft(event.target.value as HolidayPayAttendanceRule)
+                    setSaved(false)
+                  }}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal focus:border-indigo-500 focus:ring-indigo-500"
+                >
+                  <option value="BEFORE_ONLY">Workday before (DOLE default)</option>
+                  <option value="BEFORE_AND_AFTER">Workday before and after</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="submit"
@@ -226,6 +271,7 @@ export default function PayrollSystemParametersPage({
                   yearEndWtaxReconciliationDraft === yearEndWtaxReconciliationEnabled
                   && thirteenthMonthDraft === thirteenthMonthEnabled
                   && scheduleAssignmentApprovalRequiredDraft === scheduleAssignmentApprovalRequired
+                  && holidayPayAttendanceRuleDraft === holidayPayAttendanceRule
                 )}
               className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
             >

@@ -13,6 +13,19 @@ export interface ChangePasswordResult {
   password_changed_at: string
 }
 
+export interface PasswordResetTarget {
+  employee_code: string
+  employee_name: string
+  account_status: string
+  is_active: boolean
+}
+
+export interface ResetPasswordResult {
+  message: string
+  employee_code: string
+  password_reset_at: string
+}
+
 export interface TokenResponse {
   access_token: string
   token_type: string

@@ -3,6 +3,7 @@ import { AxiosError } from 'axios'
 import { createPortal } from 'react-dom'
 import { AlertCircle, CheckCircle2, CircleDot, Crosshair, Home, Info, LoaderCircle, MapPin, Save, ShieldCheck, Smartphone, X } from 'lucide-react'
 import LocationCoordinatePicker from '../../components/common/LocationCoordinatePicker'
+import SearchableSelect from '../../components/common/SearchableSelect'
 import type { Coordinates } from '../../components/common/LocationCoordinatePicker'
 import { apiClient } from '../../lib/apiClient'
 import { fetchGeofences } from '../../lib/geofenceApi'
@@ -204,10 +205,9 @@ export default function EmployeeWfhPanel({ employee }: { employee: Employee | nu
             </div>
             <div className="space-y-5 p-5">
               <label className={`block ${labelClassName}`}>Geofence policy <span className="font-normal text-slate-400">(required)</span>
-                <select value={geofenceId} onChange={(event) => setGeofenceId(event.target.value)} aria-describedby={`${panelId}-policy-help`} className={inputClassName}>
-                  <option value="">Select an assigned office geofence</option>
-                  {geofences.map((fence) => <option key={fence.id} value={fence.id}>{fence.geofence_code} - {fence.geofence_name}</option>)}
-                </select>
+                <SearchableSelect label="Geofence policy" value={geofenceId} onChange={setGeofenceId}
+                  aria-describedby={`${panelId}-policy-help`} className={inputClassName}
+                  options={[{ value: '', label: 'Select an assigned office geofence' }, ...geofences.map((fence) => ({ value: fence.id, label: `${fence.geofence_code} - ${fence.geofence_name}` }))]} />
               </label>
               <p id={`${panelId}-policy-help`} className="-mt-3 text-[11px] leading-5 text-slate-500">Uses the selected office geofence's radius and accuracy limits. Its office center point stays unchanged.</p>
               {hasLoaded && geofences.length === 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">No eligible geofence found for the company on the latest active employment assignment. Assign an authorized geofence with a radius first.</p>}

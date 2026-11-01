@@ -2,7 +2,7 @@ from dataclasses import fields
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.domain.entities.user import UserEntity
@@ -18,6 +18,18 @@ class SqlAlchemyUserAccountRepository:
         model = await self._session.scalar(
             select(UserModel).where(UserModel.id == user_id).with_for_update()
         )
+        return self._to_entity(model)
+
+    async def get_by_username_for_update(self, username: str) -> Optional[UserEntity]:
+        model = await self._session.scalar(
+            select(UserModel)
+            .where(func.lower(UserModel.username) == username.strip().lower())
+            .with_for_update()
+        )
+        return self._to_entity(model)
+
+    @staticmethod
+    def _to_entity(model: Optional[UserModel]) -> Optional[UserEntity]:
         if model is None:
             return None
         return UserEntity(**{field.name: getattr(model, field.name) for field in fields(UserEntity)})

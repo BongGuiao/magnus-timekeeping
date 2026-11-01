@@ -16,6 +16,7 @@ class TeamAttendanceDay:
     expected_clock_out_at: Optional[datetime]
     is_absent: bool
     leave_type: Optional[str]
+    expected_clock_in_at: Optional[datetime] = None
 
 
 @dataclass

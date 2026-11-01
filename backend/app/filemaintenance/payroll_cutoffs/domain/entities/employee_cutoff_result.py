@@ -93,6 +93,17 @@ class ExceptionFact:
     employee_id: UUID
 
 
+@dataclass(frozen=True)
+class UnworkedHolidayFact:
+    """An unworked regular or double holiday and whether it passed the attendance rule."""
+
+    employee_id: UUID
+    holiday_date: date
+    day_type: str
+    credit_minutes: int
+    qualified: bool
+
+
 @dataclass
 class EmployeeCutoffTotals:
     employee_id: UUID
@@ -116,6 +127,9 @@ class EmployeeCutoffTotals:
     night_regular_minutes: int = 0
     night_ot_minutes: int = 0
     official_business_minutes: int = 0
+    unworked_holiday_minutes: int = 0
+    unworked_double_holiday_minutes: int = 0
+    disqualified_holiday_minutes: int = 0
     exception_count: int = 0
     incomplete_time_source_count: int = 0
 
@@ -154,6 +168,9 @@ class EmployeeCutoffResultEntity:
     night_regular_minutes: int
     night_ot_minutes: int
     official_business_minutes: int
+    unworked_holiday_minutes: int = 0
+    unworked_double_holiday_minutes: int = 0
+    disqualified_holiday_minutes: int = 0
     exception_count: int = 0
     employee_confirmation_status: str = "PENDING"
     supervisor_status: str = "PENDING"
@@ -257,6 +274,7 @@ def calculate_employee_cutoff_totals(
     period_start: date,
     period_end: date,
     scheduled_days: list[ScheduledDayFact] | None = None,
+    unworked_holidays: list[UnworkedHolidayFact] | None = None,
 ) -> list[EmployeeCutoffTotals]:
     """Aggregate source facts into the payroll.employee_cutoff_results time fields."""
     cutoff_start = datetime.combine(period_start, time.min, tzinfo=PH_TIMEZONE)
@@ -510,5 +528,20 @@ def calculate_employee_cutoff_totals(
         current = totals.get(exception.employee_id)
         if current is not None:
             current.exception_count += 1
+
+    for holiday in unworked_holidays or []:
+        current = totals.get(holiday.employee_id)
+        if current is None or not period_start <= holiday.holiday_date <= period_end:
+            continue
+        minutes = max(holiday.credit_minutes, 0)
+        day_type = holiday.day_type.upper()
+        if day_type not in HOLIDAY_DAY_TYPES:
+            continue
+        if not holiday.qualified:
+            current.disqualified_holiday_minutes += minutes * (2 if day_type == "DBL" else 1)
+        elif day_type == "DBL":
+            current.unworked_double_holiday_minutes += minutes
+        else:
+            current.unworked_holiday_minutes += minutes
 
     return [totals[employee_id] for employee_id in sorted(totals, key=str)]

@@ -114,6 +114,8 @@ PayComponent = Literal[
     "HOLIDAY_OT",
     "NIGHT_REGULAR",
     "NIGHT_OT",
+    "UNWORKED_HOLIDAY",
+    "UNWORKED_DOUBLE_HOLIDAY",
 ]
 GrossPayLineComponent = Literal[
     "REGULAR",
@@ -128,6 +130,8 @@ GrossPayLineComponent = Literal[
     "HOLIDAY_OT",
     "NIGHT_REGULAR",
     "NIGHT_OT",
+    "UNWORKED_HOLIDAY",
+    "UNWORKED_DOUBLE_HOLIDAY",
     "MONTHLY_BASE",
     "UNPAID_TIME_DEDUCTION",
 ]
@@ -206,6 +210,7 @@ class PayrollSystemParametersSchema(BaseModel):
     thirteenth_month_enabled: bool
     schedule_assignment_approval_required: bool
     statutory_contribution_timing: Literal["PER_CUTOFF", "FINAL_CUTOFF"]
+    holiday_pay_attendance_rule: Literal["BEFORE_ONLY", "BEFORE_AND_AFTER"]
     updated_at: datetime
     updated_by: UUID | None
 
@@ -217,6 +222,14 @@ class PayrollSystemParametersUpdateSchema(BaseModel):
     thirteenth_month_enabled: bool
     schedule_assignment_approval_required: bool
     statutory_contribution_timing: Literal["PER_CUTOFF", "FINAL_CUTOFF"]
+    holiday_pay_attendance_rule: Literal["BEFORE_ONLY", "BEFORE_AND_AFTER"] | None = Field(
+        default=None,
+        description=(
+            "Attendance required for unworked regular-holiday pay. BEFORE_ONLY follows the "
+            "Labor Code rules; BEFORE_AND_AFTER also requires the next workday. "
+            "Omit to keep the current setting."
+        ),
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -722,6 +735,7 @@ async def update_payroll_system_parameters(
                 parameters.schedule_assignment_approval_required
             ),
             "statutory_contribution_timing": parameters.statutory_contribution_timing,
+            "holiday_pay_attendance_rule": parameters.holiday_pay_attendance_rule,
         }
         parameters.year_end_wtax_reconciliation_enabled = (
             payload.year_end_wtax_reconciliation_enabled
@@ -731,6 +745,8 @@ async def update_payroll_system_parameters(
             payload.schedule_assignment_approval_required
         )
         parameters.statutory_contribution_timing = payload.statutory_contribution_timing
+        if payload.holiday_pay_attendance_rule is not None:
+            parameters.holiday_pay_attendance_rule = payload.holiday_pay_attendance_rule
         parameters.updated_by = actor_id
         await uow.session.flush()
         await uow.session.refresh(parameters)
@@ -751,6 +767,7 @@ async def update_payroll_system_parameters(
                 payload.schedule_assignment_approval_required
             ),
             "statutory_contribution_timing": payload.statutory_contribution_timing,
+            "holiday_pay_attendance_rule": response_data.holiday_pay_attendance_rule,
         },
     )
     return ResponseEnvelope(status="success", data=response_data)

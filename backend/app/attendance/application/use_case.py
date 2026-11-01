@@ -599,8 +599,8 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
             return LastAttendanceOutputDTO(
                 work_date=last.work_date.isoformat(),
                 schedule_template_id=last.schedule_template_id,
-                clock_in_at=to_ph_iso(last.clock_in_at),
-                clock_out_at=to_ph_iso(last.clock_out_at),
+                clock_in_at=to_ph_iso(last.corrected_clock_in_at or last.clock_in_at),
+                clock_out_at=to_ph_iso(last.corrected_clock_out_at or last.clock_out_at),
                 first_break_out_at=to_ph_iso(last.first_break_out_at),
                 first_break_in_at=to_ph_iso(last.first_break_in_at),
                 second_break_out_at=to_ph_iso(last.second_break_out_at),
@@ -1453,7 +1453,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 if existing.is_locked:
                     raise ValueError("This attendance record has been locked by HR for payroll. No further punches allowed.")
                 
-                if existing.clock_out_at:
+                if existing.corrected_clock_out_at or existing.clock_out_at:
                     raise ValueError("Attendance for today is already complete (clocked in and out).")
 
                 if not input_dto.clock_out_confirmed and existing.expected_clock_out_at:

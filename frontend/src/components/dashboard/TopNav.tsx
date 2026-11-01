@@ -37,6 +37,7 @@ import {
   hasPermission,
   hasAnyPermission,
   getSelectedDashboardRoleCode,
+  isSystemAdmin,
   normalizeDashboardRole,
 } from '../../types/role'
 
@@ -85,6 +86,8 @@ export type NavView =
   | 'overtime-application'
   | 'official-business'
   | 'change-password'
+  | 'reset-password'
+  | 'database-backup'
 
 const companySetupTabViews: NavView[] = [
   'companies',
@@ -227,7 +230,6 @@ const navLinks: NavLink[] = [
         view: 'emergency-schedule-approvals',
         permission: 'schedule.approve_emergency',
       },
-      { label: 'Team Schedule Upload', view: 'schedule-uploads', permission: 'schedule.upload_team' },
     ],
   },
   {
@@ -340,6 +342,8 @@ function findNavLabel(links: NavLink[], view: NavView): string | undefined {
 const additionalViewLabels: Partial<Record<NavView, string>> = {
   enrollment: 'Enrollment',
   'change-password': 'Change Password',
+  'reset-password': 'Reset Password',
+  'database-backup': 'Database Backup',
   'payroll-compensation': 'Compensation',
   'payroll-earning-rules': 'Earning Rules',
   'payroll-gross': 'Gross Pay',
@@ -424,6 +428,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   ).size > 1
   const showDashboardRoleSelect = canPreviewRoles || hasMultipleAssignedDashboardRoles
   const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
+  const canResetPasswords = isSystemAdmin()
   const { companyId, selectCompany } = useCompanySetupSelection()
   const isCompanyContextView = companyContextViews.includes(activeView)
   const filterByPermission = (link: NavLink): NavLink | null => {
@@ -736,6 +741,28 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                   >
                     Change Password
                   </button>
+                  {canResetPasswords && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => navigateTo('reset-password')}
+                      aria-current={activeView === 'reset-password' ? 'page' : undefined}
+                      className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
+                        activeView === 'reset-password'
+                          ? 'bg-indigo-50 text-indigo-700'
+                          : 'text-slate-900 hover:bg-slate-50'
+                      }`}
+                    >
+                      Reset Password
+                    </button>
+                  )}
+                  {canResetPasswords && (
+                    <button type="button" role="menuitem" onClick={() => navigateTo('database-backup')}
+                      aria-current={activeView === 'database-backup' ? 'page' : undefined}
+                      className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 transition hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+                      Database Backup
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -789,6 +816,28 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                     >
                       Change Password
                     </button>
+                    {canResetPasswords && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => navigateTo('reset-password')}
+                        aria-current={activeView === 'reset-password' ? 'page' : undefined}
+                        className={`block w-full rounded-md px-3 py-2 text-left text-sm font-semibold transition ${
+                          activeView === 'reset-password'
+                            ? 'bg-indigo-50 text-indigo-700'
+                            : 'text-slate-900 hover:bg-slate-50'
+                        }`}
+                      >
+                        Reset Password
+                      </button>
+                    )}
+                    {canResetPasswords && (
+                      <button type="button" role="menuitem" onClick={() => navigateTo('database-backup')}
+                        aria-current={activeView === 'database-backup' ? 'page' : undefined}
+                        className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 transition hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+                        Database Backup
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

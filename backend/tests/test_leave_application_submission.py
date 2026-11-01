@@ -60,7 +60,7 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(application.submitted_at.tzinfo, timezone.utc)
         session.flush.assert_awaited_once()
         session.refresh.assert_awaited_once_with(application)
-        session.execute.assert_awaited_once()
+        self.assertEqual(session.execute.await_count, 2)
 
     async def test_submit_rejects_non_draft_application(self):
         application = SimpleNamespace(status="PENDING", is_active=True)

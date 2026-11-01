@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { LoaderCircle, Pencil, Plus } from 'lucide-react'
-import { useForm } from 'react-hook-form'
+import { Controller, useForm } from 'react-hook-form'
+import SearchableSelect from '../../components/common/SearchableSelect'
 import { z } from 'zod'
 import {
   createEmployeeSkill,
@@ -45,91 +46,6 @@ function employeeLabel(employee: Employee) {
   return `${employee.employee_no} — ${employee.first_name} ${employee.last_name}`
 }
 
-function SupervisorEmployeeSelect({
-  employees,
-  value,
-  onChange,
-}: {
-  employees: Employee[]
-  value: string
-  onChange: (employeeId: string) => void
-}) {
-  const [search, setSearch] = useState('')
-  const [isOpen, setIsOpen] = useState(false)
-  const selectedEmployee = employees.find((item) => item.id === value)
-  const query = search.trim().toLocaleLowerCase()
-  const matches = employees
-    .filter((item) => !query || employeeLabel(item).toLocaleLowerCase().includes(query))
-    .slice(0, 50)
-
-  return (
-    <div className="relative">
-      <input
-        role="combobox"
-        aria-autocomplete="list"
-        aria-expanded={isOpen}
-        aria-controls="employment-assignment-supervisor-options"
-        aria-label="Search supervisor by employee number or name"
-        value={search || (selectedEmployee ? employeeLabel(selectedEmployee) : '')}
-        onFocus={() => setIsOpen(true)}
-        onBlur={() => setIsOpen(false)}
-        onChange={(event) => {
-          setSearch(event.target.value)
-          onChange('')
-          setIsOpen(true)
-        }}
-        autoComplete="off"
-        placeholder="Search supervisor by number or name"
-        className={inputClassName}
-      />
-      {isOpen && (
-        <div
-          id="employment-assignment-supervisor-options"
-          role="listbox"
-          aria-label="Matching supervisors"
-          className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
-        >
-          <button
-            type="button"
-            role="option"
-            aria-selected={!value}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => {
-              onChange('')
-              setSearch('')
-              setIsOpen(false)
-            }}
-            className="block w-full px-3 py-2 text-left text-xs text-slate-600 hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
-          >
-            None
-          </button>
-          {matches.length ? matches.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="option"
-              aria-selected={item.id === value}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                onChange(item.id)
-                setSearch('')
-                setIsOpen(false)
-              }}
-              className="block w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none"
-            >
-              {employeeLabel(item)}
-            </button>
-          )) : query ? (
-            <p className="px-3 py-2 text-xs text-slate-500">No employees match that search.</p>
-          ) : (
-            <p className="px-3 py-2 text-xs text-slate-500">No other employees available.</p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function errorText(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
@@ -143,7 +59,7 @@ function FieldError({ message }: { message?: string }) {
   return message ? <p className="mt-1 text-xs font-medium text-rose-600">{message}</p> : null
 }
 
-function useRelatedRecords<T extends { id: string }>(employeeId: string | null, fetcher: (id: string) => Promise<T[]>, fallback: string) {
+function useRelatedRecords<T extends { id: string }>(employeeId: string | null, fetcher: (id: string) => Promise<T[]>, fallback: string, refreshVersion = 0) {
   const [records, setRecords] = useState<T[]>([])
   const [isLoading, setIsLoading] = useState(Boolean(employeeId))
   const [errorMessage, setErrorMessage] = useState('')
@@ -161,7 +77,7 @@ function useRelatedRecords<T extends { id: string }>(employeeId: string | null, 
       .catch((error: unknown) => { if (isCurrent) setErrorMessage(errorText(error, fallback)) })
       .finally(() => { if (isCurrent) setIsLoading(false) })
     return () => { isCurrent = false }
-  }, [employeeId, fetcher, fallback])
+  }, [employeeId, fetcher, fallback, refreshVersion])
 
   useEffect(() => {
     if (!successMessage) return
@@ -178,10 +94,13 @@ function useRelatedRecords<T extends { id: string }>(employeeId: string | null, 
   return { records, isLoading, errorMessage, setErrorMessage, successMessage, setSuccessMessage, upsert }
 }
 
-function PanelShell({ title, errorMessage, successMessage, children }: { title: string; errorMessage: string; successMessage: string; children: ReactNode }) {
+function PanelShell({ title, errorMessage, successMessage, actions, children }: { title: string; errorMessage: string; successMessage: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="space-y-4" onKeyDown={blockEnterSubmit}>
-      <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>
+      {actions ? <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>
+        {actions}
+      </div> : <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>}
       {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
       {successMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
       {children}
@@ -304,12 +223,15 @@ interface AssignmentsPanelProps {
   employees: Employee[]
   companies: Company[]
   orgUnits: OrgUnit[]
+  importActions?: ReactNode
+  importPanel?: ReactNode
+  refreshVersion?: number
 }
 
-export function EmploymentAssignmentsPanel({ employee, employees, companies, orgUnits }: AssignmentsPanelProps) {
-  const related = useRelatedRecords(employee?.id ?? null, fetchEmploymentAssignments, 'Could not load employment assignments.')
+export function EmploymentAssignmentsPanel({ employee, employees, companies, orgUnits, importActions, importPanel, refreshVersion }: AssignmentsPanelProps) {
+  const related = useRelatedRecords(employee?.id ?? null, fetchEmploymentAssignments, 'Could not load employment assignments.', refreshVersion)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const { register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<AssignmentFormValues>({
+  const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<AssignmentFormValues>({
     defaultValues: emptyAssignment,
     resolver: zodResolver(assignmentSchema),
   })
@@ -544,7 +466,8 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   }
 
   return (
-    <PanelShell title="Employment assignments" errorMessage={related.errorMessage} successMessage={related.successMessage}>
+    <PanelShell title="Employment assignments" errorMessage={related.errorMessage} successMessage={related.successMessage} actions={importActions}>
+      {importPanel}
       <div className="overflow-x-auto rounded-lg border border-slate-200">
         <table className="min-w-full text-left text-xs">
           <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
@@ -581,30 +504,35 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
         <div key={editingId ?? 'new'} className="mt-2 grid gap-4">
           <div className="grid min-w-0 gap-x-4 gap-y-3 sm:grid-cols-2">
           <label className={labelClassName}>Company
-            <select {...register('company_id', {
-              onChange: () => {
+            <Controller name="company_id" control={control} render={({ field }) => (
+              <SearchableSelect label="Company" name={field.name} inputRef={field.ref} onBlur={field.onBlur}
+                value={field.value} onChange={(value) => {
+                field.onChange(value)
                 setValue('org_unit_id', '')
                 setValue('operational_group', '')
                 setValue('primary_location_id', '')
                 setValue('location_ids', [])
                 setValue('authorized_geofence_ids', [])
                 setValue('payroll_group_id', '')
-              },
-            })} className={inputClassName}>
-              <option value="">Select company</option>
-              {companies.map((company) => <option key={company.id} value={company.id}>{company.company_code} — {company.legal_name}</option>)}
-            </select>
+                }}
+                placeholder="Select company" className={inputClassName}
+                options={[{ value: '', label: 'Select company' }, ...companies.map((company) => ({ value: company.id, label: `${company.company_code} — ${company.legal_name}` }))]}
+              />
+            )} />
             <FieldError message={errors.company_id?.message} />
           </label>
           <label className={labelClassName}>Org unit
-            <select {...register('org_unit_id')} disabled={!selectedCompanyId} className={inputClassName}>
-              <option value="">None</option>
-              {companyOrgUnits.map((orgUnit) => <option key={orgUnit.id} value={orgUnit.id}>{orgUnit.org_unit_code} — {orgUnit.org_unit_name}</option>)}
-            </select>
+            <Controller name="org_unit_id" control={control} render={({ field }) => (
+              <SearchableSelect {...field} inputRef={field.ref} label="Org unit" disabled={!selectedCompanyId} className={inputClassName}
+                options={[{ value: '', label: 'None' }, ...companyOrgUnits.map((unit) => ({ value: unit.id, label: `${unit.org_unit_code} — ${unit.org_unit_name}` }))]} />
+            )} />
           </label>
           <label className={labelClassName}>Supervisor
-            <SupervisorEmployeeSelect
-              employees={employees.filter((item) => item.id !== employeeId)}
+            <SearchableSelect
+              label="Supervisor"
+              className={inputClassName}
+              placeholder="Search supervisor by employee number or name"
+              options={[{ value: '', label: 'None' }, ...employees.filter((item) => item.id !== employeeId).map((item) => ({ value: item.id, label: employeeLabel(item) }))]}
               value={watch('supervisor_employee_id')}
               onChange={(supervisorId) => setValue('supervisor_employee_id', supervisorId, {
                 shouldDirty: true,
@@ -615,17 +543,16 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           <label className={labelClassName}>Employment type<input {...register('employment_type')} placeholder="e.g. REGULAR" className={inputClassName} /><FieldError message={errors.employment_type?.message} /></label>
           <label className={labelClassName}>Employee category<input {...register('employee_category')} placeholder="e.g. RANK_AND_FILE" className={inputClassName} /><FieldError message={errors.employee_category?.message} /></label>
           <label className={labelClassName}>Operational group
-            <select {...register('operational_group')} value={selectedOperationalGroup} disabled={!selectedCompanyId || isLoadingOperationalGroups || Boolean(operationalGroupsError)} className={inputClassName}>
-              <option value="">{isLoadingOperationalGroups ? 'Loading operational groups...' : operationalGroupsError ? 'Operational groups unavailable' : 'None'}</option>
-              {selectedOperationalGroup && !availableOperationalGroups.some((group) => group.operational_group === selectedOperationalGroup) && (
-                <option value={selectedOperationalGroup}>{selectedOperationalGroup}</option>
-              )}
-              {availableOperationalGroups.map((group) => (
-                <option key={group.operational_group} value={group.operational_group}>
-                  {group.operational_group} - {group.display_name}{group.is_active ? '' : ' (inactive)'}
-                </option>
-              ))}
-            </select>
+            <Controller name="operational_group" control={control} render={({ field }) => (
+              <SearchableSelect {...field} inputRef={field.ref} label="Operational group"
+                disabled={!selectedCompanyId || isLoadingOperationalGroups || Boolean(operationalGroupsError)} className={inputClassName}
+                options={[
+                  { value: '', label: isLoadingOperationalGroups ? 'Loading operational groups...' : operationalGroupsError ? 'Operational groups unavailable' : 'None' },
+                  ...(selectedOperationalGroup && !availableOperationalGroups.some((group) => group.operational_group === selectedOperationalGroup)
+                    ? [{ value: selectedOperationalGroup, label: selectedOperationalGroup }] : []),
+                  ...availableOperationalGroups.map((group) => ({ value: group.operational_group, label: `${group.operational_group} - ${group.display_name}${group.is_active ? '' : ' (inactive)'}` })),
+                ]} />
+            )} />
             {operationalGroupsError && (
               <span role="alert" className="mt-1 block text-xs text-rose-600">
                 {operationalGroupsError}
@@ -640,20 +567,16 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
           <label className={labelClassName}>Separation date<input type="date" {...register('separation_date')} className={inputClassName} /><FieldError message={errors.separation_date?.message} /></label>
           <label className={labelClassName}>Position ID<input {...register('position_id')} placeholder="UUID (optional)" className={inputClassName} /><FieldError message={errors.position_id?.message} /></label>
           {canManagePayroll && <label className={labelClassName}>Payroll group
-            <select {...register('payroll_group_id')} disabled={!selectedCompanyId || isLoadingPayrollGroups} className={inputClassName}>
-              <option value="">{isLoadingPayrollGroups ? 'Loading payroll groups…' : 'None'}</option>
-              {selectedPayrollGroupId && !selectedPayrollGroup && (
-                <option value={selectedPayrollGroupId}>Previously assigned payroll group</option>
-              )}
-              {companyPayrollGroups
+            <Controller name="payroll_group_id" control={control} render={({ field }) => (
+              <SearchableSelect {...field} inputRef={field.ref} label="Payroll group" disabled={!selectedCompanyId || isLoadingPayrollGroups} className={inputClassName}
+                options={[
+                  { value: '', label: isLoadingPayrollGroups ? 'Loading payroll groups…' : 'None' },
+                  ...(selectedPayrollGroupId && !selectedPayrollGroup ? [{ value: selectedPayrollGroupId, label: 'Previously assigned payroll group' }] : []),
+                  ...companyPayrollGroups
                 .filter((group) => (group.is_active && group.status === 'ACTIVE') || group.id === selectedPayrollGroupId)
-                .map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {group.payroll_group_code} — {group.payroll_group_name}
-                    {group.is_active && group.status === 'ACTIVE' ? '' : ' (inactive)'}
-                  </option>
-                ))}
-            </select>
+                    .map((group) => ({ value: group.id, label: `${group.payroll_group_code} — ${group.payroll_group_name}${group.is_active && group.status === 'ACTIVE' ? '' : ' (inactive)'}` })),
+                ]} />
+            )} />
             <FieldError message={errors.payroll_group_id?.message} />
             {payrollGroupsLoad.error && <span className="mt-1 block text-xs font-medium text-rose-600">{payrollGroupsLoad.error}</span>}
           </label>}
@@ -741,16 +664,11 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
               {locationsError && <span className="mt-1 block text-xs font-medium text-rose-600">{locationsError}</span>}
               <span className="mt-2 block text-[11px] font-normal text-slate-500">Select the locations where this employee is permitted to punch.</span>
               <label className={`${labelClassName} mt-3 block`}>Primary work location
-                <select
-                  {...register('primary_location_id')}
-                  disabled={selectedLocationIds.length === 0}
-                  className={inputClassName}
-                >
-                  <option value="">Select a primary work location</option>
-                  {selectedLocationIds.map((id) => (
-                    <option key={id} value={id}>{locationName(id)}</option>
-                  ))}
-                </select>
+                <Controller name="primary_location_id" control={control} render={({ field }) => (
+                  <SearchableSelect {...field} inputRef={field.ref} label="Primary work location"
+                    disabled={selectedLocationIds.length === 0} className={inputClassName}
+                    options={[{ value: '', label: 'Select a primary work location' }, ...selectedLocationIds.map((id) => ({ value: id, label: locationName(id) }))]} />
+                )} />
                 <FieldError message={errors.primary_location_id?.message} />
                 <span className="mt-1 block text-[11px] font-normal text-slate-500">
                   Local holiday eligibility follows this location, even when the employee punches at another permitted location.
@@ -883,7 +801,7 @@ interface SkillsPanelProps {
 export function EmployeeSkillsPanel({ employee, employees }: SkillsPanelProps) {
   const related = useRelatedRecords(employee?.id ?? null, fetchEmployeeSkills, 'Could not load employee skills.')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<SkillFormValues>({
+  const { control, register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<SkillFormValues>({
     defaultValues: emptySkill,
     resolver: zodResolver(skillSchema),
   })
@@ -983,10 +901,10 @@ export function EmployeeSkillsPanel({ employee, employees }: SkillsPanelProps) {
           <label className={labelClassName}>Issued date<input type="date" {...register('issued_date')} className={inputClassName} /><FieldError message={errors.issued_date?.message} /></label>
           <label className={labelClassName}>Expiry date<input type="date" {...register('expiry_date')} className={inputClassName} /><FieldError message={errors.expiry_date?.message} /></label>
           <label className={labelClassName}>Verified by
-            <select {...register('verified_by')} className={inputClassName}>
-              <option value="">None</option>
-              {employees.map((item) => <option key={item.id} value={item.id}>{employeeLabel(item)}</option>)}
-            </select>
+            <Controller name="verified_by" control={control} render={({ field }) => (
+              <SearchableSelect {...field} inputRef={field.ref} label="Verified by" className={inputClassName}
+                options={[{ value: '', label: 'None' }, ...employees.map((item) => ({ value: item.id, label: employeeLabel(item) }))]} />
+            )} />
           </label>
           <label className={labelClassName}>Status<input {...register('status')} className={inputClassName} /><FieldError message={errors.status?.message} /></label>
           <label className="flex items-center gap-3 self-end rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700"><input type="checkbox" {...register('is_active')} className="h-4 w-4 accent-indigo-600" />Enabled for use</label>

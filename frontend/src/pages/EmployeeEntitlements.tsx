@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Pencil, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
+import EntitlementUpload from '../features/employees/EntitlementUpload'
 import { useLogout } from '../hooks/useLogout'
 import { EMPLOYEE_CREATED_EVENT, fetchEmployees } from '../lib/employeeApi'
 import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../lib/employeeRelatedApi'
@@ -237,9 +238,14 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
       <TopNav employeeName={employeeName} activeView="employee-entitlements" onNavigate={onNavigate} onSignOut={logout} />
       <main className="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
         <header>
-          <p className="text-sm font-semibold uppercase tracking-wide text-indigo-600">People</p>
-          <h1 className="mt-1 text-2xl font-bold text-slate-900">Employee Entitlements</h1>
-          <p className="mt-1 text-sm text-slate-500">Enter balances in the unit configured for each leave type (e.g. days).</p>
+          <EntitlementUpload onUploaded={async (result) => {
+            if (editing && result.entitlement_ids.includes(editing.id)) resetForm()
+            await reload()
+          }}>
+            <p className="text-sm font-semibold uppercase tracking-wide text-indigo-600">People</p>
+            <h1 className="mt-1 text-2xl font-bold text-slate-900">Employee Entitlements</h1>
+            <p className="mt-1 text-sm text-slate-500">Enter balances in the unit configured for each leave type (e.g. days).</p>
+          </EntitlementUpload>
         </header>
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
         {success && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p>}

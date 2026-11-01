@@ -23,6 +23,11 @@ DEFAULT_SIGNUP_ROLE_CODE = "SYSTEM_ADMIN"
 DEFAULT_EMPLOYEE_ROLE_CODE = "EMPLOYEE"
 # identity.roles codes that grant the application-level ADMIN access.
 ADMIN_ROLE_CODES = frozenset({"SYSTEM_ADMIN", "SYSTEM_ADMINISTRATOR", "HR_ADMIN"})
+SYSTEM_ADMIN_ROLE_CODES = frozenset({"SYSTEM_ADMIN", "SYSTEM_ADMINISTRATOR"})
+
+
+def is_system_admin(role_codes: list[str] | set[str] | tuple[str, ...]) -> bool:
+    return any((code or "").strip().upper() in SYSTEM_ADMIN_ROLE_CODES for code in role_codes)
 
 
 def resolve_app_role(role_codes: list[str] | set[str] | tuple[str, ...]) -> Role:

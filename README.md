@@ -20,6 +20,46 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 Use the same pair of `-f` options with `docker compose down` to stop that
 environment.
 
+### Uploading leave entitlements
+
+Users with `leave.manage` can download a CSV template and upload balances from
+either the Entitlements tab of an employee record or the Employee Entitlements
+page. A file can include multiple employees, including employees other than the
+one currently open. Save it as UTF-8 or Excel CSV; format employee numbers as
+text in Excel so leading zeroes are preserved.
+
+Each row requires an employee number, leave code, entitlement year (1900-2200),
+and all nine balance amounts. Enter `0` rather than leaving an amount blank.
+The columns are:
+
+```csv
+employee_no,leave_code,entitlement_year,opening_balance,granted,accrued,carryover,adjustment,used,reserved,expired,converted
+0001,VL,2026,0,12,0,0,0,1,0,0,0
+E002,SL,2026,0,5,0,0,0,0,0,0,0
+```
+
+The employee numbers and leave codes above are examples and must match records
+in the system. Amounts use the unit configured for each employee's leave type:
+days, hours, or minutes (one day is eight hours). Minute values must be whole;
+day and hour values are rounded to the nearest minute. Only opening balance
+and adjustment can be negative. Available balance is calculated automatically.
+
+Check the file and review the create/update preview before applying it.
+Matching employee, leave type, and year records are **replaced with the
+supplied amounts**, including used and reserved balances. This does not change
+existing leave ledger entries. Employees must have an active employment
+assignment and satisfy the same company, active leave type, and service
+eligibility rules as a manual entitlement. A file is limited to 1 MB and 1,000
+rows; any error rejects the entire file. If an existing balance changes after
+the preview, check the file again before applying it. If an entitlement already
+uses an older leave-type record with the same code and year, resolve that
+record first; the upload will not silently create a duplicate.
+
+The optional PostgreSQL upload tests require `ENTITLEMENT_UPLOAD_TEST_DATABASE_URL`
+to point to an **empty, disposable** database named `entitlement_upload_test_*`.
+They create and remove test schemas and must never target the application database.
+HTTP endpoint tests also require the optional `httpx` test dependency.
+
 ### Database migrations
 
 Alembic migrations run as an explicit deployment step; the API does not create
@@ -175,6 +215,32 @@ paid using the payroll group's `SPECIAL_DAY` earning rule; overtime uses
 group (for example, `1.30` means 130% of the base rate). Confirm the applicable
 rates in Earning Multipliers for every production payroll group.
 
+### Regular holiday pay attendance rule
+
+Apply `backend/sql/20261101_holiday_pay_attendance_rule.sql` (Alembic revision
+`e1b2c3d4f5a6`) before deploying this change. An employee who does not work on
+a regular (`RH`) or double (`DBL`) holiday is paid for it only when present, on
+paid leave, on approved official business, or schedule-credited on the workday
+immediately before the holiday. Rest days and other non-working days are
+skipped when locating that workday (up to 14 days), and work performed on a
+skipped day, such as the first of two successive regular holidays, counts as
+presence. Days that have not happened yet, or fall before the employee's
+employment, never disqualify.
+
+Set the rule per company in **Company Parameters → Regular holiday pay
+attendance**: `BEFORE_ONLY` (default, the DOLE rule) or `BEFORE_AND_AFTER`
+(company policy or CBA that also requires the following workday). Recalculate
+open cutoffs after changing it.
+
+Daily- and hourly-rated groups are paid unworked holidays through the
+`UNWORKED_HOLIDAY` (default `1.00`) and `UNWORKED_DOUBLE_HOLIDAY` (default
+`2.00`) earning rules, crediting the payroll group's standard minutes per day.
+The migration seeds both rules for every payroll group that already has earning
+rules; configure them for new groups. Monthly-rated salaries already include
+unworked holidays, so a disqualified holiday is instead deducted through
+`UNPAID_TIME_DEDUCTION`. Cutoff results expose `unworked_holiday_minutes`,
+`unworked_double_holiday_minutes`, and `disqualified_holiday_minutes`.
+
 ## Statutory contribution and tax schedules
 
 Before deploying the program-specific schedule calculations, apply
@@ -313,7 +379,12 @@ assignments.
 
 ## Employment assignment CSV import
 
-From Employees, use **Import Assignments** to upload assignments for existing
+Employee form lookup dropdowns support searching by code or name, mouse selection,
+and arrow-key/Enter selection. Escape closes the options without changing the
+selected value. Simple fixed choices and the read-only role company remain unchanged.
+
+From Employees, open an employee form and select the **Assignments** tab.
+Use **Import Assignments** in the tab header to upload assignments for existing
 employees. Download the CSV template for the supported columns. Required
 columns are `employee_no`, `company_code`, `employment_type`,
 `employee_category`, `hire_date`, and `effective_from`. Optional references
@@ -353,6 +424,12 @@ approval and unlock actions are audited. Apply
 `payroll.approve` and grant it to HR and system administrator roles.
 
 ## Schedule approval policy
+
+Team Schedule Upload is available in an employee form's **Schedule** tab,
+not the navigation menu. Users with `schedule.upload_team` can open the form
+from Employees; supervisors without employee-management permission get
+read-only employee details and the existing team upload workflow.
+Supervisor and HR_ADMIN upload modes, validation, and approval rules are unchanged.
 
 The company-level **Require schedule approval** parameter controls direct
 employee schedule assignments and supervisor schedule-upload batches. It is
@@ -394,6 +471,35 @@ Apply `backend/sql/20261023_add_payroll_cutoff_half_designation.sql`.
 
 ## Attendance finalization before payroll
 
+Payroll Cutoffs has an **Employee filing deadline** and a **Supervisor approval
+deadline** (the existing `attendance_deadline`). Both must be timezone-aware and
+after the last cutoff day ends in Philippine time. Approval must be on or after
+filing; setting a filing deadline requires an approval deadline.
+
+After filing closes, employees cannot create, edit, submit, or cancel OT,
+leave, or official business requests covered by that cutoff. Emergency schedule
+requests and employee attendance recalculation also respect the filing window.
+Supervisors can still approve or reject submitted requests until approval closes.
+The exact deadline instant remains allowed. Finalized attendance or locked
+payroll closes both windows. Requests spanning cutoffs must satisfy every
+applicable cutoff. Dates without a matching employee cutoff retain the existing
+unrestricted deadline behavior.
+
+Existing cutoffs with no separate filing deadline use `attendance_deadline`
+for both stages. Leave filing, previously missing the cutoff deadline check,
+now follows this policy too. Employee application screens and supervisor review
+screens display the applicable deadlines in Philippine time.
+
+**Production schema prerequisite:** apply
+`backend/sql/20261101_employee_filing_deadline.sql` to update **payroll.cutoffs**
+before deploying this backend. Alternatively, for Alembic-managed installations,
+upgrade through revision `f2c3d4e5a6b7`; do not apply both migration paths blindly.
+If the holiday-pay change has not yet been deployed, also apply
+`backend/sql/20261101_holiday_pay_attendance_rule.sql`, which updates
+**payroll.company_system_parameters**, **payroll.employee_cutoff_results**,
+and **payroll.earning_rules**. The deadline migration leaves existing filing
+deadlines NULL; HR can set separate dates through Payroll Cutoffs.
+
 Attendance for a payroll cutoff must be calculated and reviewed in Attendance
 Detail before an HR administrator can finalize it. Finalization is available
 only after the cutoff's attendance deadline and requires the `attendance.finalize`
@@ -404,6 +510,147 @@ locks the completed payroll. Apply
 `backend/sql/20261028_add_attendance_finalization_workflow.sql` before deploying.
 The migration treats cutoffs already locked or past their attendance deadline as
 finalized to preserve existing cutoff behavior.
+
+## Missing-punch attendance corrections
+
+### Manual database backups
+
+**Account options (three dots) → Database Backup** is available only to
+SYSTEM_ADMIN / SYSTEM_ADMINISTRATOR accounts. The backend checks the user's
+current active roles in PostgreSQL on every request; HR_ADMIN and a cached
+administrator token alone do not grant access. No new permission tables or
+database migration are needed.
+
+Click **Create & download backup**, keep the tab open, and save the browser
+download to your computer. The custom-format `.dump` contains the configured
+PostgreSQL database's schema and data, including all companies. It does not
+contain uploaded files, Elasticsearch data, or cluster-wide role definitions.
+Downloads are unencrypted: protect them with encrypted local storage and restricted
+access, and keep another copy on separate/off-site storage. They are not public files.
+
+The backend runs PostgreSQL 16 `pg_dump` (matching the Compose database version)
+without putting the database password in command arguments. It uses a private
+temporary directory and removes the archive after response delivery, or on failure.
+Only one dump generation runs at a time across workers, enforced by a PostgreSQL
+transaction advisory lock. The five-minute generation limit is for manual backups;
+larger databases require an operational backup job. Dumps are consistent snapshots,
+but consume server CPU, I/O and temporary disk space. A killed container can leave
+temporary files until its filesystem is removed; administrators should monitor
+private temporary storage and clean only inactive backup directories.
+
+**Deployment:** rebuild the backend image to install `pg_dump` / `pg_restore`
+and their runtime libraries, then recreate the web service. Deploy the updated
+frontend and Nginx configuration; the exact `/auth/database-backup` location
+allows a 360-second response timeout without changing other API timeouts.
+No Docker socket mount is required. The PostgreSQL client must be upgraded
+alongside any future server major-version upgrade.
+
+Test backups in a separate database, never by overwriting production:
+
+```text
+pg_restore --list magnus-database-YYYYMMDDTHHMMSSZ.dump
+pg_restore --exit-on-error --dbname=<separate-test-database> <backup-file.dump>
+```
+
+Provision the test server's roles/extensions first when required by the archive.
+This feature does not restore production or schedule automatic backups. Browser
+download initiation is not proof the user saved the file; verify local file size
+and test recovery. PostgreSQL backup failure returns an error, not a partial file.
+
+Employees with `attendance.correct_own` can file **Missing-Punch Corrections**
+from their Employee Dashboard using **Apply for Attendance Correction** in
+**My actions & records**, next to **Apply for Leave**. The correction action is
+also available directly below **Apply for Leave** inside My Leave Requests.
+The button opens the correction detail panel. Load the work date, enter the actual missing
+clock-in and/or clock-out, provide a reason, and optionally supply a ticket,
+job-order, or other evidence reference. Reference text is stored; this feature
+does not upload attachments. No scheduled clock-out is automatically credited.
+At least one existing clock-in or clock-out is required on that work date.
+Both punches missing, including dates without an attendance row, must be
+handled by HR outside this missing-punch workflow.
+
+Requests are limited to scheduled, punch-required working days after the shift
+ends. Enter times in Philippine time; clock-in must be on the selected work
+date, clock-out may be on the next day, and the interval cannot exceed 24 hours
+or extend into the future. Existing punches and recorded break intervals are
+preserved. Schedule-credited days do not need corrections. Locked or invalid
+attendance must first be resolved through the existing HR/review process.
+
+**Supervisor/Manager Dashboard → Team overview → Review queue → Attendance corrections** shows the
+pending request count when the role has team approval rights. Click the button to open or hide **Attendance Correction
+Approvals**, which shows current direct
+reports' pending requests, original and requested times, reason, and supporting
+reference. `attendance.approve_corrections_team` permits Approve/Reject with
+mandatory review notes. Self-approval, duplicate pending requests, stale
+versions, and approval after punches have changed are rejected. Employees
+can view their request history and refile a rejected request within the filing
+window.
+
+Supervisor and Manager dashboards use compact, color-accented attendance metrics and a grouped,
+permission-filtered review queue. Opening a review category closes the previous
+review list and Team Hours; opening Team Hours closes any active review list.
+The entire Team Hours card is hidden until the top Hours metric is selected.
+Supervisor punch locations use a colored Review queue button, with the full
+panel hidden until selected; switching categories also hides this panel.
+The existing supervisor role and team attendance permission requirements remain;
+the duplicate team leave summary is removed.
+
+All dashboard roles share the standard full-width compact, colored overview
+with a prominent personalized Welcome heading instead of a separate hero banner.
+The compact header retains a purple Today card displaying the Philippine date.
+Administrator metrics and reviews use the same presentation and exclusive panel
+behavior; offline attendance review is opened from its Review queue button.
+Existing role permissions and data scopes are preserved.
+Dashboard navigation actions use an arrow icon; expandable records use a
+chevron. Unloaded counts say **Not loaded** instead of a dash, and positive
+pending counts are emphasized without changing their order. Failed approval-list
+loads show an error rather than a misleading zero/empty state. Approval buttons
+use green, rejection buttons soft red, and filing buttons indigo, with visible
+keyboard focus and disabled states.
+
+The Employee dashboard uses the same full-width, color-accented overview with
+compact live attendance and leave metrics. **My actions & records** groups
+permission-gated Leave, Attendance Correction, OT, OB, and Payroll Review actions.
+Leave balances, leave requests, recent attendance, work hours, corrections, and
+holidays/announcements open one detail panel at a time; clicking the selected
+record again hides it. Attendance opens expanded so a second click is not needed.
+The team **Recorded absences** metric counts attendance records marked absent
+this month, excluding leave days and shifts before their expected clock-in time;
+dates without an attendance record are not
+included. It is not a count of clock-out-only records.
+Records without an expected clock-in time retain the existing absence treatment.
+**Missing clock-out** excludes shifts before their expected clock-out time and
+retains the existing six-hour grace period after that time before flagging an
+incomplete clocked-in record.
+
+Filing follows the employee filing deadline; decisions follow the supervisor
+approval deadline. Finalization and payroll locking close both windows.
+Approval fills only missing corrected-punch fields, leaves raw punches intact,
+records the reviewer/time, and recalculates lateness, undertime, worked hours,
+night differential, and potential overtime using the saved schedule and break
+policy. It does not approve overtime; existing non-rejected OT applications
+must be resolved first. Approval invalidates the applicable cutoff attendance
+calculation and resets the affected employee's confirmations and payroll status
+to PENDING/HOLD. HR must recalculate and review cutoff attendance before
+finalization, and recalculate payroll if necessary.
+
+Attendance finalization now rejects pending correction requests and incomplete
+punch-required attendance records. Explicit absence records and
+schedule-credited days are excluded from the incomplete-punch check. A day
+with no attendance row and no correction request is not automatically assumed
+to be a missing-punch case. If a deadline expires before resolution, authorized
+HR must extend the appropriate deadline on the still-unfinalized cutoff;
+there is no silent late-approval or locked-payroll bypass.
+
+**Production prerequisite:** apply
+`backend/sql/20261101_attendance_correction_requests.sql` before restarting the
+backend. It creates **attendance.correction_requests** and updates
+**identity.permissions** and **identity.role_permissions**. No existing punches
+are backfilled. Alternatively, Alembic-managed installations can upgrade through
+revision `a3d4e5f6b7c8` instead. Employee filing is granted by default to EMPLOYEE
+and SUPERVISOR roles; team approval is granted only to SUPERVISOR. Other roles
+need explicit grants and still cannot bypass direct-report scoping. Refresh
+authorization (sign out/in if necessary) to show the new dashboard panels.
 
 ## Employee loans
 

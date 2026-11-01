@@ -312,7 +312,9 @@ CROSS JOIN (VALUES
     ('SPECIAL_DAY_OT', 1.6900),
     ('HOLIDAY_OT', 2.6000),
     ('NIGHT_REGULAR', 1.1000),
-    ('NIGHT_OT', 1.3750)
+    ('NIGHT_OT', 1.3750),
+    ('UNWORKED_HOLIDAY', 1.0000),
+    ('UNWORKED_DOUBLE_HOLIDAY', 2.0000)
 ) AS rules(component_code, multiplier)
 ON CONFLICT (payroll_group_id, component_code)
 DO UPDATE SET

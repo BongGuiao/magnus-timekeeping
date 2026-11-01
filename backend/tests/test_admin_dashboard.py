@@ -48,6 +48,19 @@ def day(subject=None, **changes) -> TeamAttendanceDay:
 
 
 class ClassifyAttendanceExceptionsTests(unittest.TestCase):
+    def test_recorded_absence_is_excluded_before_scheduled_clock_in(self):
+        expected = NOW.astimezone(timezone(timedelta(hours=8)))
+        absent = day(is_absent=True, clock_in_at=None, expected_clock_in_at=expected)
+        for now, count in (
+            (NOW - timedelta(seconds=1), 0),
+            (NOW, 1),
+            (NOW + timedelta(seconds=1), 1),
+        ):
+            with self.subTest(now=now):
+                no_login, no_logout = classify_attendance_exceptions([absent], now)
+                self.assertEqual(len(no_login), count)
+                self.assertEqual(no_logout, [])
+
     def test_absent_employees_have_no_login_and_leave_days_are_never_exceptions(self):
         absent = day(is_absent=True, clock_in_at=None)
         on_leave = day(is_absent=True, leave_type="Vacation Leave")
@@ -66,6 +79,13 @@ class ClassifyAttendanceExceptionsTests(unittest.TestCase):
             with self.subTest(now=now):
                 _, no_logout = classify_attendance_exceptions([day(expected_clock_out_at=expected)], now)
                 self.assertEqual(len(no_logout), 1 if flagged else 0)
+
+    def test_missing_clock_out_is_excluded_before_and_at_scheduled_clock_out(self):
+        expected = NOW.astimezone(timezone(timedelta(hours=8)))
+        attendance = day(expected_clock_out_at=expected)
+        for now in (NOW - timedelta(seconds=1), NOW, NOW + timedelta(seconds=1)):
+            with self.subTest(now=now):
+                self.assertEqual(classify_attendance_exceptions([attendance], now), ([], []))
 
     def test_completed_or_unscheduled_days_are_not_missing_a_logout(self):
         done = day(clock_out_at=NOW)

@@ -701,9 +701,14 @@ class SqlAlchemyPayrollRepository:
                         "holiday_ot_minutes": result.holiday_ot_minutes,
                         "night_regular_minutes": result.night_regular_minutes,
                         "night_ot_minutes": result.night_ot_minutes,
+                        "unworked_holiday_minutes": result.unworked_holiday_minutes,
+                        "unworked_double_holiday_minutes": (
+                            result.unworked_double_holiday_minutes
+                        ),
                     },
                     required_work_minutes=result.required_work_minutes,
                     incomplete_time_source_count=result.incomplete_time_source_count,
+                    disqualified_holiday_minutes=result.disqualified_holiday_minutes,
                 )
                 for result in result_models
             )

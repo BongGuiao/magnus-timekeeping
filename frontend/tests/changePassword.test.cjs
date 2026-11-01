@@ -73,3 +73,36 @@ test('changePassword does not disguise unexpected errors', async () => {
   const api = loadAuthApi(async () => { throw new TypeError('boom') })
   await assert.rejects(api.changePassword({ current_password: 'a', new_password: 'b' }), TypeError)
 })
+
+test('resetPasswordToDefault posts the employee code and surfaces server errors', async () => {
+  let request
+  const api = loadAuthApi(async (...args) => {
+    request = args
+    return { data: { data: { message: 'Password for EMP-1 was reset to the default password.', employee_code: 'EMP-1', password_reset_at: '2026-10-31T07:00:00Z' } } }
+  })
+  const result = await api.resetPasswordToDefault('EMP-1')
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), ['/auth/password-reset', { employee_code: 'EMP-1' }])
+  assert.equal(result.employee_code, 'EMP-1')
+
+  const denied = loadAuthApi(async () => { throw axiosFailure(403, { detail: 'Only system administrators can reset passwords.' }) })
+  await assert.rejects(denied.resetPasswordToDefault('EMP-1'), (error) => error.message === 'Only system administrators can reset passwords.')
+})
+
+test('lookupPasswordResetTarget queries by employee code and reports unknown codes', async () => {
+  let request
+  const get = async (...args) => {
+    request = args
+    return { data: { data: { employee_code: 'EMP-1', employee_name: 'Ana Cruz', account_status: 'ACTIVE', is_active: true } } }
+  }
+  const api = load('lib/authApi.ts', (name) => (name === './apiClient' ? { apiClient: { get } } : require(name)))
+  const target = await api.lookupPasswordResetTarget('EMP-1')
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), ['/auth/password-reset/lookup', { params: { employee_code: 'EMP-1' } }])
+  assert.equal(target.employee_name, 'Ana Cruz')
+
+  const missing = load('lib/authApi.ts', (name) => (
+    name === './apiClient'
+      ? { apiClient: { get: async () => { throw axiosFailure(404, { detail: 'No user found for the given employee code' }) } } }
+      : require(name)
+  ))
+  await assert.rejects(missing.lookupPasswordResetTarget('NOPE'), (error) => error.message === 'No user found for the given employee code')
+})

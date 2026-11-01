@@ -12,6 +12,7 @@ class PayrollCutoffEntity:
     pay_date: date
     cutoff_half: str | None = None
     attendance_deadline: datetime | None = None
+    employee_filing_deadline: datetime | None = None
     status: str = "SCHEDULED"
     locked_at: datetime | None = None
     locked_by: UUID | None = None

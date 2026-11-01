@@ -56,6 +56,21 @@ def after_failed_password_attempt(
     return replace(user, failed_login_count=failed_count, locked_until=locked_until)
 
 
+def after_password_reset(user: UserEntity, default_password_hash: str, actor_id: UUID) -> UserEntity:
+    """An administrator reset restores the default password and clears lockouts.
+
+    password_changed_at is cleared so the account is treated as never having chosen its own password.
+    """
+    return replace(
+        user,
+        password_hash=default_password_hash,
+        password_changed_at=None,
+        failed_login_count=0,
+        locked_until=None,
+        updated_by=actor_id,
+    )
+
+
 def after_password_change(
     user: UserEntity, new_password_hash: str, now: datetime, actor_id: UUID
 ) -> UserEntity:

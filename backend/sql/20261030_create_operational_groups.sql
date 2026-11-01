@@ -33,6 +33,8 @@ ON CONFLICT (company_id, operational_group) DO NOTHING;
 ALTER TABLE hr.employment_assignments
     DROP CONSTRAINT IF EXISTS ck_employment_assignments_operational_group;
 ALTER TABLE hr.employment_assignments
+    DROP CONSTRAINT IF EXISTS employment_assignments_operational_group_check;
+ALTER TABLE hr.employment_assignments
     ADD CONSTRAINT fk_assignment_operational_group
     FOREIGN KEY (company_id, operational_group)
     REFERENCES core.operational_groups(company_id, operational_group);

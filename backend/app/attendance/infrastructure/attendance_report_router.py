@@ -18,6 +18,8 @@ from app.attendance.infrastructure.db_model import (
     OfficialBusinessRequestModel,
     OvertimeApplicationModel,
 )
+from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
+from app.attendance.application.correction_finalization import require_resolved_punches
 from app.auth.infrastructure.db_model import UserModel
 from app.auth.infrastructure.dependencies import (
     get_current_user_claims,
@@ -71,6 +73,79 @@ class AttendanceReportOvertime(BaseModel):
     approved_minutes: int | None
     payable_minutes: int | None
     status: str
+
+
+class AttendanceWorkflowDeadline(BaseModel):
+    cutoff_id: UUID
+    cutoff_code: str
+    period_start: date
+    period_end: date
+    employee_filing_deadline: datetime | None
+    attendance_deadline: datetime | None
+    attendance_finalized_at: datetime | None
+    locked_at: datetime | None
+    status: str
+
+
+@router.get("/attendance-deadlines", response_model=ResponseEnvelope[list[AttendanceWorkflowDeadline]])
+async def list_attendance_workflow_deadlines(
+    scope: str = Query(default="own", pattern="^(own|team)$"),
+    claims: dict = Depends(get_current_user_claims),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    actor_id = UUID(str(claims["sub"]))
+    authorization = await authorization_use_case.execute(actor_id)
+    required = (
+        {"overtime.approve_team", "leave.approve_team", "official_business.approve_team", "attendance.read_team", "schedule.approve_emergency", "attendance.approve_corrections_team"}
+        if scope == "team" else
+        {"overtime.submit_own", "leave.submit", "official_business.submit_own", "attendance.read_own", "schedule.request_emergency", "attendance.correct_own"}
+    )
+    if not required.intersection(authorization.permission_codes):
+        raise HTTPException(status_code=403, detail="You do not have permission to view these attendance deadlines.")
+    async with uow as active_uow:
+        session = active_uow.session
+        if session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        employee_id = await session.scalar(select(UserModel.employee_id).where(UserModel.id == actor_id))
+        if employee_id is None:
+            raise HTTPException(status_code=403, detail="An employee account is required.")
+        rows = (await session.scalars(
+            select(PayrollCutoffModel)
+            .join(
+                EmploymentAssignmentModel,
+                EmploymentAssignmentModel.payroll_group_id == PayrollCutoffModel.payroll_group_id,
+            )
+            .where(
+                (EmploymentAssignmentModel.supervisor_employee_id == employee_id)
+                if scope == "team" else (EmploymentAssignmentModel.employee_id == employee_id),
+                EmploymentAssignmentModel.is_active.is_(True),
+                EmploymentAssignmentModel.status == "ACTIVE",
+                EmploymentAssignmentModel.effective_from <= PayrollCutoffModel.period_end,
+                or_(
+                    EmploymentAssignmentModel.effective_to.is_(None),
+                    EmploymentAssignmentModel.effective_to >= PayrollCutoffModel.period_start,
+                ),
+                or_(
+                    EmploymentAssignmentModel.separation_date.is_(None),
+                    EmploymentAssignmentModel.separation_date >= PayrollCutoffModel.period_start,
+                ),
+                PayrollCutoffModel.is_active.is_(True),
+            )
+            .distinct().order_by(PayrollCutoffModel.period_start.desc()).limit(100)
+        )).all()
+        deadlines = [
+            AttendanceWorkflowDeadline(
+                cutoff_id=row.id, cutoff_code=row.cutoff_code,
+                period_start=row.period_start, period_end=row.period_end,
+                employee_filing_deadline=row.employee_filing_deadline,
+                attendance_deadline=row.attendance_deadline,
+                attendance_finalized_at=row.attendance_finalized_at, locked_at=row.locked_at,
+                status=row.status,
+            )
+            for row in rows
+        ]
+    return ResponseEnvelope(status="success", data=deadlines)
 
 
 class AttendanceReportLeave(BaseModel):
@@ -697,6 +772,10 @@ async def finalize_attendance_cutoff(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Attendance can be finalized only after its cutoff deadline has passed.",
             )
+        try:
+            await require_resolved_punches(session, cutoff)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         result_count = await session.scalar(
             select(func.count(EmployeeCutoffResultModel.id)).where(
                 EmployeeCutoffResultModel.cutoff_id == cutoff_id,

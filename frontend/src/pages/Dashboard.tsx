@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react'
+import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
+import AttendanceCorrectionsPanel from '../components/dashboard/AttendanceCorrectionsPanel'
+import TeamOverview, { type TeamOverviewItem } from '../components/dashboard/TeamOverview'
 import { ChevronDown } from 'lucide-react'
 import { mockDashboardData } from '../data/mockDashboard'
 import { useLogout } from '../hooks/useLogout'
@@ -27,8 +30,6 @@ import {
 import type { SupervisorPendingLeave } from '../lib/leaveApi'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
-import HeroBanner from '../components/dashboard/HeroBanner'
-import StatCard from '../components/dashboard/StatCard'
 import LeaveBalanceGrid from '../components/dashboard/LeaveBalanceGrid'
 import WorkHoursCard from '../components/dashboard/WorkHoursCard'
 import RecentAttendanceTable from '../components/dashboard/RecentAttendanceTable'
@@ -40,7 +41,6 @@ import {
   AnnouncementsCard,
   HolidaysCard,
   LeaveRequestsCard,
-  SupervisorPendingLeavesCard,
 } from '../components/dashboard/SideCards'
 import {
   getAvailableRoleCodes,
@@ -67,6 +67,7 @@ interface Props {
 type DeviceReviewStatus = Exclude<DeviceRecord['registration_status'], 'PENDING'>
 type AdminDashboardPanel = 'no-login' | 'no-logout' | 'pending-leaves' | 'weekly-hours' | 'invalid-attendance'
 type TeamAttendancePanel = 'no-login' | 'no-logout'
+type EmployeeDashboardPanel = 'attendance' | 'hours' | 'leave' | 'balances' | 'correction' | 'updates'
 
 function formatWeeklyHours(hours: number): string {
   const totalMinutes = Math.round(hours * 60)
@@ -123,8 +124,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isLoadingTeamDashboard, setIsLoadingTeamDashboard] = useState(false)
   const [teamDashboardError, setTeamDashboardError] = useState<string | null>(null)
   const [isTeamHoursOpen, setIsTeamHoursOpen] = useState(false)
+  const [isTeamLocationsOpen, setIsTeamLocationsOpen] = useState(false)
   const [teamAttendancePanel, setTeamAttendancePanel] = useState<TeamAttendancePanel | null>(null)
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
+  const [isOfflineReviewOpen, setIsOfflineReviewOpen] = useState(false)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
   const [missedClockInsThisMonth, setMissedClockInsThisMonth] = useState<number | null>(null)
@@ -163,6 +166,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [pendingOfficialBusinessCount, setPendingOfficialBusinessCount] = useState<number | null>(null)
   const [savingOvertimeRequestId, setSavingOvertimeRequestId] = useState<string | null>(null)
   const showEmployeeAttendance = role === 'employee'
+  const isTeamDashboard = role === 'supervisor' || role === 'manager'
+  const [employeePanel, setEmployeePanel] = useState<EmployeeDashboardPanel | null>(null)
+  const isCorrectionFilingOpen = employeePanel === 'correction'
+  const [isCorrectionApprovalOpen, setIsCorrectionApprovalOpen] = useState(false)
+  const [pendingCorrectionCount, setPendingCorrectionCount] = useState<number | null>(null)
   const teamWeeklyMinutesTotal = teamDashboardSnapshot?.weekly_hours.reduce(
     (total, employee) => total + employee.minutes_worked,
     0,
@@ -603,10 +611,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     }
   }, [isAdmin])
 
-  function toggleAdminPanel(panel: AdminDashboardPanel) {
-    setAdminPanel((current) => current === panel ? null : panel)
-  }
-
   function updateDeviceDraft(deviceId: string, changes: Partial<DeviceReviewDraft>) {
     setDeviceReviewDrafts((current) => {
       const draft = current[deviceId] ?? { status: '', reason: '' }
@@ -669,7 +673,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       description: 'Team attendance exceptions, leave approvals, and work hours.',
       metrics: [
         {
-          label: 'Team No Login',
+          label: 'Recorded Absences',
           value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
           hint: 'Click to review this month',
           icon: '🚪',
@@ -716,7 +720,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       description: 'Team attendance exceptions, pending requests, and work hours.',
       metrics: [
         {
-          label: 'Missing Clock-In',
+          label: 'Recorded Absences',
           value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
           hint: 'Click to review this month',
           icon: '🚪',
@@ -819,197 +823,218 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     return hasAnyPermission(['attendance.read_team', 'attendance.read_org'])
   })
 
+  function closeTeamReviews() {
+    setAdminPanel(null)
+    setIsOfflineReviewOpen(false)
+    setIsTeamHoursOpen(false)
+    setIsTeamLocationsOpen(false)
+    setTeamAttendancePanel(null)
+    setIsSupervisorLeavePanelOpen(false)
+    setIsInvalidAttendancePanelOpen(false)
+    setIsPendingListOpen(false)
+    setIsOvertimeApprovalPanelOpen(false)
+    setIsOfficialBusinessPanelOpen(false)
+    setIsCorrectionApprovalOpen(false)
+  }
+
+  function toggleTeamReview(open: boolean, show: () => void) {
+    closeTeamReviews()
+    if (!open) show()
+  }
+
+  const teamMetrics: TeamOverviewItem[] = canReviewTeamAttendance ? [
+    {
+      id: 'missing-in', label: 'Recorded absences',
+      value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
+      open: teamAttendancePanel === 'no-login',
+      onClick: () => toggleTeamReview(teamAttendancePanel === 'no-login', () => setTeamAttendancePanel('no-login')),
+    },
+    {
+      id: 'missing-out', label: 'Missing clock-out',
+      value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_logout.length ?? '—',
+      open: teamAttendancePanel === 'no-logout',
+      onClick: () => toggleTeamReview(teamAttendancePanel === 'no-logout', () => setTeamAttendancePanel('no-logout')),
+    },
+    {
+      id: 'hours', label: 'Hours this week',
+      value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable'
+        : teamWeeklyMinutesTotal === undefined ? '—' : formatWeeklyHours(teamWeeklyMinutesTotal / 60),
+      open: isTeamHoursOpen, controls: 'team-hours-this-week',
+      onClick: () => toggleTeamReview(isTeamHoursOpen, () => setIsTeamHoursOpen(true)),
+    },
+  ] : []
+  const teamReviews: TeamOverviewItem[] = []
+  if (canReviewTeamLeave) teamReviews.push({
+    id: 'leave', label: 'Leave', value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+    open: isSupervisorLeavePanelOpen,
+    onClick: () => toggleTeamReview(isSupervisorLeavePanelOpen, () => { void toggleSupervisorLeavePanel() }),
+  })
+  if (canReviewTeamAttendance) teamReviews.push({
+    id: 'invalid', label: 'Invalid attendance',
+    value: isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : supervisorInvalidAttendance.length,
+    open: isInvalidAttendancePanelOpen,
+    onClick: () => toggleTeamReview(isInvalidAttendancePanelOpen, () => { void toggleInvalidAttendancePanel() }),
+  })
+  if (canReviewTeamOvertime) teamReviews.push({
+    id: 'overtime', label: 'Overtime',
+    value: isLoadingOvertimeRequests ? '…' : overtimeRequestsError ? 'Unavailable' : pendingOvertimeRequests.length,
+    open: isOvertimeApprovalPanelOpen,
+    onClick: () => toggleTeamReview(isOvertimeApprovalPanelOpen, () => setIsOvertimeApprovalPanelOpen(true)),
+  })
+  if (canReviewTeamOfficialBusiness) teamReviews.push({
+    id: 'ob', label: 'Official business', value: pendingOfficialBusinessCount ?? '—',
+    open: isOfficialBusinessPanelOpen,
+    onClick: () => toggleTeamReview(isOfficialBusinessPanelOpen, () => setIsOfficialBusinessPanelOpen(true)),
+  })
+  if (hasPermission('attendance.approve_corrections_team')) teamReviews.push({
+    id: 'correction', label: 'Attendance corrections', value: pendingCorrectionCount ?? '—',
+    open: isCorrectionApprovalOpen, controls: 'supervisor-attendance-corrections',
+    onClick: () => toggleTeamReview(isCorrectionApprovalOpen, () => setIsCorrectionApprovalOpen(true)),
+  })
+  if (isAdmin) teamReviews.push({
+    id: 'devices', label: 'Devices',
+    value: isLoadingDevices ? '…' : deviceError ? 'Unavailable' : hasLoadedDevices ? pendingDevices.length : '—',
+    open: isPendingListOpen,
+    onClick: () => toggleTeamReview(isPendingListOpen, () => setIsPendingListOpen(true)),
+  })
+  if (role === 'supervisor' && hasSupervisorRoleCode && canReviewTeamAttendance) teamReviews.push({
+    id: 'locations', label: 'Team punch locations',
+    open: isTeamLocationsOpen, controls: 'team-punch-locations',
+    onClick: () => toggleTeamReview(isTeamLocationsOpen, () => setIsTeamLocationsOpen(true)),
+  })
+
+  function toggleEmployeePanel(panel: EmployeeDashboardPanel) {
+    setEmployeePanel((current) => current === panel ? null : panel)
+  }
+
+  const employeeMetrics: TeamOverviewItem[] = []
+  if (hasPermission('attendance.read_own')) {
+    employeeMetrics.push(
+      {
+        id: 'missing-in', label: 'Missed clock-ins this month',
+        value: isLoadingRecentAttendance ? '…' : recentAttendanceError ? 'Unavailable' : missedClockInsThisMonth ?? '—',
+        open: employeePanel === 'attendance', controls: 'employee-attendance',
+        onClick: () => toggleEmployeePanel('attendance'),
+      },
+      {
+        id: 'missing-out', label: 'Missing clock-outs (recent)',
+        value: isLoadingRecentAttendance || attendanceSnapshotRefreshedAt === null ? '…'
+          : recentAttendanceError ? 'Unavailable' : recentNoLogoutCount,
+        open: employeePanel === 'attendance', controls: 'employee-attendance',
+        onClick: () => toggleEmployeePanel('attendance'),
+      },
+      {
+        id: 'hours', label: 'Hours this week',
+        value: isLoadingRecentAttendance ? '…' : recentAttendanceError ? 'Unavailable'
+          : weeklyHoursWorked === null ? '—' : formatWeeklyHours(weeklyHoursWorked),
+        open: employeePanel === 'hours', controls: 'employee-hours',
+        onClick: () => toggleEmployeePanel('hours'),
+      },
+    )
+  }
+  if (hasPermission('leave.read_own')) employeeMetrics.push({
+    id: 'leave', label: 'Leave applications',
+    value: isLoadingLeaveDashboard ? '…' : leaveDashboardError ? 'Unavailable' : leaveRequests.length,
+    open: employeePanel === 'leave', controls: 'employee-leave',
+    onClick: () => toggleEmployeePanel('leave'),
+  })
+
+  const employeeActions: TeamOverviewItem[] = []
+  if (hasPermission('leave.submit')) employeeActions.push({
+    id: 'apply-leave', label: '+ Apply for Leave', open: false,
+    onClick: () => onNavigate?.('leave-application'),
+  })
+  if (hasPermission('attendance.correct_own')) employeeActions.push({
+    id: 'correction', label: '+ Apply for Attendance Correction',
+    open: isCorrectionFilingOpen, controls: 'employee-attendance-correction',
+    onClick: () => toggleEmployeePanel('correction'),
+  })
+  if (hasPermission('overtime.submit_own')) employeeActions.push({
+    id: 'overtime', label: 'Apply for Overtime', open: false,
+    onClick: () => onNavigate?.('overtime-application'),
+  })
+  if (hasPermission('official_business.submit_own')) employeeActions.push({
+    id: 'ob', label: 'File Official Business', open: false,
+    onClick: () => onNavigate?.('official-business'),
+  })
+  if (hasPermission('payroll.read_own')) employeeActions.push({
+    id: 'payroll', label: 'Payroll Review', open: false,
+    onClick: () => onNavigate?.('payroll-review'),
+  })
+  if (hasPermission('leave.read_own')) employeeActions.push(
+    {
+      id: 'balances', label: 'Leave balances', open: employeePanel === 'balances', controls: 'employee-balances',
+      onClick: () => toggleEmployeePanel('balances'),
+    },
+    {
+      id: 'leave', label: 'My leave requests', open: employeePanel === 'leave', controls: 'employee-leave',
+      value: isLoadingLeaveDashboard ? '…' : leaveDashboardError ? 'Unavailable' : leaveRequests.length,
+      onClick: () => toggleEmployeePanel('leave'),
+    },
+  )
+  if (hasPermission('attendance.read_own')) employeeActions.push({
+    id: 'attendance', label: 'Recent attendance', open: employeePanel === 'attendance', controls: 'employee-attendance',
+    onClick: () => toggleEmployeePanel('attendance'),
+  })
+  employeeActions.push({
+    id: 'updates', label: 'Holidays & announcements', open: employeePanel === 'updates', controls: 'employee-updates',
+    onClick: () => toggleEmployeePanel('updates'),
+  })
+
+  const adminMetrics: TeamOverviewItem[] = visibleMetrics
+    .filter((metric) => !['Pending Leave', 'Invalid Attendance'].includes(metric.label))
+    .map((metric) => {
+      const panel = getAdminPanelForMetric(metric.label)
+      return {
+        id: panel === 'no-login' ? 'missing-in' : panel === 'no-logout' ? 'missing-out' : 'hours',
+        label: panel === 'no-login' ? 'Recorded absences' : panel === 'no-logout' ? 'Missing clock-out' : 'Hours this week',
+        value: adminDashboardError ? 'Unavailable' : metric.value,
+        open: adminPanel === panel,
+        onClick: () => { if (panel) toggleTeamReview(adminPanel === panel, () => setAdminPanel(panel)) },
+      }
+    })
+  const adminReviews: TeamOverviewItem[] = []
+  if (canReviewTeamLeave) adminReviews.push({
+    id: 'leave', label: 'Pending leave',
+    value: isLoadingAdminDashboard ? '…' : adminDashboardError ? 'Unavailable' : adminDashboardSnapshot?.pending_leaves.length ?? '—',
+    open: adminPanel === 'pending-leaves',
+    onClick: () => toggleTeamReview(adminPanel === 'pending-leaves', () => setAdminPanel('pending-leaves')),
+  })
+  if (canReviewTeamAttendance) adminReviews.push({
+    id: 'invalid', label: 'Invalid attendance',
+    value: isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : supervisorInvalidAttendance.length,
+    open: adminPanel === 'invalid-attendance',
+    onClick: () => toggleTeamReview(adminPanel === 'invalid-attendance', () => setAdminPanel('invalid-attendance')),
+  })
+  if (isAdmin) {
+    adminReviews.push(...teamReviews.filter((item) => ['devices', 'overtime', 'ob'].includes(item.id)))
+    adminReviews.push({
+      id: 'offline', label: 'Offline attendance review', open: isOfflineReviewOpen, controls: 'offline-attendance-review',
+      onClick: () => toggleTeamReview(isOfflineReviewOpen, () => setIsOfflineReviewOpen(true)),
+    })
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
-      <main className="w-full px-4 pt-6 sm:px-6 lg:px-8">
-        <HeroBanner employeeName={employeeName} role={role} />
-        <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">{role} dashboard</p>
-              <h2 className="mt-1 text-xl font-extrabold text-slate-900">{content.title}</h2>
-              <p className="mt-1 text-sm text-slate-500">{content.description}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-                  <span className="inline-block w-fit rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600">
-                    {role === 'supervisor' || role === 'manager'
-                      ? 'Team attendance: This month · Hours: This week'
-                      : isAdmin && role === 'administrator'
-                        ? 'Attendance: This month · Hours: This week'
-                        : data.attendanceExceptions.periodLabel}
-              </span>
-            </div>
+      <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
+        {isTeamDashboard ? (
+          <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
+        ) : role === 'employee' ? (
+          <TeamOverview role="employee" employeeName={employeeName} metrics={employeeMetrics} reviews={employeeActions} />
+        ) : (
+          <TeamOverview role="administrator" employeeName={employeeName} metrics={adminMetrics} reviews={adminReviews} />
+        )}
+
+        {isAdmin && role === 'administrator' && (
+          <div id="offline-attendance-review" hidden={!isOfflineReviewOpen}><OfflineAttendanceReviewPanel /></div>
+        )}
+        {(role === 'supervisor' || role === 'manager') && hasPermission('attendance.approve_corrections_team') && (
+          <div id="supervisor-attendance-corrections" hidden={!isCorrectionApprovalOpen}>
+            <AttendanceCorrectionsPanel scope="team" onPendingCountChange={setPendingCorrectionCount} />
           </div>
-
-          <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {visibleMetrics.map((metric) => {
-              const adminPanelForMetric = getAdminPanelForMetric(metric.label)
-              if (
-                ((role === 'supervisor' || role === 'manager') && metric.label === 'Pending Requests')
-                || (role === 'manager' && metric.label === 'Leave Requests')
-              ) {
-                return (
-                  <button
-                    key={metric.label}
-                    type="button"
-                    aria-expanded={isSupervisorLeavePanelOpen}
-                    onClick={() => void toggleSupervisorLeavePanel()}
-                    className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-indigo-500 hover:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-300"
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-50 text-sm text-indigo-600">{metric.icon}</span>
-                    </div>
-                    <p className="mt-3 text-2xl font-extrabold text-slate-900">
-                      {isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—'}
-                    </p>
-                    <p className="mt-1 text-xs font-medium text-indigo-600">
-                      {isSupervisorLeavePanelOpen ? 'Hide approval list' : metric.hint}
-                    </p>
-                  </button>
-                )
-              }
-
-              if ((role === 'supervisor' || role === 'manager') && metric.label === 'Invalid Attendance') {
-                return (
-                  <button
-                    key={metric.label}
-                    type="button"
-                    aria-expanded={isInvalidAttendancePanelOpen}
-                    onClick={() => void toggleInvalidAttendancePanel()}
-                    className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-amber-500 hover:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300"
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-sm text-amber-600">{metric.icon}</span>
-                    </div>
-                    <p className="mt-3 text-2xl font-extrabold text-slate-900">{metric.value}</p>
-                    <p className="mt-1 text-xs font-medium text-amber-700">
-                      {isInvalidAttendancePanelOpen ? 'Hide approval list' : metric.hint}
-                    </p>
-                  </button>
-                )
-              }
-
-              if (
-                (role === 'supervisor' && (metric.label === 'Missing Clock-In' || metric.label === 'Missing Clock-Out'))
-                || (role === 'manager' && (metric.label === 'Team No Login' || metric.label === 'Team No Logout'))
-              ) {
-                const panel: TeamAttendancePanel = metric.label === 'Missing Clock-In' || metric.label === 'Team No Login'
-                  ? 'no-login'
-                  : 'no-logout'
-                return (
-                  <button
-                    key={metric.label}
-                    type="button"
-                    aria-expanded={teamAttendancePanel === panel}
-                    onClick={() => setTeamAttendancePanel((current) => current === panel ? null : panel)}
-                    className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-rose-500 hover:border-rose-300 focus:outline-none focus:ring-2 focus:ring-rose-300"
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-sm text-rose-600">{metric.icon}</span>
-                    </div>
-                    <p className="mt-3 text-2xl font-extrabold text-slate-900">{metric.value}</p>
-                    <p className="mt-1 text-xs font-medium text-rose-600">
-                      {teamAttendancePanel === panel ? 'Hide details' : metric.hint}
-                    </p>
-                  </button>
-                )
-              }
-
-              if (isAdmin && role === 'administrator' && adminPanelForMetric) {
-                return (
-                  <button
-                    key={metric.label}
-                    type="button"
-                    aria-expanded={adminPanel === adminPanelForMetric}
-                    onClick={() => toggleAdminPanel(adminPanelForMetric)}
-                    className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-indigo-500 hover:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-300"
-                  >
-                    <div className="flex items-start justify-between">
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{metric.label}</p>
-                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-50 text-sm text-indigo-600">{metric.icon}</span>
-                    </div>
-                    <p className="mt-3 text-2xl font-extrabold text-slate-900">{metric.value}</p>
-                    <p className="mt-1 text-xs font-medium text-indigo-600">
-                      {adminPanel === adminPanelForMetric ? 'Hide details' : metric.hint}
-                    </p>
-                  </button>
-                )
-              }
-
-              return <StatCard key={metric.label} {...metric} />
-            })}
-            {isAdmin && role !== 'employee' && (
-              <button
-                type="button"
-                aria-expanded={isPendingListOpen}
-                onClick={() => setIsPendingListOpen((current) => !current)}
-                className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-amber-500 hover:border-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              >
-                <div className="flex items-start justify-between">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Pending Devices</p>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-sm text-amber-600">
-                    📱
-                  </span>
-                </div>
-                <p className="mt-3 text-2xl font-extrabold text-slate-900">
-                  {isLoadingDevices ? '…' : hasLoadedDevices ? pendingDevices.length : '—'}
-                </p>
-                <p className="mt-1 text-xs font-medium text-amber-600">
-                  {isPendingListOpen ? 'Hide review list' : 'Click to review pending devices'}
-                </p>
-              </button>
-            )}
-            {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
-              <button
-                type="button"
-                aria-expanded={isOvertimeApprovalPanelOpen}
-                onClick={() => setIsOvertimeApprovalPanelOpen((current) => !current)}
-                className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-emerald-500 hover:border-emerald-300 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-              >
-                <div className="flex items-start justify-between">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Overtime Approvals</p>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-50 text-sm text-emerald-600">
-                    ⏱️
-                  </span>
-                </div>
-                <p className="mt-3 text-2xl font-extrabold text-slate-900">
-                  {isLoadingOvertimeRequests ? '…' : overtimeRequestsError ? 'Unavailable' : pendingOvertimeRequests.length}
-                </p>
-                <p className="mt-1 text-xs font-medium text-emerald-700">
-                  {isOvertimeApprovalPanelOpen ? 'Hide approval list' : 'Review overtime requests'}
-                </p>
-              </button>
-            )}
-            {canReviewTeamOfficialBusiness && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && (
-              <button
-                type="button"
-                aria-expanded={isOfficialBusinessPanelOpen}
-                onClick={() => setIsOfficialBusinessPanelOpen((current) => !current)}
-                className="relative overflow-hidden rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-sky-500 hover:border-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-300"
-              >
-                <div className="flex items-start justify-between">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Official Business</p>
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-50 text-sm text-sky-600">
-                    💼
-                  </span>
-                </div>
-                <p className="mt-3 text-2xl font-extrabold text-slate-900">
-                  {pendingOfficialBusinessCount ?? '—'}
-                </p>
-                <p className="mt-1 text-xs font-medium text-sky-700">
-                  {isOfficialBusinessPanelOpen ? 'Hide approval list' : 'Review official business'}
-                </p>
-              </button>
-            )}
-          </div>
-        </section>
-
-        {isAdmin && role === 'administrator' && <OfflineAttendanceReviewPanel />}
+        )}
 
         {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOvertimeApprovalPanelOpen && (
           <OvertimeApprovalsPanel
@@ -1021,8 +1046,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           />
         )}
 
-        {canReviewTeamOfficialBusiness && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOfficialBusinessPanelOpen && (
-          <OfficialBusinessApprovalsPanel onPendingCountChange={setPendingOfficialBusinessCount} />
+        {canReviewTeamOfficialBusiness && (isTeamDashboard || (isAdmin && role === 'administrator' && isOfficialBusinessPanelOpen)) && (
+          <div hidden={isTeamDashboard && !isOfficialBusinessPanelOpen}>
+            <OfficialBusinessApprovalsPanel onPendingCountChange={setPendingOfficialBusinessCount} />
+          </div>
         )}
 
         {(role === 'supervisor' || role === 'manager') && teamAttendancePanel !== null && (
@@ -1030,9 +1057,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">
-                  {teamAttendancePanel === 'no-login' ? 'Team members with no clock-in' : 'Team members with no clock-out'}
+                  {teamAttendancePanel === 'no-login' ? 'Recorded team absences' : 'Team members with no clock-out'}
                 </h2>
-                <p className="mt-1 text-sm text-slate-500">Attendance exceptions recorded this month.</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {teamAttendancePanel === 'no-login'
+                    ? 'Attendance records marked absent this month, excluding leave days and shifts whose expected clock-in time has not been reached. Days without an attendance record are not included.'
+                    : 'Clocked-in attendance records this month with no clock-out, shown only six hours after the expected clock-out time.'}
+                </p>
                 {teamDashboardSnapshot && (
                   <p className="mt-1 text-xs text-slate-400">
                     Snapshot refreshed {new Date(teamDashboardSnapshot.refreshed_at).toLocaleString()}
@@ -1107,18 +1138,20 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">
                   {adminPanel === 'no-login'
-                    ? 'Employees with no login'
+                    ? 'Recorded team absences'
                     : adminPanel === 'no-logout'
-                      ? 'Employees with no logout'
+                      ? 'Team members with no clock-out'
                       : adminPanel === 'pending-leaves'
                         ? 'Pending leave requests'
-                        : 'Employee hours this week'}
+                        : adminPanel === 'invalid-attendance' ? 'Invalid attendance' : 'Employee hours this week'}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {adminPanel === 'invalid-attendance'
                     ? 'Invalid attendance awaiting supervisor review.'
-                    : adminPanel === 'no-login' || adminPanel === 'no-logout'
-                    ? 'Attendance exceptions recorded this month.'
+                    : adminPanel === 'no-login'
+                      ? 'Attendance records marked absent this month, excluding leave days and shifts whose expected clock-in time has not been reached. Days without an attendance record are not included.'
+                    : adminPanel === 'no-logout'
+                      ? 'Clocked-in attendance records this month with no clock-out, shown only six hours after the expected clock-out time.'
                     : adminPanel === 'pending-leaves'
                       ? 'Leave requests awaiting review.'
                       : 'Recorded hours from Monday through today.'}
@@ -1237,7 +1270,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                                   type="button"
                                   disabled={savingInvalidAttendanceId !== null}
                                   onClick={() => void approveInvalidAttendance(record.id)}
-                                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   {isSaving ? 'Approving…' : 'Approve'}
                                 </button>
@@ -1320,6 +1353,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
         {(role === 'supervisor' || role === 'manager') && canReviewTeamLeave && isSupervisorLeavePanelOpen && (
           <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <AttendanceDeadlines scope="team" />
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">Pending leave approvals</h2>
@@ -1413,6 +1447,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
         {(role === 'supervisor' || role === 'manager') && canReviewTeamAttendance && isInvalidAttendancePanelOpen && (
           <section className="mt-6 rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
+            <AttendanceDeadlines scope="team" />
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">Invalid Attendance</h2>
@@ -1471,7 +1506,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                               type="button"
                               disabled={savingInvalidAttendanceId !== null}
                               onClick={() => void approveInvalidAttendance(record.id)}
-                              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isSaving ? 'Approving…' : 'Approve'}
                             </button>
@@ -1627,69 +1662,81 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="space-y-4 lg:col-span-2">
+        <div className="mt-4">
+          <div className="space-y-4">
             {role === 'employee' ? (
               <>
-                <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {hasPermission('payroll.read_own') && (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate?.('payroll-review')}
-                      aria-label="Open Payroll Review"
-                      className="h-full rounded-xl text-left transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                    >
-                      <StatCard
-                        label="Payroll Review"
-                        value="View"
-                        hint="View your payroll calculations"
-                        icon="📊"
-                        accent="emerald"
-                        compact
+                {employeePanel === 'balances' && hasPermission('leave.read_own') && (
+                  <div id="employee-balances">
+                    <LeaveBalanceGrid
+                      balances={dashboardLeaveBalances}
+                      isLoading={isLoadingLeaveDashboard}
+                      error={leaveDashboardError}
+                      refreshedAt={leaveDashboardRefreshedAt}
+                    />
+                  </div>
+                )}
+                {employeePanel === 'hours' && hasPermission('attendance.read_own') && (
+                  <div id="employee-hours">
+                    {recentAttendanceError ? (
+                      <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{recentAttendanceError}</p>
+                    ) : (
+                      <WorkHoursCard
+                        hours={data.workHours}
+                        weeklyHoursWorked={weeklyHoursWorked}
+                        isWeeklyHoursLoading={isLoadingRecentAttendance}
                       />
-                    </button>
-                  )}
-                  <LeaveBalanceGrid
-                    balances={dashboardLeaveBalances}
-                    isLoading={isLoadingLeaveDashboard}
-                    error={leaveDashboardError}
-                    refreshedAt={leaveDashboardRefreshedAt}
-                  />
-                  {hasPermission('overtime.submit_own') && (
-                    <section className="flex h-full flex-col rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                      <h2 className="text-sm font-semibold text-slate-500">My Overtime Applications</h2>
-                      <p className="mt-2 text-xs leading-5 text-slate-500">Apply using completed attendance and track your approval status.</p>
-                      <button type="button" onClick={() => onNavigate?.('overtime-application')} className="mt-auto w-full rounded-lg border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50">
-                        Apply for Overtime
-                      </button>
-                    </section>
-                  )}
-                </div>
-                <WorkHoursCard
-                  hours={data.workHours}
-                  weeklyHoursWorked={weeklyHoursWorked}
-                  isWeeklyHoursLoading={isLoadingRecentAttendance}
-                />
-                <RecentAttendanceTable
-                  entries={recentAttendance}
-                  isLoading={isLoadingRecentAttendance}
-                  error={recentAttendanceError}
-                  refreshedAt={attendanceSnapshotRefreshedAt}
-                />
+                    )}
+                  </div>
+                )}
+                {employeePanel === 'attendance' && hasPermission('attendance.read_own') && (
+                  <div id="employee-attendance">
+                    <RecentAttendanceTable
+                      entries={recentAttendance}
+                      isLoading={isLoadingRecentAttendance}
+                      error={recentAttendanceError}
+                      refreshedAt={attendanceSnapshotRefreshedAt}
+                      initiallyExpanded
+                    />
+                  </div>
+                )}
+                {employeePanel === 'leave' && hasPermission('leave.read_own') && (
+                  <div id="employee-leave" className="space-y-3">
+                    {leaveDashboardError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{leaveDashboardError}</p>}
+                    {isLoadingLeaveDashboard ? <p role="status" className="text-sm text-slate-500">Loading leave requests…</p> : leaveDashboardError && dashboardLeaveRequests.length === 0 ? null :
+                      <LeaveRequestsCard
+                        requests={dashboardLeaveRequests}
+                        onApply={hasPermission('leave.submit') ? () => onNavigate?.('leave-application') : undefined}
+                        onCorrection={hasPermission('attendance.correct_own') ? () => toggleEmployeePanel('correction') : undefined}
+                        correctionOpen={isCorrectionFilingOpen}
+                      />}
+                  </div>
+                )}
+                {isCorrectionFilingOpen && hasPermission('attendance.correct_own') && (
+                  <div id="employee-attendance-correction">
+                    <AttendanceCorrectionsPanel scope="own" />
+                  </div>
+                )}
+                {employeePanel === 'updates' && (
+                  <div id="employee-updates" className="grid items-start gap-4 lg:grid-cols-2">
+                    <HolidaysCard holidays={upcomingHolidays} isLoading={isLoadingUpcomingHolidays} error={upcomingHolidaysError} />
+                    <AnnouncementsCard announcements={announcements} isLoading={isLoadingAnnouncements} error={announcementsError} />
+                  </div>
+                )}
               </>
             ) : role === 'supervisor' || role === 'manager' ? (
               <>
-                <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <section hidden={!isTeamHoursOpen} aria-label="Team hours details" className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                   <button
                     type="button"
-                    onClick={() => setIsTeamHoursOpen((open) => !open)}
+                    onClick={() => toggleTeamReview(isTeamHoursOpen, () => setIsTeamHoursOpen(true))}
                     aria-expanded={isTeamHoursOpen}
                     aria-controls="team-hours-this-week"
                     className="flex w-full items-center justify-between gap-3 text-left"
                   >
                     <span>
-                      <span className="block text-lg font-extrabold text-slate-900">Team hours this week</span>
-                      <span className="mt-1 block text-sm text-slate-500">Recorded hours for your currently assigned direct reports.</span>
+                      <span className="block text-sm font-semibold text-slate-900">Team hours this week</span>
+                      <span className="mt-1 block text-xs text-slate-500">Recorded hours for current direct reports.</span>
                     </span>
                     <ChevronDown className={`h-5 w-5 shrink-0 text-slate-500 transition-transform ${isTeamHoursOpen ? 'rotate-180' : ''}`} />
                   </button>
@@ -1731,57 +1778,14 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                   </div>
                 </section>
                 {role === 'supervisor' && hasSupervisorRoleCode && canReviewTeamAttendance && (
-                  <SupervisorAttendanceLocationsPanel />
+                  <div id="team-punch-locations" hidden={!isTeamLocationsOpen}>
+                    <SupervisorAttendanceLocationsPanel />
+                  </div>
                 )}
               </>
-            ) : (
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-semibold text-slate-500">Role preview</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">
-                  The production {role} dashboard can be connected to role-specific team and organization data
-                  when those backend endpoints are available.
-                </p>
-              </div>
-            )}
+            ) : null}
           </div>
 
-          <div className="space-y-6">
-            {role === 'employee' && hasPermission('official_business.submit_own') && (
-              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-semibold text-slate-500">My Official Business</h2>
-                <p className="mt-2 text-xs leading-5 text-slate-500">File client visits and field work outside your usual workplace, then track approval.</p>
-                <button type="button" onClick={() => onNavigate?.('official-business')} className="mt-4 w-full rounded-lg border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50">
-                  File Official Business
-                </button>
-              </section>
-            )}
-            {(role === 'supervisor' || role === 'manager') && canReviewTeamLeave ? (
-              <SupervisorPendingLeavesCard
-                applications={supervisorPendingLeaves}
-                isLoading={isLoadingSupervisorLeaves}
-                error={supervisorLeavesError}
-              />
-            ) : role === 'employee' && hasPermission('leave.read_own') ? (
-              <LeaveRequestsCard
-                requests={dashboardLeaveRequests}
-                onApply={() => onNavigate?.('leave-application')}
-              />
-            ) : null}
-            {role === 'employee' && (
-              <>
-                <HolidaysCard
-                  holidays={upcomingHolidays}
-                  isLoading={isLoadingUpcomingHolidays}
-                  error={upcomingHolidaysError}
-                />
-                <AnnouncementsCard
-                  announcements={announcements}
-                  isLoading={isLoadingAnnouncements}
-                  error={announcementsError}
-                />
-              </>
-            )}
-          </div>
         </div>
       </main>
     </div>

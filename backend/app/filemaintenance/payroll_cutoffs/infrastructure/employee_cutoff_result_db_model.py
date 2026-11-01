@@ -127,6 +127,21 @@ class EmployeeCutoffResultModel(Base):
         nullable=False,
         server_default=text("0"),
     )
+    unworked_holiday_minutes: Mapped[int] = mapped_column(
+        PositiveMinutes(),
+        nullable=False,
+        server_default=text("0"),
+    )
+    unworked_double_holiday_minutes: Mapped[int] = mapped_column(
+        PositiveMinutes(),
+        nullable=False,
+        server_default=text("0"),
+    )
+    disqualified_holiday_minutes: Mapped[int] = mapped_column(
+        PositiveMinutes(),
+        nullable=False,
+        server_default=text("0"),
+    )
     exception_count: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

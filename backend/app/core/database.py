@@ -7,6 +7,7 @@ from sqlalchemy.orm import DeclarativeBase
 class Base(DeclarativeBase):
     pass
 def init_db_models():
+    from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel  # noqa: F401
     from app.auth.infrastructure.db_model import RoleModel, UserModel, UserRoleModel  # noqa: F401
     from app.filemaintenance.roles.infrastructure.permission_db_model import PermissionModel  # noqa: F401
     from app.filemaintenance.roles.infrastructure.role_permission_db_model import (  # noqa: F401

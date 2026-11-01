@@ -11,6 +11,7 @@ export interface PayrollCutoff {
   period_end: string
   pay_date: string
   attendance_deadline: string | null
+  employee_filing_deadline?: string | null
   attendance_finalized_at?: string | null
   attendance_finalized_by?: string | null
   status: string

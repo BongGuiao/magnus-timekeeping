@@ -9,6 +9,7 @@ from app.attendance.application.overtime_ports import OvertimeUnitOfWork
 from app.attendance.application.ports import AuditTrail, RecentAttendanceRefresher
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
     CutoffDeadlineError,
+    DeadlineStage,
     is_cutoff_closed,
     require_cutoff_open,
 )
@@ -141,6 +142,7 @@ class RecalculateAttendanceRangeInput:
     from_date: date
     to_date: date
     dry_run: bool = True
+    deadline_stage: DeadlineStage = "APPROVAL"
 
 
 class RecalculateAttendanceRangeUseCase(
@@ -269,7 +271,9 @@ class RecalculateAttendanceRangeUseCase(
                     record_cutoff = await uow.overtime.get_cutoff_for_employee_on_date(
                         data.employee_id, record.work_date
                     )
-                    if record_cutoff is not None and is_cutoff_closed(record_cutoff, self._clock()):
+                    if record_cutoff is not None and is_cutoff_closed(
+                        record_cutoff, self._clock(), stage=data.deadline_stage,
+                    ):
                         results.append(item(
                             "SKIPPED",
                             f"Payroll cutoff {record_cutoff.cutoff_code} is closed for attendance changes.",
@@ -564,7 +568,9 @@ class GetOvertimeAttendanceOptionsUseCase(_OvertimeUseCase, BaseUseCase[Overtime
                 expected_out = listed_record.expected_clock_out_at
                 actual_out = listed_record.effective_clock_out
                 if (
-                    listed_record.night_differential_overtime_minutes == 0
+                    not is_cutoff_closed(cutoff, self._clock(), stage="FILING")
+                    and not listed_record.is_locked
+                    and listed_record.night_differential_overtime_minutes == 0
                     and listed_record.regular_overtime_minutes > 0
                     and expected_out is not None
                     and actual_out is not None
@@ -682,7 +688,7 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             )
             rules.validate_cutoff(cutoff, attendance.work_date)
             try:
-                require_cutoff_open(cutoff, self._clock())
+                require_cutoff_open(cutoff, self._clock(), stage="FILING")
             except CutoffDeadlineError as error:
                 raise ConflictError(str(error)) from error
 
@@ -795,7 +801,7 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             )
             rules.validate_cutoff(cutoff, attendance.work_date)
             try:
-                require_cutoff_open(cutoff, self._clock())
+                require_cutoff_open(cutoff, self._clock(), stage="FILING")
             except CutoffDeadlineError as error:
                 raise ConflictError(str(error)) from error
             if await uow.overtime.has_open_application(

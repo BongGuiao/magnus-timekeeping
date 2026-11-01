@@ -2,7 +2,12 @@ import type { Announcement, Holiday, LeaveRequest } from '../../types/dashboard'
 import type { SupervisorPendingLeave } from '../../lib/leaveApi'
 import { formatLeaveBalance } from '../../lib/leaveApi'
 
-export function LeaveRequestsCard({ requests, onApply }: { requests: LeaveRequest[]; onApply?: () => void }) {
+export function LeaveRequestsCard({ requests, onApply, onCorrection, correctionOpen = false }: {
+  requests: LeaveRequest[]
+  onApply?: () => void
+  onCorrection?: () => void
+  correctionOpen?: boolean
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-sm font-semibold text-slate-500">My Leave Requests</h2>
@@ -34,9 +39,20 @@ export function LeaveRequestsCard({ requests, onApply }: { requests: LeaveReques
         <button
           type="button"
           onClick={onApply}
-          className="mt-4 w-full rounded-lg border border-indigo-200 px-4 py-2 text-sm font-semibold text-indigo-600 transition hover:bg-indigo-50"
+          className="mt-4 block w-full rounded-lg border border-indigo-600 bg-gradient-to-r from-indigo-600 to-violet-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:from-indigo-700 hover:to-violet-700 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 sm:w-auto"
         >
           + Apply for Leave
+        </button>
+      )}
+      {onCorrection && (
+        <button
+          type="button"
+          onClick={onCorrection}
+          aria-expanded={correctionOpen}
+          aria-controls="employee-attendance-correction"
+          className={`mt-3 block w-full rounded-lg border px-5 py-2.5 text-sm font-semibold shadow-sm transition hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 sm:w-auto ${correctionOpen ? 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700' : 'border-teal-200 bg-teal-50 text-teal-800 hover:border-teal-300 hover:bg-teal-100'}`}
+        >
+          {correctionOpen ? 'Hide Attendance Correction' : '+ Apply for Attendance Correction'}
         </button>
       )}
     </div>

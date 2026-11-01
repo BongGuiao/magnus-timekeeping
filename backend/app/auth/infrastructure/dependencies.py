@@ -8,6 +8,7 @@ from app.core.generics.uow import get_unit_of_work, GenUnitOfWork
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.auth.application.change_password_use_case import ChangePasswordUseCase, LockoutPolicy
+from app.auth.application.reset_password_use_case import ResetPasswordToDefaultUseCase
 from app.auth.application.use_case import (
     LoginUseCase,
     SearchUserByEmployeeCodeUseCase,
@@ -17,7 +18,7 @@ from app.auth.infrastructure.adapters import Argon2PasswordHasher, Elasticsearch
 from app.auth.infrastructure.user_account_repository import SqlAlchemyUserAccountUnitOfWork
 from app.core import security as security_service
 from app.core.config import settings
-from app.auth.domain.entities.user import Role
+from app.auth.domain.entities.user import Role, is_system_admin
 from app.attendance.infrastructure.clock_policy import (
     AttendanceClockPolicy,
     optional_bearer_scheme,
@@ -44,6 +45,16 @@ def get_change_password_use_case(
         Argon2PasswordHasher(),
         ElasticsearchAuditTrail(es_client),
         LockoutPolicy(settings.AUTH_MAX_FAILED_LOGIN_ATTEMPTS, settings.AUTH_LOCKOUT_MINUTES),
+    )
+
+def get_reset_password_use_case(
+        uow: GenUnitOfWork = Depends(get_unit_of_work),
+        es_client=Depends(get_audit_es_client),
+        ) -> ResetPasswordToDefaultUseCase:
+    return ResetPasswordToDefaultUseCase(
+        SqlAlchemyUserAccountUnitOfWork(uow),
+        Argon2PasswordHasher(),
+        ElasticsearchAuditTrail(es_client),
     )
 
 def get_search_user_by_employee_code_use_case(
@@ -148,3 +159,24 @@ def require_admin_or_kiosk_employee(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Permission denied",
     )
+
+
+async def require_system_admin(
+    claims: dict = Depends(get_current_user_claims),
+    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> dict:
+    """Allows only users whose currently active roles include SYSTEM_ADMIN (checked against the database)."""
+    try:
+        user_id = UUID(str(claims["sub"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user identity in authentication token.",
+        ) from error
+    authorization = await use_case.execute(user_id)
+    if not is_system_admin(authorization.role_codes):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can perform this action.",
+        )
+    return claims

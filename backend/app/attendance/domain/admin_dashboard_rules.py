@@ -23,7 +23,8 @@ def classify_attendance_exceptions(
             time_out=day.clock_out_at,
         )
         if day.is_absent:
-            no_login.append(exception)
+            if day.expected_clock_in_at is None or now >= day.expected_clock_in_at:
+                no_login.append(exception)
         elif (
             day.clock_in_at is not None
             and day.clock_out_at is None

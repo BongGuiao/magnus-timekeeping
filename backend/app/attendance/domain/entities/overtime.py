@@ -20,6 +20,9 @@ class OvertimeCutoff:
     period_end: date
     attendance_deadline: datetime | None = None
     locked_at: datetime | None = None
+    employee_filing_deadline: datetime | None = None
+    attendance_finalized_at: datetime | None = None
+    status: str = "SCHEDULED"
 
 
 @dataclass

@@ -82,7 +82,7 @@ class PayrollEarningRuleModel(Base):
             "component_code IN ("
             "'REGULAR', 'PAID_LEAVE', 'OFFICIAL_BUSINESS', 'REST_DAY', 'SPECIAL_DAY', "
             "'HOLIDAY', 'ORDINARY_OT', 'REST_DAY_OT', 'SPECIAL_DAY_OT', 'HOLIDAY_OT', "
-            "'NIGHT_REGULAR', 'NIGHT_OT')",
+            "'NIGHT_REGULAR', 'NIGHT_OT', 'UNWORKED_HOLIDAY', 'UNWORKED_DOUBLE_HOLIDAY')",
             name="ck_payroll_earning_rules_component",
         ),
         CheckConstraint("multiplier >= 0", name="ck_payroll_earning_rules_multiplier"),
@@ -764,6 +764,10 @@ class PayrollSystemParametersModel(Base):
             "statutory_contribution_timing IN ('PER_CUTOFF', 'FINAL_CUTOFF')",
             name="ck_payroll_company_system_parameters_contribution_timing",
         ),
+        CheckConstraint(
+            "holiday_pay_attendance_rule IN ('BEFORE_ONLY', 'BEFORE_AND_AFTER')",
+            name="ck_payroll_company_system_parameters_holiday_pay_rule",
+        ),
         {"schema": "payroll"},
     )
 
@@ -781,6 +785,9 @@ class PayrollSystemParametersModel(Base):
     )
     statutory_contribution_timing: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'PER_CUTOFF'")
+    )
+    holiday_pay_attendance_rule: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'BEFORE_ONLY'")
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

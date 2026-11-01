@@ -7,6 +7,7 @@ interface Props {
   isLoading?: boolean
   error?: string | null
   refreshedAt?: string | null
+  initiallyExpanded?: boolean
 }
 
 const applicationLabels: Record<OvertimeApplicationType, string> = {
@@ -73,8 +74,8 @@ function isUnderScheduledHours(entry: AttendanceLogEntry): boolean {
   return workedMinutes !== null && scheduledMinutes !== null && workedMinutes < scheduledMinutes
 }
 
-export default function RecentAttendanceTable({ entries, isLoading = false, error, refreshedAt }: Props) {
-  const [isExpanded, setIsExpanded] = useState(false)
+export default function RecentAttendanceTable({ entries, isLoading = false, error, refreshedAt, initiallyExpanded = false }: Props) {
+  const [isExpanded, setIsExpanded] = useState(initiallyExpanded)
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">

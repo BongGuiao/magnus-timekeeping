@@ -72,6 +72,13 @@ export function canPreviewDashboardRoles(): boolean {
   return hasPermission('system.manage')
 }
 
+export function isSystemAdmin(): boolean {
+  return getAvailableRoleCodes().some((roleCode) => {
+    const normalized = roleCode.trim().toUpperCase()
+    return normalized === 'SYSTEM_ADMIN' || normalized === 'SYSTEM_ADMINISTRATOR'
+  })
+}
+
 export function hasEmployeeRoleCode(): boolean {
   return getAvailableRoleCodes().some((roleCode) => roleCode.trim().toUpperCase() === 'EMPLOYEE')
 }

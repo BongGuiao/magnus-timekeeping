@@ -81,6 +81,22 @@ class PayrollCutoffSchemaTests(unittest.TestCase):
                 locked_at="2026-10-15T10:00:00Z",
             )
 
+    def test_separate_filing_deadline_requires_later_approval(self) -> None:
+        values = dict(
+            payroll_group_id=uuid4(), cutoff_code="DEADLINES",
+            period_start=date(2026, 10, 1), period_end=date(2026, 10, 15),
+            pay_date=date(2026, 10, 20),
+            employee_filing_deadline="2026-10-16T17:00:00+08:00",
+        )
+        with self.assertRaises(ValidationError):
+            CreatePayrollCutoffSchema(**values)
+        with self.assertRaises(ValidationError):
+            CreatePayrollCutoffSchema(**values, attendance_deadline="2026-10-16T16:00:00+08:00")
+        cutoff = CreatePayrollCutoffSchema(**values, attendance_deadline="2026-10-17T17:00:00+08:00")
+        self.assertLess(cutoff.employee_filing_deadline, cutoff.attendance_deadline)
+        payload = UpdatePayrollCutoffSchema(id=uuid4(), employee_filing_deadline=None)
+        self.assertIn("employee_filing_deadline", payload.model_fields_set)
+
     def test_merged_period_validation_rejects_end_before_start(self) -> None:
         with self.assertRaisesRegex(ValueError, "period_end"):
             _validate_period(date(2026, 10, 16), date(2026, 10, 15))

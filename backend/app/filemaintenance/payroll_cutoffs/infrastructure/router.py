@@ -19,7 +19,7 @@ from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
-    validate_attendance_deadline,
+    validate_cutoff_deadlines,
 )
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
     CalculateEmployeeCutoffResultsUseCase,
@@ -62,6 +62,7 @@ class CreatePayrollCutoffSchema(BaseModel):
     period_end: date
     pay_date: date
     attendance_deadline: datetime | None = None
+    employee_filing_deadline: datetime | None = None
     status: str = Field(default="SCHEDULED", min_length=1, max_length=30)
     calculation_version: str | None = Field(default=None, max_length=50)
     export_batch_id: UUID | None = None
@@ -73,7 +74,9 @@ class CreatePayrollCutoffSchema(BaseModel):
     def validate_period(self) -> CreatePayrollCutoffSchema:
         if self.period_end < self.period_start:
             raise ValueError("period_end must be on or after period_start.")
-        validate_attendance_deadline(self.period_end, self.attendance_deadline)
+        validate_cutoff_deadlines(
+            self.period_end, self.attendance_deadline, self.employee_filing_deadline,
+        )
         if self.status.upper() == "LOCKED":
             raise ValueError("Payroll cutoffs can only be locked through payroll approval.")
         return self
@@ -88,6 +91,7 @@ class UpdatePayrollCutoffSchema(BaseModel):
     period_end: date | None = None
     pay_date: date | None = None
     attendance_deadline: datetime | None = None
+    employee_filing_deadline: datetime | None = None
     status: str | None = Field(default=None, min_length=1, max_length=30)
     calculation_version: str | None = Field(default=None, max_length=50)
     export_batch_id: UUID | None = None
@@ -100,6 +104,7 @@ class UpdatePayrollCutoffSchema(BaseModel):
         nullable_fields = {
             "id",
             "attendance_deadline",
+            "employee_filing_deadline",
             "calculation_version",
             "export_batch_id",
             "cutoff_half",

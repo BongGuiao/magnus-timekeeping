@@ -18,8 +18,17 @@ PAY_COMPONENT_MINUTES = {
     "HOLIDAY_OT": "holiday_ot_minutes",
     "NIGHT_REGULAR": "night_regular_minutes",
     "NIGHT_OT": "night_ot_minutes",
+    "UNWORKED_HOLIDAY": "unworked_holiday_minutes",
+    "UNWORKED_DOUBLE_HOLIDAY": "unworked_double_holiday_minutes",
 }
 PAY_COMPONENT_CODES = tuple(PAY_COMPONENT_MINUTES)
+# Unworked regular-holiday pay is already part of a monthly salary.
+UNWORKED_HOLIDAY_CODES = ("UNWORKED_HOLIDAY", "UNWORKED_DOUBLE_HOLIDAY")
+MONTHLY_EARNING_CODES = tuple(
+    code
+    for code in PAY_COMPONENT_CODES
+    if code not in {"REGULAR", "PAID_LEAVE", "OFFICIAL_BUSINESS", *UNWORKED_HOLIDAY_CODES}
+)
 MONEY_QUANTUM = Decimal("0.01")
 
 
@@ -57,6 +66,7 @@ class CutoffEmployeeTime:
     component_minutes: dict[str, int]
     required_work_minutes: int = 0
     incomplete_time_source_count: int = 0
+    disqualified_holiday_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -302,7 +312,12 @@ def calculate_gross_pay(
             source_minutes=source_minutes,
         )
 
-    missing_rules = sorted(set(PAY_COMPONENT_CODES) - earning_rules.keys())
+    missing_rules = sorted(
+        code
+        for code in set(PAY_COMPONENT_CODES) - earning_rules.keys()
+        if code not in UNWORKED_HOLIDAY_CODES
+        or (policy.rate_type != "MONTHLY" and source_minutes[code] > 0)
+    )
     if missing_rules:
         return GrossPayResult(
             employee_id=time.employee_id,
@@ -346,7 +361,7 @@ def calculate_gross_pay(
             0,
             max(time.required_work_minutes, 0)
             - min(max(time.required_work_minutes, 0), covered_minutes),
-        )
+        ) + max(time.disqualified_holiday_minutes, 0)
         unpaid_amount = (
             minute_rate * Decimal(unpaid_minutes)
         ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
@@ -365,7 +380,6 @@ def calculate_gross_pay(
                 amount=-unpaid_amount,
             ),
         )
-        earning_codes = ("REST_DAY", "SPECIAL_DAY", "HOLIDAY") + PAY_COMPONENT_CODES[6:]
         earnings = tuple(
             GrossPayLine(
                 component_code=code,
@@ -377,7 +391,7 @@ def calculate_gross_pay(
                     * earning_rules[code].multiplier
                 ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
             )
-            for code in earning_codes
+            for code in MONTHLY_EARNING_CODES
         )
         lines = salary_lines + earnings
     else:
@@ -393,6 +407,7 @@ def calculate_gross_pay(
                 ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
             )
             for code in PAY_COMPONENT_CODES
+            if code in earning_rules
         )
     gross_amount = sum((line.amount for line in lines), Decimal(0)).quantize(
         MONEY_QUANTUM,

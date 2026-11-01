@@ -44,6 +44,11 @@ def upgrade() -> None:
         "ALTER TABLE hr.employment_assignments "
         "DROP CONSTRAINT IF EXISTS ck_employment_assignments_operational_group"
     )
+    # Older databases carry the Postgres auto-named variant of the same check.
+    op.execute(
+        "ALTER TABLE hr.employment_assignments "
+        "DROP CONSTRAINT IF EXISTS employment_assignments_operational_group_check"
+    )
     op.create_foreign_key(
         "fk_assignment_operational_group", "employment_assignments", "operational_groups",
         ["company_id", "operational_group"], ["company_id", "operational_group"],

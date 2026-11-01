@@ -1,12 +1,19 @@
 from fastapi import Depends
 
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
+from app.filemaintenance.leaves.application.entitlement_upload_use_case import EntitlementUploadUseCase
 from app.filemaintenance.leaves.application.leave_records_use_case import (
     EmployeeEntitlementUseCase,
     LeaveApplicationDateUseCase,
     LeaveApplicationUseCase,
     LeaveLedgerUseCase,
 )
+
+
+def get_entitlement_upload_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> EntitlementUploadUseCase:
+    return EntitlementUploadUseCase(uow)
 
 
 def get_employee_entitlement_use_case(

@@ -12,6 +12,7 @@ from app.attendance.application.use_case import (
     resolve_attendance_day_type,
     resolve_schedule_day,
 )
+from app.attendance.domain.worked_minutes import requires_scheduled_work
 from app.attendance.infrastructure.db_model import (
     AttendanceModel,
     OfficialBusinessRequestModel,
@@ -39,13 +40,27 @@ from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result 
     OfficialBusinessFact,
     OvertimeFact,
     ScheduledDayFact,
+    UnworkedHolidayFact,
     calculate_employee_cutoff_totals,
     overlap_minutes,
 )
+from app.filemaintenance.payroll_cutoffs.domain.holiday_pay_eligibility import (
+    DEFAULT_HOLIDAY_PAY_ATTENDANCE_RULE,
+    HOLIDAY_PAY_ATTENDANCE_RULES,
+    HOLIDAY_PAY_LOOKUP_DAYS,
+    DayAttendanceFacts,
+    HolidayPayAttendanceRule,
+    WorkdayStatus,
+    classify_day,
+    holiday_pay_qualifies,
+)
+from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
+from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
+from app.filemaintenance.payroll_groups.infrastructure.db_model import PayrollGroupModel
 from app.filemaintenance.payroll_cutoffs.domain.entities.payroll_cutoff import PayrollCutoffEntity
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
-    validate_attendance_deadline,
+    validate_cutoff_deadlines,
 )
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
@@ -54,7 +69,7 @@ from app.filemaintenance.schedule.infrastructure.db_model import (
     EmployeeScheduleAssignmentModel,
     ScheduleTemplateModel,
 )
-from app.payroll.infrastructure.db_model import GrossPayRunModel
+from app.payroll.infrastructure.db_model import GrossPayRunModel, PayrollSystemParametersModel
 
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
 
@@ -216,12 +231,253 @@ def _payroll_undertime_minutes(record: AttendanceModel) -> int:
     return record.undertime_minutes
 
 
+def _local_dates(start_at: datetime, end_at: datetime) -> list[date]:
+    first = start_at.astimezone(PH_TIMEZONE).date()
+    # end_at is exclusive, so a request ending exactly at midnight does not cover the next day.
+    last = (end_at - timedelta(microseconds=1)).astimezone(PH_TIMEZONE).date()
+    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+
+
+async def _company_holiday_pay_rule(session, company_id: UUID) -> HolidayPayAttendanceRule:
+    rule = await session.scalar(
+        select(PayrollSystemParametersModel.holiday_pay_attendance_rule).where(
+            PayrollSystemParametersModel.company_id == company_id
+        )
+    )
+    return rule if rule in HOLIDAY_PAY_ATTENDANCE_RULES else DEFAULT_HOLIDAY_PAY_ATTENDANCE_RULE
+
+
+async def _unworked_holiday_facts(
+    session,
+    *,
+    company_id: UUID,
+    employee_ids: list[UUID],
+    period_start: date,
+    period_end: date,
+    credit_minutes: int,
+    rule: HolidayPayAttendanceRule,
+    today: date,
+) -> list[UnworkedHolidayFact]:
+    """Evaluate holiday-pay attendance for every unworked regular/double holiday in the cutoff."""
+    if not employee_ids:
+        return []
+    candidate_dates = sorted(
+        set(
+            (
+                await session.scalars(
+                    select(HolidayModel.holiday_date)
+                    .join(
+                        HolidayCalendarModel,
+                        HolidayCalendarModel.id == HolidayModel.holiday_calendar_id,
+                    )
+                    .where(
+                        HolidayCalendarModel.company_id == company_id,
+                        HolidayCalendarModel.status == "PUBLISHED",
+                        HolidayCalendarModel.is_active.is_(True),
+                        HolidayModel.holiday_date >= period_start,
+                        HolidayModel.holiday_date <= period_end,
+                        HolidayModel.status == "ACTIVE",
+                        HolidayModel.is_active.is_(True),
+                        or_(
+                            HolidayModel.holiday_type == "REGULAR",
+                            HolidayModel.is_double_holiday.is_(True),
+                        ),
+                    )
+                )
+            ).all()
+        )
+    )
+    if not candidate_dates:
+        return []
+
+    window_start = period_start - timedelta(days=HOLIDAY_PAY_LOOKUP_DAYS)
+    window_end = period_end + timedelta(days=HOLIDAY_PAY_LOOKUP_DAYS)
+    window_start_at = datetime.combine(window_start, time.min, tzinfo=PH_TIMEZONE)
+    window_end_at = datetime.combine(window_end + timedelta(days=1), time.min, tzinfo=PH_TIMEZONE)
+
+    worked: set[tuple[UUID, date]] = {
+        (employee_id, work_date)
+        for employee_id, work_date in (
+            await session.execute(
+                select(UserModel.employee_id, AttendanceModel.work_date)
+                .join(UserModel, UserModel.id == AttendanceModel.user_id)
+                .where(
+                    UserModel.employee_id.in_(employee_ids),
+                    AttendanceModel.work_date >= window_start,
+                    AttendanceModel.work_date <= window_end,
+                    AttendanceModel.record_status == "VALID",
+                    AttendanceModel.is_absent.is_(False),
+                )
+            )
+        ).all()
+    }
+
+    paid_leave: set[tuple[UUID, date]] = set()
+    unpaid_leave: set[tuple[UUID, date]] = set()
+    leave_applications = (
+        await session.scalars(
+            select(LeaveApplicationModel).where(
+                LeaveApplicationModel.employee_id.in_(employee_ids),
+                LeaveApplicationModel.status == "APPROVED",
+                LeaveApplicationModel.is_active.is_(True),
+                LeaveApplicationModel.start_at < window_end_at,
+                LeaveApplicationModel.end_at > window_start_at,
+            )
+        )
+    ).all()
+    leave_days_by_application: dict[UUID, list[LeaveApplicationDateModel]] = defaultdict(list)
+    if leave_applications:
+        for leave_day in (
+            await session.scalars(
+                select(LeaveApplicationDateModel).where(
+                    LeaveApplicationDateModel.leave_application_id.in_(
+                        [application.id for application in leave_applications]
+                    )
+                )
+            )
+        ).all():
+            leave_days_by_application[leave_day.leave_application_id].append(leave_day)
+    for application in leave_applications:
+        days = leave_days_by_application.get(application.id)
+        if days:
+            for day in days:
+                key = (application.employee_id, day.leave_date)
+                if day.approved_paid_minutes > 0:
+                    paid_leave.add(key)
+                elif day.approved_unpaid_minutes > 0:
+                    unpaid_leave.add(key)
+            continue
+        target = paid_leave if (application.paid_minutes or 0) > 0 else unpaid_leave
+        target.update(
+            (application.employee_id, day)
+            for day in _local_dates(application.start_at, application.end_at)
+        )
+
+    official_business: set[tuple[UUID, date]] = set()
+    for request in (
+        await session.scalars(
+            select(OfficialBusinessRequestModel).where(
+                OfficialBusinessRequestModel.employee_id.in_(employee_ids),
+                OfficialBusinessRequestModel.status == "APPROVED",
+                OfficialBusinessRequestModel.is_active.is_(True),
+                OfficialBusinessRequestModel.start_at < window_end_at,
+                OfficialBusinessRequestModel.end_at > window_start_at,
+            )
+        )
+    ).all():
+        official_business.update(
+            (request.employee_id, day) for day in _local_dates(request.start_at, request.end_at)
+        )
+
+    employments: dict[UUID, list[EmploymentAssignmentModel]] = defaultdict(list)
+    for employment in (
+        await session.scalars(
+            select(EmploymentAssignmentModel).where(
+                EmploymentAssignmentModel.employee_id.in_(employee_ids),
+                EmploymentAssignmentModel.is_active.is_(True),
+                EmploymentAssignmentModel.effective_from <= window_end,
+                or_(
+                    EmploymentAssignmentModel.effective_to.is_(None),
+                    EmploymentAssignmentModel.effective_to >= window_start,
+                ),
+            )
+        )
+    ).all():
+        employments[employment.employee_id].append(employment)
+
+    def employed(employee_id: UUID, work_date: date) -> bool:
+        return any(
+            employment.effective_from <= work_date
+            and (employment.effective_to is None or employment.effective_to >= work_date)
+            and (employment.separation_date is None or employment.separation_date >= work_date)
+            for employment in employments.get(employee_id, [])
+        )
+
+    day_type_cache: dict[tuple[UUID, date], str] = {}
+
+    async def day_type_for(employee_id: UUID, work_date: date) -> str:
+        key = (employee_id, work_date)
+        if key not in day_type_cache:
+            day_type_cache[key] = await resolve_attendance_day_type(
+                session, employee_id, work_date
+            )
+        return day_type_cache[key]
+
+    async def neighbor_workday_status(
+        employee_id: UUID,
+        holiday_date: date,
+        step: int,
+    ) -> WorkdayStatus:
+        work_date = holiday_date
+        for _ in range(HOLIDAY_PAY_LOOKUP_DAYS):
+            work_date += timedelta(days=step)
+            key = (employee_id, work_date)
+            if key in worked:
+                return "PRESENT"
+            is_future = work_date >= today
+            is_employed = employed(employee_id, work_date)
+            schedule = None
+            day_type = "REG"
+            if not is_future and is_employed:
+                schedule = await resolve_schedule_day(session, employee_id, work_date)
+                if schedule.work_type == "REG":
+                    day_type = await day_type_for(employee_id, work_date)
+            status = classify_day(
+                DayAttendanceFacts(
+                    worked=False,
+                    is_workday=(
+                        schedule is not None
+                        and requires_scheduled_work(schedule.work_type, day_type)
+                    ),
+                    employed=is_employed,
+                    is_future=is_future,
+                    paid_leave=key in paid_leave,
+                    official_business=key in official_business,
+                    unpaid_leave=key in unpaid_leave,
+                    schedule_credited=(
+                        schedule is not None
+                        and schedule.attendance_mode == "SCHEDULE_CREDITED"
+                    ),
+                )
+            )
+            if status != "SKIP":
+                return status
+        return "UNKNOWN"
+
+    facts: list[UnworkedHolidayFact] = []
+    for employee_id in employee_ids:
+        for holiday_date in candidate_dates:
+            if (employee_id, holiday_date) in worked or not employed(employee_id, holiday_date):
+                continue
+            day_type = await day_type_for(employee_id, holiday_date)
+            if day_type not in {"RH", "DBL"}:
+                continue
+            before = await neighbor_workday_status(employee_id, holiday_date, -1)
+            after: WorkdayStatus = "UNKNOWN"
+            if rule == "BEFORE_AND_AFTER" and before != "ABSENT":
+                after = await neighbor_workday_status(employee_id, holiday_date, 1)
+            facts.append(
+                UnworkedHolidayFact(
+                    employee_id=employee_id,
+                    holiday_date=holiday_date,
+                    day_type=day_type,
+                    credit_minutes=credit_minutes,
+                    qualified=holiday_pay_qualifies(rule, before, after),
+                )
+            )
+    return facts
+
+
 class CreatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
     async def _execute(self, payload: dict[str, Any]) -> PayrollCutoffEntity:
         _validate_period(payload["period_start"], payload["period_end"])
+        validate_cutoff_deadlines(
+            payload["period_end"], payload.get("attendance_deadline"),
+            payload.get("employee_filing_deadline"),
+        )
         try:
             async with self.uow as uow:
                 repo = uow.get_repo(PayrollCutoffEntity, PayrollCutoffModel)
@@ -309,7 +565,10 @@ class UpdatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity | None]):
 
                 merged = {**existing.__dict__, **payload}
                 _validate_period(merged["period_start"], merged["period_end"])
-                validate_attendance_deadline(merged["period_end"], merged.get("attendance_deadline"))
+                validate_cutoff_deadlines(
+                    merged["period_end"], merged.get("attendance_deadline"),
+                    merged.get("employee_filing_deadline"),
+                )
                 entity = GenericMapper.to_entity(merged, PayrollCutoffEntity)
                 changes = {
                     key: value
@@ -880,6 +1139,20 @@ class CalculateEmployeeCutoffResultsUseCase:
                     for employee_id, _ in exception_result.all()
                 ]
 
+            unworked_holiday_facts: list[UnworkedHolidayFact] = []
+            payroll_group = await session.get(PayrollGroupModel, cutoff.payroll_group_id)
+            if employee_ids and payroll_group is not None:
+                unworked_holiday_facts = await _unworked_holiday_facts(
+                    session,
+                    company_id=payroll_group.company_id,
+                    employee_ids=employee_ids,
+                    period_start=cutoff.period_start,
+                    period_end=cutoff.period_end,
+                    credit_minutes=payroll_group.standard_minutes_per_day,
+                    rule=await _company_holiday_pay_rule(session, payroll_group.company_id),
+                    today=datetime.now(PH_TIMEZONE).date(),
+                )
+
             totals = calculate_employee_cutoff_totals(
                 employee_ids,
                 attendance_facts,
@@ -890,6 +1163,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                 cutoff.period_start,
                 cutoff.period_end,
                 scheduled_day_facts,
+                unworked_holiday_facts,
             )
             calculated_at = datetime.now(timezone.utc)
             existing_results = {
@@ -937,6 +1211,9 @@ class CalculateEmployeeCutoffResultsUseCase:
                 result.night_regular_minutes = total.night_regular_minutes
                 result.night_ot_minutes = total.night_ot_minutes
                 result.official_business_minutes = total.official_business_minutes
+                result.unworked_holiday_minutes = total.unworked_holiday_minutes
+                result.unworked_double_holiday_minutes = total.unworked_double_holiday_minutes
+                result.disqualified_holiday_minutes = total.disqualified_holiday_minutes
                 result.exception_count = total.exception_count
                 result.incomplete_time_source_count = total.incomplete_time_source_count
                 result.employee_confirmation_status = "PENDING"

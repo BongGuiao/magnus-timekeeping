@@ -100,12 +100,27 @@ function getHrUploadMode() {
 }
 
 export default function ScheduleUploads(props: Props) {
+  const { logout } = useLogout({ onLoggedOut: props.onLoggedOut })
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <TopNav employeeName={props.employeeName} activeView="schedule-uploads" onNavigate={props.onNavigate} onSignOut={logout} />
+      <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
+        <ScheduleUploadPanel />
+      </main>
+    </div>
+  )
+}
+
+interface ScheduleUploadPanelProps {
+  onSubmitted?: () => void
+}
+
+export function ScheduleUploadPanel(props: ScheduleUploadPanelProps) {
   const hrAdmin = useSyncExternalStore(subscribeToDashboardRole, getHrUploadMode, () => false)
   return <ScheduleUploadsContent key={hrAdmin ? 'hr-admin' : 'team'} hrAdmin={hrAdmin} {...props} />
 }
 
-function ScheduleUploadsContent({ hrAdmin, employeeName, onNavigate, onLoggedOut }: Props & { hrAdmin: boolean }) {
-  const { logout } = useLogout({ onLoggedOut })
+function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelProps & { hrAdmin: boolean }) {
   const fileInput = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<ScheduleUploadPreview | null>(null)
@@ -183,6 +198,7 @@ function ScheduleUploadsContent({ hrAdmin, employeeName, onNavigate, onLoggedOut
     if (fileInput.current) fileInput.current.value = ''
     setSelected(submitted[0] ?? null)
     reloadBatches()
+    onSubmitted?.()
   })
 
   const openBatch = (batchId: string) => run(async () => {
@@ -198,11 +214,9 @@ function ScheduleUploadsContent({ hrAdmin, employeeName, onNavigate, onLoggedOut
   })
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <TopNav employeeName={employeeName} activeView="schedule-uploads" onNavigate={onNavigate} onSignOut={logout} />
-      <main className="w-full space-y-4 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="space-y-4">
         <header>
-          <h1 className="text-xl font-bold text-slate-900">Team Schedule Upload</h1>
+          <h2 className="text-sm font-bold text-slate-900">Team Schedule Upload</h2>
           <p className="mt-1 text-xs text-slate-600">
             {hrAdmin
               ? 'HR_ADMIN mode: upload on behalf of multiple supervisors using supervisor_employee_code. Employees must already report to the specified supervisor. One batch is created per supervisor.'
@@ -355,7 +369,6 @@ function ScheduleUploadsContent({ hrAdmin, employeeName, onNavigate, onLoggedOut
             </div>
           )}
         </section>
-      </main>
     </div>
   )
 }

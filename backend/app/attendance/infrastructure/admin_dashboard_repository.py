@@ -61,6 +61,7 @@ class SqlAlchemyAdminDashboardRepository:
                     AttendanceModel.clock_in_at,
                     AttendanceModel.corrected_clock_out_at,
                     AttendanceModel.clock_out_at,
+                    AttendanceModel.expected_clock_in_at,
                     AttendanceModel.expected_clock_out_at,
                     AttendanceModel.is_absent,
                     AttendanceModel.leave_type,
@@ -110,6 +111,7 @@ class SqlAlchemyAdminDashboardRepository:
                 clock_in_at=row.corrected_clock_in_at or row.clock_in_at,
                 clock_out_at=row.corrected_clock_out_at or row.clock_out_at,
                 expected_clock_out_at=row.expected_clock_out_at,
+                expected_clock_in_at=row.expected_clock_in_at,
                 is_absent=row.is_absent,
                 leave_type=row.leave_type,
             )

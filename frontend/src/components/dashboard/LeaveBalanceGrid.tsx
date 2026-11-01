@@ -18,7 +18,7 @@ export default function LeaveBalanceGrid({ balances, isLoading = false, error, r
       {error && <p role="alert" className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</p>}
       {isLoading ? (
         <p className="mt-2 text-sm text-slate-500">Loading leave balances…</p>
-      ) : balances.length === 0 ? (
+      ) : error && balances.length === 0 ? null : balances.length === 0 ? (
         <p className="mt-2 text-sm text-slate-500">No leave entitlements found for this year.</p>
       ) : <div className="mt-2 grid grid-cols-2 gap-2">
         {balances.map((leave) => {

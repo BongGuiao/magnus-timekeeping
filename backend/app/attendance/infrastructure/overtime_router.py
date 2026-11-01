@@ -200,6 +200,7 @@ async def recalculate_attendance_range(
                     from_date=payload.from_date,
                     to_date=payload.to_date,
                     dry_run=payload.dry_run,
+                    deadline_stage="FILING" if payload.scope == "own" else "APPROVAL",
                 )
             )
             for employee_id in employee_ids

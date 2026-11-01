@@ -1,11 +1,12 @@
 from datetime import date, datetime
+from dataclasses import asdict
 import logging
 from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from elasticsearch import AsyncElasticsearch
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from kombu.exceptions import OperationalError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from redis.asyncio import Redis
@@ -17,6 +18,11 @@ from app.auth.infrastructure.dependencies import require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.leaves.application.entitlement_upload_use_case import (
+    EntitlementUploadChangedError,
+    EntitlementUploadInvalidError,
+    EntitlementUploadUseCase,
+)
 from app.filemaintenance.leaves.application.leave_records_use_case import (
     EmployeeEntitlementUseCase,
     LeaveApplicationDateUseCase,
@@ -30,11 +36,13 @@ from app.filemaintenance.leaves.domain.entities.leave_records import (
     LeaveLedgerEntity,
 )
 from app.filemaintenance.leaves.infrastructure.leave_records_dependencies import (
+    get_entitlement_upload_use_case,
     get_employee_entitlement_use_case,
     get_leave_application_date_use_case,
     get_leave_application_use_case,
     get_leave_ledger_use_case,
 )
+from app.filemaintenance.leaves.infrastructure.entitlement_upload_csv import entitlement_upload_csv_template
 from app.tasks.dashboard_tasks import (
     LEAVE_DASHBOARD_SNAPSHOT_PREFIX,
     refresh_leave_dashboard_snapshots,
@@ -53,6 +61,7 @@ ledger_router = APIRouter(
 )
 logger = logging.getLogger(__name__)
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
+MAX_ENTITLEMENT_UPLOAD_BYTES = 1024 * 1024
 
 
 def _actor_id(claims: dict[str, Any]) -> UUID:
@@ -162,6 +171,35 @@ class EntitlementUpdateSchema(BaseModel):
         if self.last_calculated_at is not None:
             _validate_aware_datetime(self.last_calculated_at, "last_calculated_at")
         return self
+
+
+class EntitlementUploadPreviewRowSchema(BaseModel):
+    row_no: int
+    employee_no: str
+    leave_code: str
+    entitlement_year: int | None
+    employee_name: str | None
+    leave_name: str | None
+    unit_type: str | None
+    action: Literal["CREATE", "UPDATE"] | None
+    errors: list[str]
+    before: dict[str, int] | None
+    after: dict[str, int] | None
+
+
+class EntitlementUploadPreviewSchema(BaseModel):
+    is_valid: bool
+    error_count: int
+    file_errors: list[str]
+    rows: list[EntitlementUploadPreviewRowSchema]
+    preview_token: str | None
+
+
+class EntitlementUploadResultSchema(BaseModel):
+    created: int
+    updated: int
+    employee_ids: list[UUID]
+    entitlement_ids: list[UUID]
 
 
 class LeaveApplicationCreateSchema(BaseModel):
@@ -336,6 +374,93 @@ class LeaveLedgerCreateSchema(BaseModel):
     minutes_delta: int
     balance_after_minutes: int
     remarks: str | None = None
+
+
+async def _read_entitlement_upload(file: UploadFile) -> bytes:
+    if not (file.filename or "").strip().lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload a .csv file.")
+    content = await file.read(MAX_ENTITLEMENT_UPLOAD_BYTES + 1)
+    if len(content) > MAX_ENTITLEMENT_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="The file is larger than 1 MB. Split it into smaller uploads.",
+        )
+    return content
+
+
+@entitlements_router.get("/upload/template")
+async def download_entitlement_upload_template(
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
+):
+    _actor_id(claims)
+    return Response(
+        content=entitlement_upload_csv_template(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="entitlement_upload_template.csv"'},
+    )
+
+
+@entitlements_router.post(
+    "/upload/preview",
+    response_model=ResponseEnvelope[EntitlementUploadPreviewSchema],
+)
+async def preview_entitlement_upload(
+    file: UploadFile = File(...),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
+    use_case: EntitlementUploadUseCase = Depends(get_entitlement_upload_use_case),
+):
+    _actor_id(claims)
+    preview = await use_case.preview(await _read_entitlement_upload(file))
+    return ResponseEnvelope(status="success", data=EntitlementUploadPreviewSchema(**asdict(preview)))
+
+
+@entitlements_router.post(
+    "/upload",
+    response_model=ResponseEnvelope[EntitlementUploadResultSchema],
+)
+async def apply_entitlement_upload(
+    file: UploadFile = File(...),
+    preview_token: str = Form(..., min_length=64, max_length=64, pattern="^[0-9a-f]{64}$"),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
+    use_case: EntitlementUploadUseCase = Depends(get_entitlement_upload_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    content = await _read_entitlement_upload(file)
+    try:
+        result = await use_case.apply(content, preview_token)
+    except EntitlementUploadInvalidError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except EntitlementUploadChangedError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    entitlement_ids: list[UUID] = []
+    for change in result.changes:
+        entitlement_id = change.after.id
+        if entitlement_id is None:
+            raise RuntimeError("An uploaded entitlement did not receive an ID.")
+        entitlement_ids.append(entitlement_id)
+        await log_entity_action(
+            es_client,
+            user_id=actor_id,
+            action=change.action,
+            resource="employee_entitlement",
+            resource_id=entitlement_id,
+            before=change.before,
+            after=change.after,
+        )
+    employee_ids = sorted({change.after.employee_id for change in result.changes}, key=str)
+    for employee_id in employee_ids:
+        _queue_leave_dashboard_refresh(employee_id)
+    return ResponseEnvelope(
+        status="success",
+        data=EntitlementUploadResultSchema(
+            created=sum(change.action == "CREATE" for change in result.changes),
+            updated=sum(change.action == "UPDATE" for change in result.changes),
+            employee_ids=employee_ids,
+            entitlement_ids=entitlement_ids,
+        ),
+    )
 
 
 @entitlements_router.post(
@@ -745,10 +870,13 @@ async def create_leave_application_date(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Employees cannot set approval, schedule, or attendance-derived leave values.",
         )
-    result = await date_use_case.create({
-        **payload.model_dump(),
-        "leave_application_id": application_id,
-    })
+    try:
+        result = await date_use_case.create({
+            **payload.model_dump(),
+            "leave_application_id": application_id,
+        })
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     await log_entity_action(
         es_client, user_id=actor_id, action="CREATE", resource="leave_application_date",
         resource_id=result.id, after=result,
@@ -808,10 +936,13 @@ async def update_leave_application_date(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Employees cannot set approval, schedule, or attendance-derived leave values.",
         )
-    result = _require_record(
-        await use_case.update(payload.id, payload.model_dump(exclude_unset=True, exclude={"id"})),
-        "Leave application date not found.",
-    )
+    try:
+        result = _require_record(
+            await use_case.update(payload.id, payload.model_dump(exclude_unset=True, exclude={"id"})),
+            "Leave application date not found.",
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     await log_entity_action(
         es_client, user_id=actor_id, action="UPDATE", resource="leave_application_date",
         resource_id=payload.id, before=before, after=result,
@@ -836,7 +967,11 @@ async def delete_leave_application_date(
     if claims.get("role") != "admin" and parent.employee_id != _employee_id(claims):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only update your own leave applications.")
     _require_employee_draft_application(claims, parent)
-    if not await use_case.delete(date_id):
+    try:
+        deleted = await use_case.delete(date_id)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Leave application date not found.")
     await log_entity_action(
         es_client, user_id=actor_id, action="DELETE", resource="leave_application_date",

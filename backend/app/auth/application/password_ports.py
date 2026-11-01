@@ -15,6 +15,10 @@ class UserAccountRepository(Protocol):
         """Loads the account and locks its row so concurrent attempts are counted in order."""
         ...
 
+    async def get_by_username_for_update(self, username: str) -> Optional[UserEntity]:
+        """Case-insensitive lookup by username (the employee code), locking the row."""
+        ...
+
     async def save(self, user: UserEntity) -> None: ...
 
 

@@ -9,11 +9,13 @@ from app.attendance.infrastructure.clock_router import router as clock_router
 from app.attendance.infrastructure.device_challenge_router import router as device_challenge_router
 from app.attendance.infrastructure.overtime_router import router as overtime_router
 from app.attendance.infrastructure.offline_router import router as offline_router
+from app.attendance.infrastructure.correction_router import router as correction_router
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 for feature_router in (
     clock_router,
+    correction_router,
     offline_router,
     device_challenge_router,
     overtime_router,
