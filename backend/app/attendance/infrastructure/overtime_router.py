@@ -47,6 +47,7 @@ from app.attendance.infrastructure.overtime_schemas import (
     AttendanceRangeRecalculationSchema,
 )
 from app.auth.domain.entities.user import Role
+from app.auth.infrastructure.approval_scope import approval_supervisor_scope, has_supervisor_role
 from app.auth.infrastructure.dependencies import (
     get_current_authorization_use_case,
     require_any_permission,
@@ -319,15 +320,12 @@ async def get_pending_overtime_applications(
     claims: dict = Depends(require_permission("overtime.approve_team")),
     use_case: ListPendingOvertimeApplicationsUseCase = Depends(get_list_pending_overtime_applications_use_case),
 ):
-    supervisor_employee_id = None
-    if claims.get("role") != Role.ADMIN.value:
-        try:
-            supervisor_employee_id = UUID(str(claims["employee_id"]))
-        except (KeyError, TypeError, ValueError) as error:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This account is not linked to a supervisor employee profile.",
-            ) from error
+    is_admin = claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims)
+    supervisor_employee_id = approval_supervisor_scope(
+        claims,
+        is_admin=is_admin,
+        detail="This account is not linked to a supervisor employee profile.",
+    )
     records = await use_case.execute(
         ListPendingOvertimeApplicationsInput(supervisor_employee_id=supervisor_employee_id)
     )
@@ -344,12 +342,15 @@ async def decide_overtime_application(
     claims: dict = Depends(require_permission("overtime.approve_team")),
     use_case: DecideOvertimeApplicationUseCase = Depends(get_decide_overtime_application_use_case),
 ):
-    is_admin = claims.get("role") == Role.ADMIN.value
+    is_admin = claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims)
     try:
         actor_id = UUID(str(claims["sub"]))
-        actor_employee_id = (
-            UUID(str(claims["employee_id"])) if claims.get("employee_id") is not None else None
+        supervisor_employee_id = approval_supervisor_scope(
+            claims,
+            is_admin=is_admin,
+            detail="This account is not linked to a supervisor employee profile.",
         )
+        actor_employee_id = UUID(str(claims["employee_id"])) if claims.get("employee_id") is not None else None
         if not is_admin and actor_employee_id is None:
             raise ValueError("Supervisor employee id is missing.")
     except (KeyError, TypeError, ValueError) as error:
@@ -363,7 +364,7 @@ async def decide_overtime_application(
             DecideOvertimeApplicationInput(
                 application_id=application_id,
                 actor_id=actor_id,
-                actor_employee_id=actor_employee_id,
+                actor_employee_id=supervisor_employee_id or actor_employee_id,
                 is_admin=is_admin,
                 decision=payload.decision,
                 supervisor_approved_minutes=payload.supervisor_approved_minutes,

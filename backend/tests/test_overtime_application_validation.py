@@ -12,6 +12,7 @@ from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationUseCase,
     GetOvertimeAttendanceOptionsInput,
     GetOvertimeAttendanceOptionsUseCase,
+    ListPendingOvertimeApplicationsInput,
     RecalculateAttendanceRangeInput,
     RecalculateAttendanceRangeUseCase,
     SubmitOvertimeApplicationInput,
@@ -39,17 +40,57 @@ from app.attendance.infrastructure.overtime_repository import (
     latest_configured_overtime_cutoff_statement,
 )
 from app.attendance.infrastructure.overtime_router import (
+    decide_overtime_application,
+    get_pending_overtime_applications,
     submit_overtime_application,
     update_overtime_application,
 )
 from app.attendance.infrastructure.overtime_schemas import (
     AttendanceRangeRecalculationInputSchema,
     AttendanceRangeRecalculationSchema,
+    OvertimeApplicationDecisionSchema,
     OvertimeApplicationInputSchema,
 )
 from app.core.database import init_db_models
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+
+
+class SupervisorOvertimeScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_with_supervisor_role_lists_only_team_applications(self):
+        supervisor_id = uuid4()
+        use_case = MagicMock(execute=AsyncMock(return_value=[]))
+        await get_pending_overtime_applications(
+            claims={
+                "role": "admin",
+                "role_codes": ["SYSTEM_ADMIN", "SUPERVISOR"],
+                "employee_id": str(supervisor_id),
+            },
+            use_case=use_case,
+        )
+        self.assertEqual(
+            use_case.execute.await_args.args[0],
+            ListPendingOvertimeApplicationsInput(supervisor_employee_id=supervisor_id),
+        )
+
+    async def test_admin_with_supervisor_role_decision_uses_team_scope(self):
+        supervisor_id = uuid4()
+        use_case = MagicMock(execute=AsyncMock(side_effect=RuntimeError("reached use case")))
+        with self.assertRaisesRegex(RuntimeError, "reached use case"):
+            await decide_overtime_application(
+                uuid4(),
+                OvertimeApplicationDecisionSchema(decision="APPROVED", supervisor_approved_minutes=60),
+                claims={
+                    "sub": str(uuid4()),
+                    "role": "admin",
+                    "role_codes": ["HR_ADMIN", "SUPERVISOR"],
+                    "employee_id": str(supervisor_id),
+                },
+                use_case=use_case,
+            )
+        decision = use_case.execute.await_args.args[0]
+        self.assertFalse(decision.is_admin)
+        self.assertEqual(decision.actor_employee_id, supervisor_id)
 
 
 def make_attendance(**changes) -> OvertimeAttendance:

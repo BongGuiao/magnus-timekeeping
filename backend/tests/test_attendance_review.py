@@ -187,6 +187,19 @@ class ReviewRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(use_case.execute.await_args.args[0].supervisor_employee_id, employee_id)
 
+    async def test_admin_with_supervisor_role_is_team_scoped(self):
+        employee_id = uuid4()
+        use_case = MagicMock(execute=AsyncMock(return_value=[]))
+        await get_supervisor_invalid_attendance(
+            claims={
+                "role": "admin",
+                "role_codes": ["HR_ADMIN", "SUPERVISOR"],
+                "employee_id": str(employee_id),
+            },
+            use_case=use_case,
+        )
+        self.assertEqual(use_case.execute.await_args.args[0].supervisor_employee_id, employee_id)
+
     async def test_approve_translates_not_found_to_404(self):
         use_case = MagicMock(execute=AsyncMock(side_effect=RecordNotFoundError("gone")))
         with self.assertRaises(HTTPException) as error:

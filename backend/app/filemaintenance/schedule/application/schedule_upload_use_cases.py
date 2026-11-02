@@ -186,6 +186,7 @@ class SubmitHrScheduleUploadUseCase(_HrFileUploadUseCase, BaseUseCase[list[Sched
 @dataclass(frozen=True)
 class ListScheduleUploadBatchesInput:
     uploaded_by: UUID | None = None
+    supervisor_employee_id: UUID | None = None
     status: ScheduleUploadBatchStatus | None = None
 
 
@@ -193,21 +194,29 @@ class ListScheduleUploadBatchesUseCase(_ScheduleUploadUseCase, BaseUseCase[list[
     async def _execute(self, data: ListScheduleUploadBatchesInput) -> list[ScheduleUploadBatch]:
         async with self._uow as uow:
             return await uow.schedule_uploads.list_batches(
-                uploaded_by=data.uploaded_by, status=data.status, limit=MAX_LISTED_BATCHES
+                uploaded_by=data.uploaded_by,
+                supervisor_employee_id=data.supervisor_employee_id,
+                status=data.status,
+                limit=MAX_LISTED_BATCHES,
             )
 
 
 @dataclass(frozen=True)
 class GetScheduleUploadBatchInput:
+    """Optionally restrict visibility by uploader and supervisor team."""
+
     batch_id: UUID
     uploaded_by: UUID | None = None
-    """When set, only a batch uploaded by this user is visible."""
+    supervisor_employee_id: UUID | None = None
 
 
 class GetScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[ScheduleUploadBatch]):
     async def _execute(self, data: GetScheduleUploadBatchInput) -> ScheduleUploadBatch:
         async with self._uow as uow:
-            batch = await uow.schedule_uploads.get_batch(data.batch_id)
+            batch = await uow.schedule_uploads.get_batch(
+                data.batch_id,
+                supervisor_employee_id=data.supervisor_employee_id,
+            )
         if batch is None or (data.uploaded_by is not None and batch.uploaded_by != data.uploaded_by):
             raise ScheduleUploadNotFoundError("Schedule upload batch not found.")
         return batch
@@ -218,10 +227,19 @@ class ReviewScheduleUploadBatchInput:
     batch_id: UUID
     reviewer_id: UUID
     remarks: str | None = None
+    supervisor_employee_id: UUID | None = None
 
 
-async def _load_for_update(uow: ScheduleUploadUnitOfWork, batch_id: UUID) -> ScheduleUploadBatch:
-    batch = await uow.schedule_uploads.get_batch(batch_id, for_update=True)
+async def _load_for_update(
+    uow: ScheduleUploadUnitOfWork,
+    batch_id: UUID,
+    supervisor_employee_id: UUID | None = None,
+) -> ScheduleUploadBatch:
+    batch = await uow.schedule_uploads.get_batch(
+        batch_id,
+        for_update=True,
+        supervisor_employee_id=supervisor_employee_id,
+    )
     if batch is None:
         raise ScheduleUploadNotFoundError("Schedule upload batch not found.")
     return batch
@@ -296,7 +314,7 @@ class ApproveScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[Sche
 
     async def _execute(self, data: ReviewScheduleUploadBatchInput) -> ScheduleUploadBatch:
         async with self._uow as uow:
-            batch = await _load_for_update(uow, data.batch_id)
+            batch = await _load_for_update(uow, data.batch_id, data.supervisor_employee_id)
             now = self._clock()
             approved = batch.approve(data.reviewer_id, now, (data.remarks or "").strip() or None)
             return await _apply_schedule_upload(uow, batch, approved, data.reviewer_id, now)
@@ -305,7 +323,7 @@ class ApproveScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[Sche
 class RejectScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[ScheduleUploadBatch]):
     async def _execute(self, data: ReviewScheduleUploadBatchInput) -> ScheduleUploadBatch:
         async with self._uow as uow:
-            batch = await _load_for_update(uow, data.batch_id)
+            batch = await _load_for_update(uow, data.batch_id, data.supervisor_employee_id)
             rejected = batch.reject(data.reviewer_id, self._clock(), data.remarks or "")
             await uow.schedule_uploads.save_batch_review(rejected)
             return rejected

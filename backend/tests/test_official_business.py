@@ -17,6 +17,7 @@ from app.attendance.infrastructure.official_business_router import (
     get_my_official_business_requests,
     get_official_business_options,
     get_pending_official_business_requests,
+    _reviewer,
     submit_official_business_request,
     update_official_business_request,
 )
@@ -40,6 +41,18 @@ def _payload(**overrides):
 
 
 class OfficialBusinessSchemaTests(unittest.TestCase):
+    def test_admin_with_supervisor_role_is_team_scoped(self):
+        user_id, supervisor_id = uuid4(), uuid4()
+        actor_id, is_admin, scope = _reviewer({
+            "sub": str(user_id),
+            "role": "admin",
+            "role_codes": ["HR_ADMIN", "SUPERVISOR"],
+            "employee_id": str(supervisor_id),
+        })
+        self.assertEqual(actor_id, user_id)
+        self.assertFalse(is_admin)
+        self.assertEqual(scope, supervisor_id)
+
     def test_trims_text_and_defaults_requested_minutes_to_duration(self):
         payload = OfficialBusinessCreateSchema(**_payload(client_name="  ", jo_reference=" JO-1 "))
         self.assertEqual(payload.destination, "Client office, Makati")

@@ -62,6 +62,13 @@ function getNonOvertimeNightDifferentialMinutes(entry: AttendanceLogEntry): numb
   return Math.max(0, totalNightDifferential - overtimeNightDifferential)
 }
 
+function getLatestOvertimeApplication(
+  entry: AttendanceLogEntry,
+  overtimeType: OvertimeApplicationType,
+) {
+  return entry.overtimeApplications?.find((application) => application.overtimeType === overtimeType)
+}
+
 function isUnderScheduledHours(entry: AttendanceLogEntry): boolean {
   if (entry.undertimeMinutes !== undefined) return entry.undertimeMinutes > 0
   if (entry.isUndertime !== undefined) return entry.isUndertime
@@ -112,7 +119,20 @@ export default function RecentAttendanceTable({ entries, isLoading = false, erro
             <tr><td colSpan={13} className="px-3 py-4 text-center text-xs text-slate-500">
                 {error ? 'Attendance could not be loaded.' : 'No attendance records found.'}
               </td></tr>
-            ) : entries.map((entry) => (
+            ) : entries.map((entry) => {
+              const regularOvertimeApplication = getLatestOvertimeApplication(entry, 'REGULAR_OVERTIME')
+              const regularOvertimeApproved = regularOvertimeApplication?.status === 'APPROVED'
+              const regularOvertimeMinutes = regularOvertimeApproved
+                ? entry.approvedRegularOvertimeMinutes ?? 0
+                : entry.regularOvertimeMinutes ?? 0
+              const nightOvertimeApplication = getLatestOvertimeApplication(entry, 'NIGHT_DIFFERENTIAL_OVERTIME')
+              const nightOvertimeApproved = nightOvertimeApplication?.status === 'APPROVED'
+              const nightOvertimeMinutes = nightOvertimeApproved
+                ? entry.approvedNightDifferentialOvertimeMinutes ?? 0
+                : entry.nightDifferentialOvertimeMinutes ?? 0
+              const nightDifferentialMinutes = entry.nightDifferentialMinutes ?? 0
+
+              return (
               <tr key={`${entry.date}-${entry.timeIn ?? ''}-${entry.timeOut ?? ''}`}>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700">{formatDate(entry.date)}</td>
                 <td className={`whitespace-nowrap border-b border-slate-100 px-3 py-2 ${entry.isLate || entry.status === 'late' ? 'font-medium text-rose-700' : 'text-slate-700'}`}>
@@ -129,22 +149,25 @@ export default function RecentAttendanceTable({ entries, isLoading = false, erro
                   {formatMinutes(entry.excessMinutesBreak ?? 0)}
                 </td>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700" title="Potential overtime outside the 10:00 PM–6:00 AM night period">
-                  {formatMinutes(entry.overtimeRequestStatus === 'APPROVED' ? entry.approvedRegularOvertimeMinutes ?? 0 : entry.regularOvertimeMinutes ?? 0)}
-                  {entry.overtimeRequestStatus === 'APPROVED' ? ' approved'
-                    : entry.regularOvertimeHours !== undefined && entry.regularOvertimeMinutes ? ` (${entry.regularOvertimeHours.toFixed(2)}h potential)` : ''}
+                  {formatMinutes(regularOvertimeMinutes)}
+                  {regularOvertimeApproved
+                    ? regularOvertimeMinutes > 0 ? ' approved' : ''
+                    : entry.regularOvertimeHours !== undefined && entry.regularOvertimeMinutes
+                      ? ` (${entry.regularOvertimeHours.toFixed(2)}h potential)` : ''}
                 </td>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700" title="Night-differential minutes excluding night-differential overtime">
                   {formatMinutes(getNonOvertimeNightDifferentialMinutes(entry))}
                 </td>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700" title="Potential overtime overlapping 10:00 PM–6:00 AM; approval is separate">
-                  {formatMinutes(entry.overtimeRequestStatus === 'APPROVED' ? entry.approvedNightDifferentialOvertimeMinutes ?? 0 : entry.nightDifferentialOvertimeMinutes ?? 0)}
-                  {entry.overtimeRequestStatus === 'APPROVED' ? ' approved'
-                    : entry.nightDifferentialOvertimeHours !== undefined && entry.nightDifferentialOvertimeMinutes ? ` (${entry.nightDifferentialOvertimeHours.toFixed(2)}h potential)` : ''}
+                  {formatMinutes(nightOvertimeMinutes)}
+                  {nightOvertimeApproved
+                    ? nightOvertimeMinutes > 0 ? ' approved' : ''
+                    : entry.nightDifferentialOvertimeHours !== undefined && entry.nightDifferentialOvertimeMinutes
+                      ? ` (${entry.nightDifferentialOvertimeHours.toFixed(2)}h potential)` : ''}
                 </td>
-                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700" title="All hours worked from 10:00 PM to 6:00 AM, including scheduled hours">
-                  {formatMinutes(entry.overtimeRequestStatus === 'APPROVED' ? entry.approvedNightDifferentialMinutes ?? 0 : entry.nightDifferentialMinutes ?? 0)}
-                  {entry.overtimeRequestStatus === 'APPROVED' ? ' approved'
-                    : entry.nightDifferentialHours !== undefined && entry.nightDifferentialMinutes ? ` (${entry.nightDifferentialHours.toFixed(2)}h potential)` : ''}
+                <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 text-slate-700" title="Night-differential hours are calculated and approved automatically; no separate application is needed">
+                  {formatMinutes(nightDifferentialMinutes)}
+                  {nightDifferentialMinutes > 0 ? ' (automatic)' : ''}
                 </td>
                 <td className="whitespace-nowrap border-b border-slate-100 px-3 py-2 font-bold text-black" title={isUnderScheduledHours(entry) ? 'Below scheduled shift duration' : undefined}>
                   {formatHoursWorked(entry.minutesWorked)}
@@ -169,7 +192,8 @@ export default function RecentAttendanceTable({ entries, isLoading = false, erro
                   {!entry.overtimeApplications?.length && <span className="text-xs text-slate-400">No applications</span>}
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>

@@ -9,6 +9,8 @@ from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     CancelScheduleUploadBatchUseCase,
     GetScheduleUploadBatchInput,
     GetScheduleUploadBatchUseCase,
+    ListScheduleUploadBatchesInput,
+    ListScheduleUploadBatchesUseCase,
     PreviewScheduleUploadUseCase,
     RejectScheduleUploadBatchUseCase,
     ReviewScheduleUploadBatchInput,
@@ -32,6 +34,9 @@ from app.filemaintenance.schedule.domain.schedule_upload_exceptions import (
     ScheduleUploadRejectedFileError,
 )
 from app.filemaintenance.schedule.infrastructure.schedule_upload_csv import CsvScheduleUploadReader
+from app.filemaintenance.schedule.infrastructure.schedule_upload_router import (
+    _schedule_review_supervisor_id,
+)
 
 NOW = datetime(2026, 10, 20, 2, 0, tzinfo=timezone.utc)
 COMPANY_ID = uuid4()
@@ -66,6 +71,15 @@ class FakeScheduleUploadRepository:
         self.links: dict[int, UUID] = {}
         self.locked: set[UUID] = set()
         self.approval_required = True
+
+    def _visible_to_supervisor(self, batch, supervisor_employee_id):
+        if supervisor_employee_id is None:
+            return True
+        employee_ids = {employee.employee_id for employee in self.team}
+        return (
+            supervisor_employee_id == SUPERVISOR_ID
+            and all(row.employee_id in employee_ids for row in batch.rows)
+        )
 
     async def schedule_approval_required(self, company_ids):
         return self.approval_required
@@ -104,11 +118,18 @@ class FakeScheduleUploadRepository:
         )
         return batch_id
 
-    async def get_batch(self, batch_id, *, for_update=False):
-        return self.batches.get(batch_id)
+    async def get_batch(self, batch_id, *, for_update=False, supervisor_employee_id=None):
+        batch = self.batches.get(batch_id)
+        if batch is not None and not self._visible_to_supervisor(batch, supervisor_employee_id):
+            return None
+        return batch
 
-    async def list_batches(self, *, uploaded_by, status, limit):
-        return list(self.batches.values())[:limit]
+    async def list_batches(self, *, uploaded_by, supervisor_employee_id, status, limit):
+        batches = [
+            batch for batch in self.batches.values()
+            if self._visible_to_supervisor(batch, supervisor_employee_id)
+        ]
+        return batches[:limit]
 
     async def save_batch_review(self, batch):
         self.batches[batch.id] = batch
@@ -157,6 +178,21 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
     def _clock(self, now: datetime = NOW):
         return lambda: now
+
+    def test_schedule_review_scope_preserves_admin_and_scopes_multi_role_supervisors(self):
+        supervisor_id = uuid4()
+        self.assertEqual(
+            _schedule_review_supervisor_id({
+                "role": "admin",
+                "role_codes": ["HR_ADMIN", "SUPERVISOR"],
+                "employee_id": str(supervisor_id),
+            }),
+            supervisor_id,
+        )
+        self.assertIsNone(_schedule_review_supervisor_id({
+            "role": "admin",
+            "role_codes": ["SYSTEM_ADMIN"],
+        }))
 
     async def _submit(self, *lines: str) -> ScheduleUploadBatch:
         return await SubmitScheduleUploadUseCase(self.uow, self.reader, self._clock()).execute(_file(*lines))
@@ -304,6 +340,34 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         get = GetScheduleUploadBatchUseCase(self.uow)
 
         self.assertEqual((await get.execute(GetScheduleUploadBatchInput(batch.id, UPLOADER_ID))).id, batch.id)
+        self.assertEqual(
+            (await get.execute(GetScheduleUploadBatchInput(
+                batch.id, supervisor_employee_id=SUPERVISOR_ID,
+            ))).id,
+            batch.id,
+        )
+        with self.assertRaises(ScheduleUploadNotFoundError):
+            await get.execute(GetScheduleUploadBatchInput(
+                batch.id, supervisor_employee_id=uuid4(),
+            ))
+        self.assertEqual(
+            await ListScheduleUploadBatchesUseCase(self.uow).execute(
+                ListScheduleUploadBatchesInput(supervisor_employee_id=SUPERVISOR_ID)
+            ),
+            [batch],
+        )
+        self.assertEqual(
+            await ListScheduleUploadBatchesUseCase(self.uow).execute(
+                ListScheduleUploadBatchesInput(supervisor_employee_id=uuid4())
+            ),
+            [],
+        )
+        with self.assertRaises(ScheduleUploadNotFoundError):
+            await ApproveScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
+                ReviewScheduleUploadBatchInput(
+                    batch.id, APPROVER_ID, supervisor_employee_id=uuid4(),
+                )
+            )
         with self.assertRaises(ScheduleUploadNotFoundError):
             await get.execute(GetScheduleUploadBatchInput(batch.id, uuid4()))
         self.assertEqual((await get.execute(GetScheduleUploadBatchInput(batch.id))).id, batch.id)

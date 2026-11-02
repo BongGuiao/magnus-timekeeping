@@ -87,12 +87,14 @@ class EmployeeScheduleAssignmentApprovalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_creation_is_approved_by_creator_when_approval_is_disabled(self):
         session = FakeSession(approval_required=False)
+        payload = _assignment_payload()
+        payload["attendance_mode"] = "SCHEDULE_CREDITED"
         result = await CreateEmployeeScheduleAssignmentUseCase(
             FakeUnitOfWork(session)
-        ).execute(_assignment_payload())
+        ).execute(payload)
 
         self.assertEqual(result.status, "APPROVED")
-        self.assertEqual(result.attendance_mode, "PUNCH_REQUIRED")
+        self.assertEqual(result.attendance_mode, "SCHEDULE_CREDITED")
         self.assertEqual(result.approved_by, ACTOR_ID)
         self.assertIsNotNone(result.approved_at)
 

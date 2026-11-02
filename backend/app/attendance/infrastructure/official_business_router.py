@@ -13,6 +13,7 @@ from app.attendance.infrastructure.db_model import OfficialBusinessRequestModel
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.domain.entities.user import Role
+from app.auth.infrastructure.approval_scope import approval_supervisor_scope, has_supervisor_role
 from app.auth.infrastructure.db_model import UserModel
 from app.auth.infrastructure.dependencies import require_permission
 from app.core.generics.mapper import ResponseEnvelope
@@ -157,23 +158,12 @@ def _user_id(claims: dict) -> UUID:
 
 def _reviewer(claims: dict) -> tuple[UUID, bool, UUID | None]:
     actor_id = _user_id(claims)
-    is_admin = claims.get("role") == Role.ADMIN.value
-    try:
-        employee_id = (
-            UUID(str(claims["employee_id"]))
-            if claims.get("employee_id") is not None
-            else None
-        )
-    except (TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account is not linked to a supervisor employee profile.",
-        ) from error
-    if not is_admin and employee_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account is not linked to a supervisor employee profile.",
-        )
+    is_admin = claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims)
+    employee_id = approval_supervisor_scope(
+        claims,
+        is_admin=is_admin,
+        detail="This account is not linked to a supervisor employee profile.",
+    )
     return actor_id, is_admin, employee_id
 
 

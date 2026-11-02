@@ -137,13 +137,14 @@ class CreateEmployeeScheduleAssignmentUseCase(
                     payload["schedule_template_id"],
                 )
                 now = datetime.now(timezone.utc)
-                model = EmployeeScheduleAssignmentModel(
+                assignment_values = {
                     **payload,
-                    attendance_mode=payload.get("attendance_mode", "PUNCH_REQUIRED"),
-                    status="DRAFT" if approval_required else "APPROVED",
-                    approved_by=None if approval_required else payload["created_by"],
-                    approved_at=None if approval_required else now,
-                )
+                    "attendance_mode": payload.get("attendance_mode", "PUNCH_REQUIRED"),
+                    "status": "DRAFT" if approval_required else "APPROVED",
+                    "approved_by": None if approval_required else payload["created_by"],
+                    "approved_at": None if approval_required else now,
+                }
+                model = EmployeeScheduleAssignmentModel(**assignment_values)
                 uow.session.add(model)
                 await uow.session.flush()
                 await uow.session.refresh(model)

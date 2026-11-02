@@ -3,7 +3,7 @@ from datetime import date
 from typing import Any, Collection
 from uuid import UUID
 
-from sqlalchemy import insert, or_, select, update
+from sqlalchemy import exists, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.generics.uow import GenUnitOfWork
@@ -62,6 +62,29 @@ def _approved_assignment_conditions():
         EmployeeScheduleAssignmentModel.is_active.is_(True),
         EmployeeScheduleAssignmentModel.status == APPROVED_ASSIGNMENT_STATUS,
     )
+
+
+def _batch_employee_scope(supervisor_employee_id: UUID):
+    row = ScheduleUploadBatchRowModel
+    assignment = EmploymentAssignmentModel
+    employee_has_supervisor = exists(
+        select(assignment.id).where(
+            assignment.employee_id == row.employee_id,
+            assignment.supervisor_employee_id == supervisor_employee_id,
+            assignment.is_active.is_(True),
+            assignment.status == "ACTIVE",
+            assignment.effective_from <= row.effective_from,
+            or_(assignment.effective_to.is_(None), assignment.effective_to >= row.effective_from),
+            or_(assignment.separation_date.is_(None), assignment.separation_date >= row.effective_from),
+        )
+    )
+    batch_has_out_of_scope_employee = exists(
+        select(row.id).where(
+            row.batch_id == ScheduleUploadBatchModel.id,
+            ~employee_has_supervisor,
+        )
+    )
+    return ~batch_has_out_of_scope_employee
 
 
 class SqlAlchemyScheduleUploadRepository:
@@ -271,8 +294,16 @@ class SqlAlchemyScheduleUploadRepository:
             rows=rows,
         )
 
-    async def get_batch(self, batch_id: UUID, *, for_update: bool = False) -> ScheduleUploadBatch | None:
+    async def get_batch(
+        self,
+        batch_id: UUID,
+        *,
+        for_update: bool = False,
+        supervisor_employee_id: UUID | None = None,
+    ) -> ScheduleUploadBatch | None:
         query = self._batch_query().where(ScheduleUploadBatchModel.id == batch_id)
+        if supervisor_employee_id is not None:
+            query = query.where(_batch_employee_scope(supervisor_employee_id))
         if for_update:
             query = query.with_for_update(of=ScheduleUploadBatchModel)
         row = (await self._session.execute(query)).first()
@@ -307,12 +338,15 @@ class SqlAlchemyScheduleUploadRepository:
         self,
         *,
         uploaded_by: UUID | None,
+        supervisor_employee_id: UUID | None,
         status: ScheduleUploadBatchStatus | None,
         limit: int,
     ) -> list[ScheduleUploadBatch]:
         query = self._batch_query()
         if uploaded_by is not None:
             query = query.where(ScheduleUploadBatchModel.uploaded_by == uploaded_by)
+        if supervisor_employee_id is not None:
+            query = query.where(_batch_employee_scope(supervisor_employee_id))
         if status is not None:
             query = query.where(ScheduleUploadBatchModel.status == status.value)
         rows = await self._session.execute(

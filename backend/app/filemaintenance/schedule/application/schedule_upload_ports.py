@@ -58,12 +58,19 @@ class ScheduleUploadRepository(ScheduleUploadLookups, Protocol):
 
     async def add_batch(self, batch: NewScheduleUploadBatch) -> UUID: ...
 
-    async def get_batch(self, batch_id: UUID, *, for_update: bool = False) -> ScheduleUploadBatch | None: ...
+    async def get_batch(
+        self,
+        batch_id: UUID,
+        *,
+        for_update: bool = False,
+        supervisor_employee_id: UUID | None = None,
+    ) -> ScheduleUploadBatch | None: ...
 
     async def list_batches(
         self,
         *,
         uploaded_by: UUID | None,
+        supervisor_employee_id: UUID | None,
         status: ScheduleUploadBatchStatus | None,
         limit: int,
     ) -> list[ScheduleUploadBatch]: ...
