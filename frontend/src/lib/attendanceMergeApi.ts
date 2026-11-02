@@ -57,6 +57,7 @@ export async function createAttendanceMerge(payload: {
   source_attendance_ids: string[]
   schedule_template_id: string
   reason: string
+  verified_clock_out_at?: string | null
 }): Promise<CreateAttendanceMergeResult> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<CreateAttendanceMergeResult>>(

@@ -191,7 +191,12 @@ class PayrollCutoffReferenceError(ValueError):
 
 
 def _translate_integrity_error(error: IntegrityError) -> NoReturn:
-    constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+    original_error = error.orig
+    constraint_name = getattr(
+        getattr(original_error, "diag", None),
+        "constraint_name",
+        None,
+    ) or getattr(original_error, "constraint_name", None)
     if constraint_name in (
         "uq_cutoffs_payroll_group_code",
         "cutoffs_payroll_group_id_cutoff_code_key",

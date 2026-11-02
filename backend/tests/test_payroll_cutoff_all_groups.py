@@ -4,9 +4,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
+
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
     CreatePayrollCutoffsForCompanyUseCase,
+    PayrollCutoffConflictError,
     PayrollCutoffReferenceError,
+    _translate_integrity_error,
 )
 
 
@@ -107,6 +111,23 @@ class CreatePayrollCutoffsForCompanyTests(unittest.IsolatedAsyncioTestCase):
                 uuid4(), self._payload(),
             )
         self.assertTrue(uow.rolled_back)
+
+
+class PayrollCutoffIntegrityErrorTests(unittest.TestCase):
+    def test_asyncpg_duplicate_code_is_translated_to_conflict(self):
+        error = IntegrityError(
+            "INSERT INTO payroll.cutoffs ...",
+            {},
+            SimpleNamespace(
+                constraint_name="cutoffs_payroll_group_id_cutoff_code_key",
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            PayrollCutoffConflictError,
+            "A cutoff with this code already exists",
+        ):
+            _translate_integrity_error(error)
 
 
 if __name__ == "__main__":

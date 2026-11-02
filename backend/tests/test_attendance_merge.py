@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.attendance.infrastructure.attendance_merge_router import (
     BREAK_FIELDS,
+    CreateAttendanceMergeRequest,
     _apply_schedule_calculations,
     _break_values,
     _merged_punches,
@@ -65,6 +66,65 @@ class AttendanceMergeTests(unittest.TestCase):
             _merged_punches([source(clock_in_at=datetime(2026, 11, 2, 8, 0, tzinfo=MANILA))])
 
         self.assertEqual(raised.exception.status_code, 409)
+
+    def test_merge_rejects_latest_sequence_without_clock_out(self) -> None:
+        first = source(
+            clock_in_at=datetime(2026, 11, 2, 8, 0, tzinfo=MANILA),
+            clock_out_at=datetime(2026, 11, 2, 16, 0, tzinfo=MANILA),
+        )
+        last = source(
+            clock_in_at=datetime(2026, 11, 2, 16, 30, tzinfo=MANILA),
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            _merged_punches([first, last])
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("latest source sequence", raised.exception.detail)
+
+    def test_merge_uses_hr_verified_clock_out_when_latest_sequence_is_missing_one(self) -> None:
+        first = source(
+            clock_in_at=datetime(2020, 11, 2, 8, 0, tzinfo=MANILA),
+            clock_out_at=datetime(2020, 11, 2, 16, 0, tzinfo=MANILA),
+        )
+        last = source(
+            clock_in_at=datetime(2020, 11, 2, 16, 30, tzinfo=MANILA),
+        )
+        verified_clock_out = datetime(2020, 11, 2, 18, 0, tzinfo=MANILA)
+
+        actual_in, actual_out = _merged_punches(
+            [first, last],
+            verified_clock_out_at=verified_clock_out,
+        )
+
+        self.assertEqual(actual_in, first.clock_in_at)
+        self.assertEqual(actual_out, verified_clock_out)
+        self.assertIsNone(last.clock_out_at)
+
+    def test_merge_rejects_verified_clock_out_before_latest_sequence(self) -> None:
+        latest_in = datetime(2020, 11, 2, 16, 30, tzinfo=MANILA)
+        with self.assertRaises(HTTPException) as raised:
+            _merged_punches(
+                [
+                    source(
+                        clock_in_at=datetime(2020, 11, 2, 8, 0, tzinfo=MANILA),
+                        clock_out_at=datetime(2020, 11, 2, 16, 0, tzinfo=MANILA),
+                    ),
+                    source(clock_in_at=latest_in),
+                ],
+                verified_clock_out_at=datetime(2020, 11, 2, 16, 0, tzinfo=MANILA),
+            )
+
+        self.assertEqual(raised.exception.status_code, 422)
+
+    def test_merge_request_requires_timezone_on_verified_clock_out(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must include a timezone"):
+            CreateAttendanceMergeRequest(
+                source_attendance_ids=[uuid4(), uuid4()],
+                schedule_template_id=uuid4(),
+                reason="Verified punch records",
+                verified_clock_out_at=datetime(2020, 11, 2, 18, 0),
+            )
 
     def test_merge_rejects_conflicting_break_punches(self) -> None:
         first = source(meal_break_out_at=datetime(2026, 11, 2, 12, 0, tzinfo=MANILA))

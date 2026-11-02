@@ -97,11 +97,11 @@ function rethrowApiError(error: unknown, fallback: string): never {
         ? validationMessages.join('; ')
         : fallback
     if (status && status >= 500) {
-      throw new Error(
-        `${message} (HTTP ${status}). Check the backend logs and confirm ` +
-        '`payroll.employee_cutoff_results` includes `official_business_minutes`; ' +
-        'apply `backend/sql/20261014_add_official_business_minutes_to_employee_cutoff_results.sql` if needed.',
-      )
+      const diagnosis = typeof detail === 'string'
+        && detail.toLowerCase().includes('official_business_minutes')
+        ? 'Confirm `payroll.employee_cutoff_results` includes `official_business_minutes`; apply `backend/sql/20261014_add_official_business_minutes_to_employee_cutoff_results.sql` if the column is missing.'
+        : 'Check the backend logs for the server error.'
+      throw new Error(`${message} (HTTP ${status}). ${diagnosis}`)
     }
     if (status) {
       throw new Error(`${message} (HTTP ${status}).`)

@@ -65,6 +65,7 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [templates, setTemplates] = useState<AttendanceMergeScheduleTemplate[]>([])
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [verifiedClockOut, setVerifiedClockOut] = useState('')
   const [reason, setReason] = useState('')
   const [mergeError, setMergeError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -82,6 +83,18 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
   const selectedGroupKey = selectedRecords.length
     ? `${selectedRecords[0].employee_no}:${selectedRecords[0].work_date}`
     : null
+  const selectedRecordsWithClockIn = selectedRecords.flatMap((record) => (
+    record.clock_in_at
+      ? [{ record, clockInTimestamp: Date.parse(record.clock_in_at) }]
+      : []
+  ))
+  const latestSelectedClockIn = selectedRecordsWithClockIn.length
+    ? Math.max(...selectedRecordsWithClockIn.map(({ clockInTimestamp }) => clockInTimestamp))
+    : null
+  const requiresVerifiedClockOut = latestSelectedClockIn !== null
+    && selectedRecordsWithClockIn.some(
+      ({ record, clockInTimestamp }) => clockInTimestamp === latestSelectedClockIn && !record.clock_out_at,
+    )
 
   useEffect(() => {
     let isCurrent = true
@@ -141,6 +154,7 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
       const options = await fetchMergeScheduleTemplates(selectedIds[0])
       setTemplates(options)
       setSelectedTemplateId(options[0]?.id ?? '')
+      setVerifiedClockOut('')
       setIsDialogOpen(true)
     } catch (cause) {
       setMergeError(cause instanceof Error ? cause.message : 'Could not load schedules for this attendance date.')
@@ -159,12 +173,16 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
         source_attendance_ids: selectedIds,
         schedule_template_id: selectedTemplateId,
         reason: reason.trim(),
+        verified_clock_out_at: requiresVerifiedClockOut && verifiedClockOut
+          ? `${verifiedClockOut}:00+08:00`
+          : null,
       })
       setNotice(
         `Canonical attendance created for ${result.work_date}: ${formatTime(result.clock_in_at)}–${formatTime(result.clock_out_at)} using ${result.schedule_code}.`,
       )
       setSelectedIds([])
       setIsDialogOpen(false)
+      setVerifiedClockOut('')
       setReason('')
       setQuery((current) => ({ ...current }))
     } catch (cause) {
@@ -312,6 +330,25 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
               <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">
                 Verify the source punches. The result uses the earliest clock-in and latest clock-out.
               </p>
+              {requiresVerifiedClockOut && (
+                <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <p className="text-sm text-amber-900">
+                    The latest selected sequence has no clock-out. Enter the employee’s verified actual clock-out; the original punch records will remain unchanged and this value will be included in the merge audit.
+                  </p>
+                  <label className="block text-sm font-medium text-slate-700">
+                    HR-verified clock-out (Philippine time)
+                    <input
+                      required
+                      type="datetime-local"
+                      step={60}
+                      value={verifiedClockOut}
+                      onChange={(event) => setVerifiedClockOut(event.target.value)}
+                      disabled={mergeLoading}
+                      className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                    />
+                  </label>
+                </div>
+              )}
               <label className="block text-sm font-medium text-slate-700">
                 Schedule for this work date
                 <select required value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)} disabled={templates.length === 0 || mergeLoading} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2">
@@ -327,7 +364,7 @@ function AttendanceMergeManagement({ employeeName, onNavigate, onLoggedOut }: Pr
               {mergeError && <p role="alert" className="text-sm text-rose-700">{mergeError}</p>}
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setIsDialogOpen(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
-                <button type="submit" disabled={mergeLoading || !selectedTemplateId || !reason.trim() || templates.length === 0} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50">
+                <button type="submit" disabled={mergeLoading || !selectedTemplateId || !reason.trim() || templates.length === 0 || (requiresVerifiedClockOut && !verifiedClockOut)} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50">
                   {mergeLoading ? 'Creating…' : 'Create canonical record'}
                 </button>
               </div>

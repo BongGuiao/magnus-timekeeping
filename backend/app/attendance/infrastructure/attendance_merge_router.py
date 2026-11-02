@@ -4,7 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import exists, or_, select
 
 from app.attendance.application.use_case import (
@@ -64,6 +64,17 @@ class CreateAttendanceMergeRequest(BaseModel):
     source_attendance_ids: list[UUID] = Field(min_length=2, max_length=10)
     schedule_template_id: UUID
     reason: str = Field(min_length=1, max_length=MAX_REASON_LENGTH)
+    verified_clock_out_at: datetime | None = None
+
+    @field_validator("verified_clock_out_at")
+    @classmethod
+    def require_timezone_for_verified_clock_out(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("The verified clock-out must include a timezone.")
+        return value
 
 
 class AttendanceMergeSourceAudit(BaseModel):
@@ -233,22 +244,67 @@ def _effective_punch(record: AttendanceModel, field: str) -> datetime | None:
     return corrected or getattr(record, field)
 
 
-def _merged_punches(records: list[AttendanceModel]) -> tuple[datetime, datetime]:
+def _merged_punches(
+    records: list[AttendanceModel],
+    verified_clock_out_at: datetime | None = None,
+) -> tuple[datetime, datetime]:
     starts = [
-        punch for record in records
+        (record, punch)
+        for record in records
         if (punch := _effective_punch(record, "clock_in_at")) is not None
     ]
     ends = [
         punch for record in records
         if (punch := _effective_punch(record, "clock_out_at")) is not None
     ]
-    if not starts or not ends:
+    if not starts:
         raise HTTPException(
             status_code=409,
             detail="The source records must collectively contain a clock-in and a clock-out.",
         )
-    actual_start = min(starts, key=to_utc)
-    actual_end = max(ends, key=to_utc)
+    latest_start_at = max((punch for _, punch in starts), key=to_utc)
+    latest_sequences = [
+        record
+        for record, punch in starts
+        if to_utc(punch) == to_utc(latest_start_at)
+    ]
+    latest_sequence_missing_clock_out = any(
+        _effective_punch(record, "clock_out_at") is None
+        for record in latest_sequences
+    )
+    if latest_sequence_missing_clock_out and verified_clock_out_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Enter the HR-verified actual clock-out for the latest source sequence before merging.",
+        )
+    if not latest_sequence_missing_clock_out and verified_clock_out_at is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="A verified clock-out may only be supplied when the latest source sequence is missing one.",
+        )
+    if not ends:
+        if verified_clock_out_at is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The source records must collectively contain a clock-in and a clock-out.",
+            )
+    if verified_clock_out_at is not None:
+        if verified_clock_out_at.tzinfo is None or verified_clock_out_at.utcoffset() is None:
+            raise HTTPException(status_code=422, detail="The verified clock-out must include a timezone.")
+        if to_utc(verified_clock_out_at) <= to_utc(latest_start_at):
+            raise HTTPException(
+                status_code=422,
+                detail="The verified clock-out must be after the latest source clock-in.",
+            )
+        if to_utc(verified_clock_out_at) > datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="The verified clock-out cannot be in the future.")
+        if ends and to_utc(verified_clock_out_at) < max(map(to_utc, ends)):
+            raise HTTPException(
+                status_code=422,
+                detail="The verified clock-out cannot be earlier than another recorded source clock-out.",
+            )
+    actual_start = min((punch for _, punch in starts), key=to_utc)
+    actual_end = verified_clock_out_at or max(ends, key=to_utc)
     if to_utc(actual_end) <= to_utc(actual_start):
         raise HTTPException(
             status_code=409,
@@ -567,7 +623,10 @@ async def create_attendance_merge(
                 detail="Source attendance has an overtime application. Resolve it before merging.",
             )
 
-        actual_start, actual_end = _merged_punches(sources)
+        actual_start, actual_end = _merged_punches(
+            sources,
+            payload.verified_clock_out_at,
+        )
 
         template, segments = await _active_schedule_template(
             session, employee_id, work_date, payload.schedule_template_id,
@@ -578,6 +637,11 @@ async def create_attendance_merge(
             "attendance_merge": {
                 "merge_id": str(merge_id),
                 "source_attendance_ids": [str(source_id) for source_id in source_ids],
+                **(
+                    {"hr_verified_clock_out_at": payload.verified_clock_out_at.isoformat()}
+                    if payload.verified_clock_out_at is not None
+                    else {}
+                ),
             }
         }
         canonical = AttendanceModel(
@@ -607,6 +671,11 @@ async def create_attendance_merge(
             "night_differential_overtime_minutes": canonical.night_differential_overtime_minutes,
             "total_overtime_minutes": canonical.calculated_ot_minutes,
             "night_differential_minutes": canonical.night_differential_minutes,
+            **(
+                {"hr_verified_clock_out_at": payload.verified_clock_out_at.isoformat()}
+                if payload.verified_clock_out_at is not None
+                else {}
+            ),
         }
         session.add(canonical)
         await session.flush()

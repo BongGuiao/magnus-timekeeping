@@ -767,6 +767,12 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                   </dl>
                   <div className="rounded-md bg-slate-50 p-3">
                     <h3 className="font-semibold text-slate-900">Calculation snapshot at merge</h3>
+                    {typeof audit.calculation_snapshot.hr_verified_clock_out_at === 'string' && (
+                      <p>
+                        HR-verified missing clock-out:{' '}
+                        {formatAuditDateTime(audit.calculation_snapshot.hr_verified_clock_out_at)}
+                      </p>
+                    )}
                     <p>
                       Expected: {formatTime(String(audit.calculation_snapshot.expected_clock_in_at))}
                       {' – '}
