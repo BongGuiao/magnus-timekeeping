@@ -32,6 +32,7 @@ export interface AttendanceReportOfficialBusiness {
 
 export interface AttendanceDetailReportRecord {
   attendance_id: string | null
+  is_merge_result: boolean
   employee_no: string
   employee_name: string
   work_date: string

@@ -16,6 +16,7 @@ from app.attendance.application.use_case import (
     calculate_overtime_breakdown,
 )
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
@@ -263,6 +264,7 @@ async def _recalculate_attendance_for_emergency_schedule(
         .where(
             AttendanceModel.user_id == request.requested_by,
             AttendanceModel.work_date == request.work_date,
+            not_merged_source(),
         )
         .with_for_update()
     )
@@ -527,6 +529,7 @@ class SubmitEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
                 select(AttendanceModel.id).where(
                     AttendanceModel.user_id == data.user_id,
                     AttendanceModel.work_date == data.work_date,
+                    not_merged_source(),
                 )
             )
             if is_retroactive and attendance_id is None:
@@ -718,6 +721,7 @@ class ReviewEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
                         select(AttendanceModel.id).where(
                             AttendanceModel.user_id == request.requested_by,
                             AttendanceModel.work_date == request.work_date,
+                            not_merged_source(),
                         )
                     )
                     if attendance_id is not None:

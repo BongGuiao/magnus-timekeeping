@@ -24,6 +24,7 @@ from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
     CalculateEmployeeCutoffResultsUseCase,
     CreatePayrollCutoffUseCase,
+    CreatePayrollCutoffsForCompanyUseCase,
     GetPayrollCutoffUseCase,
     ListPayrollCutoffsUseCase,
     PayrollCutoffConflictError,
@@ -37,6 +38,7 @@ from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result 
 from app.filemaintenance.payroll_cutoffs.infrastructure.dependencies import (
     get_calculate_employee_cutoff_results_use_case,
     get_create_payroll_cutoff_use_case,
+    get_create_payroll_cutoffs_for_company_use_case,
     get_get_payroll_cutoff_use_case,
     get_list_payroll_cutoffs_use_case,
     get_update_payroll_cutoff_use_case,
@@ -54,8 +56,7 @@ acknowledgement_router = APIRouter(
 )
 
 
-class CreatePayrollCutoffSchema(BaseModel):
-    payroll_group_id: UUID
+class PayrollCutoffFieldsSchema(BaseModel):
     cutoff_code: str = Field(min_length=1, max_length=50)
     cutoff_half: Literal["FIRST_HALF", "SECOND_HALF"] | None = None
     period_start: date
@@ -71,7 +72,7 @@ class CreatePayrollCutoffSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def validate_period(self) -> CreatePayrollCutoffSchema:
+    def validate_period(self) -> PayrollCutoffFieldsSchema:
         if self.period_end < self.period_start:
             raise ValueError("period_end must be on or after period_start.")
         validate_cutoff_deadlines(
@@ -80,6 +81,14 @@ class CreatePayrollCutoffSchema(BaseModel):
         if self.status.upper() == "LOCKED":
             raise ValueError("Payroll cutoffs can only be locked through payroll approval.")
         return self
+
+
+class CreatePayrollCutoffSchema(PayrollCutoffFieldsSchema):
+    payroll_group_id: UUID
+
+
+class CreatePayrollCutoffsForCompanySchema(PayrollCutoffFieldsSchema):
+    company_id: UUID
 
 
 class UpdatePayrollCutoffSchema(BaseModel):
@@ -187,6 +196,47 @@ async def create_payroll_cutoff(
         after=result,
     )
     return ResponseEnvelope(status="success", data=result)
+
+
+@router.post(
+    "/create-for-company",
+    response_model=ResponseEnvelope[list[PayrollCutoffEntity]],
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_payroll_cutoffs_for_company(
+    payload: CreatePayrollCutoffsForCompanySchema,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: CreatePayrollCutoffsForCompanyUseCase = Depends(
+        get_create_payroll_cutoffs_for_company_use_case
+    ),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    _require_admin(claims)
+    values = stamp_audit_fields(
+        payload.model_dump(mode="python", exclude={"company_id"}),
+        actor_id,
+        creating=True,
+    )
+    try:
+        results = await use_case.execute(payload.company_id, values)
+    except (PayrollCutoffConflictError, PayrollCutoffReferenceError) as error:
+        _raise_constraint_http_error(error)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+    for result in results:
+        await log_entity_action(
+            es_client,
+            user_id=actor_id,
+            action="CREATE",
+            resource="payroll_cutoff",
+            resource_id=result.id,
+            after=result,
+        )
+    return ResponseEnvelope(status="success", data=results)
 
 
 @router.put(

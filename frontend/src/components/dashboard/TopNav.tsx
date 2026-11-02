@@ -12,6 +12,7 @@ import {
   ClipboardCheck,
   FileClock,
   Gift,
+  GitMerge,
   Landmark,
   LayoutDashboard,
   MapPin,
@@ -45,6 +46,7 @@ export type NavView =
   | 'dashboard'
   | 'enrollment'
   | 'attendance'
+  | 'attendance-merge-management'
   | 'attendance-detail-report'
   | 'attendance-org-unit-summary'
   | 'attendance-recalculation'
@@ -143,6 +145,7 @@ interface NavLink {
   label: string
   view?: NavView
   permission?: string | string[]
+  requiredRoleCode?: string
   adminOnly?: boolean
   hasDropdown?: boolean
   children?: NavLink[]
@@ -151,6 +154,7 @@ interface NavLink {
 const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   dashboard: LayoutDashboard,
   attendance: ClipboardCheck,
+  'attendance-merge-management': GitMerge,
   'attendance-detail-report': ChartColumn,
   'attendance-org-unit-summary': ChartColumn,
   'attendance-recalculation': RefreshCw,
@@ -218,6 +222,12 @@ const navLinks: NavLink[] = [
         label: 'Attendance',
         view: 'attendance',
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      },
+      {
+        label: 'Attendance Merge',
+        view: 'attendance-merge-management',
+        permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
+        requiredRoleCode: 'HR_ADMIN',
       },
       {
         label: 'Attendance Recalculation',
@@ -433,6 +443,10 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const isCompanyContextView = companyContextViews.includes(activeView)
   const filterByPermission = (link: NavLink): NavLink | null => {
     if (link.adminOnly && !isAdmin) return null
+    if (
+      link.requiredRoleCode
+      && !roleCodes.some((availableRoleCode) => availableRoleCode.trim().toUpperCase() === link.requiredRoleCode)
+    ) return null
     if (typeof link.permission === 'string' && !hasPermission(link.permission)) return null
     if (Array.isArray(link.permission) && !hasAnyPermission(link.permission)) return null
     const children = link.children?.map(filterByPermission).filter((child): child is NavLink => child !== null)

@@ -28,6 +28,7 @@ from app.attendance.domain.offline import (
 )
 from app.attendance.infrastructure.authorized_location_repository import SqlAlchemyAuthorizedLocationRepository
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.offline_models import OfflinePermitModel, OfflinePunchEventModel
 from app.auth.infrastructure.db_model import UserModel
 from app.core.config import settings
@@ -254,7 +255,8 @@ class SqlAlchemyOfflineAttendanceGateway:
         circle_ok = any(circle_contains(fence, payload["latitude"], payload["longitude"], payload["accuracy"]) for fence in fences)
         if not circle_ok and not any(fence["shape"] == "POLYGON" for fence in fences):
             raise ValueError("The captured GPS reading is outside the authorized boundary.")
-        latest = await session.scalar(select(AttendanceModel).where(AttendanceModel.user_id == user.id)
+        latest = await session.scalar(select(AttendanceModel).where(
+                                      AttendanceModel.user_id == user.id, not_merged_source())
                                       .order_by(AttendanceModel.clock_in_at.desc().nullslast()).limit(1))
         last_punch = get_last_punch_time(latest) if latest else None
         expected = parse_instant(payload["previous_at"]) if payload.get("previous_at") else None
@@ -317,7 +319,8 @@ class SqlAlchemyOfflineAttendanceGateway:
                 punch_metadata=metadata,
             ))
         await session.flush()
-        record = await session.scalar(select(AttendanceModel).where(AttendanceModel.user_id == user.id)
+        record = await session.scalar(select(AttendanceModel).where(
+                                      AttendanceModel.user_id == user.id, not_merged_source())
                                       .order_by(AttendanceModel.clock_in_at.desc().nullslast()).limit(1))
         event.attendance_id = record.id if record else None
         event.status, event.reason, event.encrypted_photo = "ACCEPTED", None, None

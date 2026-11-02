@@ -164,6 +164,60 @@ class AttendanceModel(Base):
     )
 
 
+class AttendanceMergeModel(Base):
+    __tablename__ = "attendance_merges"
+    __table_args__ = (
+        UniqueConstraint("canonical_attendance_id", name="uq_attendance_merges_canonical"),
+        UniqueConstraint("employee_id", "work_date", name="uq_attendance_merges_employee_date"),
+        {"schema": "attendance"},
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"),
+    )
+    canonical_attendance_id: Mapped[UUID] = mapped_column(
+        ForeignKey("attendance.attendance_records.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    employee_id: Mapped[UUID] = mapped_column(
+        ForeignKey("hr.employees.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    work_date: Mapped[date] = mapped_column(Date, nullable=False)
+    schedule_template_id: Mapped[UUID] = mapped_column(
+        ForeignKey("schedule.schedule_templates.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    canonical_clock_in_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_clock_out_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    calculation_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    merged_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("identity.users.id", ondelete="SET NULL"), nullable=True,
+    )
+    merged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AttendanceMergeSourceModel(Base):
+    __tablename__ = "attendance_merge_sources"
+    __table_args__ = (
+        UniqueConstraint("source_attendance_id", name="uq_attendance_merge_sources_source"),
+        {"schema": "attendance"},
+    )
+
+    merge_id: Mapped[UUID] = mapped_column(
+        ForeignKey("attendance.attendance_merges.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    source_attendance_id: Mapped[UUID] = mapped_column(
+        ForeignKey("attendance.attendance_records.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    source_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
 class OvertimeApplicationModel(Base):
     __tablename__ = "overtime_applications"
     __table_args__ = (

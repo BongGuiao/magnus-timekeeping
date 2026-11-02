@@ -19,6 +19,7 @@ from app.attendance.infrastructure.db_model import (
     OvertimeApplicationModel,
     PunchExceptionModel,
 )
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.mapper import GenericMapper
 from app.core.generics.uc_base import BaseUseCase
@@ -306,6 +307,7 @@ async def _unworked_holiday_facts(
                     AttendanceModel.work_date >= window_start,
                     AttendanceModel.work_date <= window_end,
                     AttendanceModel.record_status == "VALID",
+                    not_merged_source(),
                     AttendanceModel.is_absent.is_(False),
                 )
             )
@@ -482,6 +484,53 @@ class CreatePayrollCutoffUseCase(BaseUseCase[PayrollCutoffEntity]):
             async with self.uow as uow:
                 repo = uow.get_repo(PayrollCutoffEntity, PayrollCutoffModel)
                 return await repo.add(payload)
+        except IntegrityError as error:
+            _translate_integrity_error(error)
+
+
+class CreatePayrollCutoffsForCompanyUseCase(BaseUseCase[list[PayrollCutoffEntity]]):
+    def __init__(self, uow: GenUnitOfWork):
+        self.uow = uow
+
+    async def _execute(
+        self,
+        company_id: UUID,
+        payload: dict[str, Any],
+    ) -> list[PayrollCutoffEntity]:
+        _validate_period(payload["period_start"], payload["period_end"])
+        validate_cutoff_deadlines(
+            payload["period_end"],
+            payload.get("attendance_deadline"),
+            payload.get("employee_filing_deadline"),
+        )
+        try:
+            async with self.uow as uow:
+                groups = (
+                    await uow.session.scalars(
+                        select(PayrollGroupModel)
+                        .where(
+                            PayrollGroupModel.company_id == company_id,
+                            PayrollGroupModel.is_active.is_(True),
+                            PayrollGroupModel.status == "ACTIVE",
+                        )
+                        .order_by(PayrollGroupModel.payroll_group_code)
+                    )
+                ).all()
+                if not groups:
+                    raise PayrollCutoffReferenceError(
+                        "No active payroll groups were found for this company."
+                    )
+
+                repository = uow.get_repo(PayrollCutoffEntity, PayrollCutoffModel)
+                return [
+                    await repository.add(
+                        PayrollCutoffEntity(
+                            **payload,
+                            payroll_group_id=group.id,
+                        )
+                    )
+                    for group in groups
+                ]
         except IntegrityError as error:
             _translate_integrity_error(error)
 
@@ -907,6 +956,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                         AttendanceModel.work_date >= cutoff.period_start,
                         AttendanceModel.work_date <= cutoff.period_end,
                         AttendanceModel.record_status == "VALID",
+                        not_merged_source(),
                     )
                 )
                 attendance_facts = [

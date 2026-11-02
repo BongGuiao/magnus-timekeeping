@@ -16,6 +16,7 @@ from app.attendance.application.correction_calculation import recalculate_correc
 from app.attendance.domain.entities.overtime import OvertimeAttendance
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.entity_mapping import copy_fields
 from app.attendance.infrastructure.overtime_adapters import queue_recent_attendance_refresh
 from app.auth.infrastructure.db_model import UserModel
@@ -137,6 +138,7 @@ def _team(supervisor_id: UUID, employee_column):
 async def _attendance(session: AsyncSession, user_id: UUID, work_date: date) -> AttendanceModel | None:
     records = (await session.scalars(select(AttendanceModel).where(
         AttendanceModel.user_id == user_id, AttendanceModel.work_date == work_date,
+        not_merged_source(),
     ).with_for_update())).all()
     if len(records) > 1:
         raise HTTPException(status_code=409, detail="Duplicate attendance records exist for this date; contact HR.")

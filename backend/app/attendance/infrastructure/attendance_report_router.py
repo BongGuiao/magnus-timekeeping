@@ -14,10 +14,12 @@ from app.attendance.domain.worked_minutes import (
     shift_coverage,
 )
 from app.attendance.infrastructure.db_model import (
+    AttendanceMergeModel,
     AttendanceModel,
     OfficialBusinessRequestModel,
     OvertimeApplicationModel,
 )
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.application.correction_finalization import require_resolved_punches
 from app.auth.infrastructure.db_model import UserModel
@@ -169,6 +171,7 @@ class AttendanceReportOfficialBusiness(BaseModel):
 
 class AttendanceDetailReportRecord(BaseModel):
     attendance_id: UUID | None
+    is_merge_result: bool = False
     employee_no: str
     employee_name: str
     work_date: date
@@ -553,6 +556,7 @@ async def get_attendance_summary_by_org_unit(
                     AttendanceModel.work_date >= from_date,
                     AttendanceModel.work_date <= to_date,
                     AttendanceModel.record_status == "VALID",
+                    not_merged_source(),
                     UserModel.employee_id.is_not(None),
                 )
             )
@@ -930,6 +934,7 @@ async def get_attendance_detail_report(
                 AttendanceModel.work_date >= from_date,
                 AttendanceModel.work_date <= to_date,
                 AttendanceModel.record_status == "VALID",
+                not_merged_source(),
             )
             .order_by(EmployeeModel.employee_no, AttendanceModel.work_date)
             .limit(MAX_REPORT_ROWS + 1)
@@ -975,6 +980,15 @@ async def get_attendance_detail_report(
             )
 
         attendance_ids = [attendance.id for attendance, _, _, _ in rows]
+        merge_canonical_ids = set(
+            (
+                await session.scalars(
+                    select(AttendanceMergeModel.canonical_attendance_id).where(
+                        AttendanceMergeModel.canonical_attendance_id.in_(attendance_ids)
+                    )
+                )
+            ).all()
+        ) if attendance_ids else set()
         employees_by_id = {employee.id: employee for _, employee, _, _ in rows}
         schedule_assignments = (
             await session.execute(
@@ -1344,6 +1358,7 @@ async def get_attendance_detail_report(
         report_records = [
             AttendanceDetailReportRecord(
                     attendance_id=attendance.id,
+                    is_merge_result=attendance.id in merge_canonical_ids,
                     employee_no=employee.employee_no,
                     employee_name=_employee_name(employee),
                     work_date=attendance.work_date,
@@ -1472,6 +1487,7 @@ async def get_attendance_detail_report(
                 report_records.append(
                     AttendanceDetailReportRecord(
                         attendance_id=None,
+                        is_merge_result=False,
                         employee_no=employee.employee_no,
                         employee_name=_employee_name(employee),
                         work_date=work_date,

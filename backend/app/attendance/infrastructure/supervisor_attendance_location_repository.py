@@ -14,6 +14,7 @@ from app.attendance.domain.entities.supervisor_attendance_location import (
     attendance_punch_locations,
 )
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 
@@ -146,6 +147,7 @@ class SqlAlchemySupervisorAttendanceLocationRepository:
                     user.c.is_active.is_(True),
                     user.c.account_status == "ACTIVE",
                     attendance.c.work_date == query.work_date,
+                    not_merged_source(),
                     assignment.c.company_id == query.company_id,
                     *_active_team_assignment_conditions(query.supervisor_employee_id, current_date),
                 )

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import init_db_models
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.domain.worked_minutes import net_worked_minutes
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.devices.infrastructure.db_model import DeviceModel
@@ -237,6 +238,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             .join(current_cutoff, current_cutoff.c.employee_id == UserModel.employee_id)
             .where(
                 AttendanceModel.record_status == "VALID",
+                not_merged_source(),
                 AttendanceModel.work_date >= current_cutoff.c.period_start,
             )
         )
@@ -261,6 +263,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             )
             .where(
                 AttendanceModel.record_status == "VALID",
+                not_merged_source(),
                 AttendanceModel.work_date >= month_start,
                 AttendanceModel.work_date <= today,
                 AttendanceModel.is_absent.is_(True),
@@ -282,6 +285,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
             AttendanceModel.punch_metadata,
         ).where(
             AttendanceModel.record_status == "VALID",
+            not_merged_source(),
             AttendanceModel.work_date >= week_start,
             AttendanceModel.work_date <= today,
         )

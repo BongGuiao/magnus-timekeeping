@@ -15,6 +15,7 @@ from app.attendance.domain.entities.overtime import (
 )
 from app.attendance.domain.overtime_rules import OPEN_APPLICATION_STATUSES
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.entity_mapping import copy_fields as _copy_fields
 from app.attendance.infrastructure.entity_mapping import to_attendance_employee as _employee
 from app.auth.infrastructure.db_model import UserModel
@@ -182,6 +183,7 @@ class SqlAlchemyOvertimeRepository:
                 .where(
                     AttendanceModel.user_id == user_id,
                     AttendanceModel.record_status == "VALID",
+                    not_merged_source(),
                     AttendanceModel.work_date >= period_start,
                     AttendanceModel.work_date <= period_end,
                     func.coalesce(AttendanceModel.corrected_clock_in_at, AttendanceModel.clock_in_at).is_not(None),
@@ -209,6 +211,7 @@ class SqlAlchemyOvertimeRepository:
                 AttendanceModel.work_date >= from_date,
                 AttendanceModel.work_date <= to_date,
                 AttendanceModel.record_status == "VALID",
+                not_merged_source(),
             )
             .order_by(AttendanceModel.work_date, AttendanceModel.created_at, AttendanceModel.id)
         )
@@ -257,6 +260,7 @@ class SqlAlchemyOvertimeRepository:
                     AttendanceModel.id == attendance_id,
                     AttendanceModel.user_id == user_id,
                     AttendanceModel.record_status == "VALID",
+                    not_merged_source(),
                     or_(
                         AttendanceModel.corrected_clock_out_at.is_not(None),
                         AttendanceModel.clock_out_at.is_not(None),

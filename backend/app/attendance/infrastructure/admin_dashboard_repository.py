@@ -12,6 +12,7 @@ from app.attendance.domain.entities.admin_dashboard import (
 )
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
@@ -97,6 +98,7 @@ class SqlAlchemyAdminDashboardRepository:
                         EmploymentAssignmentModel.separation_date >= today,
                     ),
                     AttendanceModel.record_status == "VALID",
+                    not_merged_source(),
                     AttendanceModel.work_date >= month_start,
                     AttendanceModel.work_date <= today,
                 )
@@ -193,6 +195,7 @@ class SqlAlchemyAdminDashboardRepository:
             UserModel.is_active.is_(True),
             UserModel.account_status == "ACTIVE",
             AttendanceModel.record_status == "VALID",
+            not_merged_source(),
             AttendanceModel.work_date >= week_start,
             AttendanceModel.work_date <= today,
         ]

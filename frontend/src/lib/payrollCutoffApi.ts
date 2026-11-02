@@ -131,6 +131,21 @@ export async function createPayrollCutoff(payload: PayrollCutoffPayload): Promis
   }
 }
 
+export async function createPayrollCutoffsForCompany(
+  companyId: string,
+  payload: Omit<PayrollCutoffPayload, 'payroll_group_id'>,
+): Promise<PayrollCutoff[]> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<PayrollCutoff[]>>(
+      '/payroll-cutoffs/create-for-company',
+      { ...payload, company_id: companyId },
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not create payroll cutoffs for all groups.')
+  }
+}
+
 export async function updatePayrollCutoff(
   cutoffId: string,
   payload: PayrollCutoffPayload,

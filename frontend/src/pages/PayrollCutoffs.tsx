@@ -7,6 +7,7 @@ import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import {
   calculatePayrollCutoff,
   createPayrollCutoff,
+  createPayrollCutoffsForCompany,
   fetchPayrollCutoffResults,
   fetchPayrollCutoffs,
   updatePayrollCutoff,
@@ -54,6 +55,8 @@ const blankForm: CutoffForm = {
   is_active: true,
 }
 
+const ALL_GROUPS_VALUE = 'ALL_GROUPS'
+
 const inputClass = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100'
 
 function toLocalDateTime(value: string | null) {
@@ -73,7 +76,9 @@ function groupLabel(groupId: string, groups: PayrollGroup[]) {
 }
 
 function generatedCutoffCode(payrollGroupId: string, periodStart: string, periodEnd: string, groups: PayrollGroup[]) {
-  const groupCode = groups.find((group) => group.id === payrollGroupId)?.payroll_group_code
+  const groupCode = payrollGroupId === ALL_GROUPS_VALUE
+    ? 'ALL-GROUPS'
+    : groups.find((group) => group.id === payrollGroupId)?.payroll_group_code
   if (!groupCode || !periodStart || !periodEnd) return ''
   const normalizedGroupCode = groupCode.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-')
   return `${normalizedGroupCode}-${periodStart.replaceAll('-', '')}-${periodEnd.replaceAll('-', '')}`
@@ -264,11 +269,23 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
 
     try {
       if (editing) await updatePayrollCutoff(editing.id, payload)
-      else await createPayrollCutoff(payload)
+      else if (form.payroll_group_id === ALL_GROUPS_VALUE) {
+        if (!companyId) throw new Error('Select a company before creating cutoffs for all groups.')
+        const { payroll_group_id: _payrollGroupId, ...groupPayload } = payload
+        await createPayrollCutoffsForCompany(companyId, groupPayload)
+      } else {
+        await createPayrollCutoff(payload)
+      }
       const groupedCutoffs = await Promise.all(groups.map((group) => fetchPayrollCutoffs(group.id)))
       setCutoffs(groupedCutoffs.flat())
       resetForm()
-      setSuccess(editing ? 'Payroll cutoff updated.' : 'Payroll cutoff created.')
+      setSuccess(
+        editing
+          ? 'Payroll cutoff updated.'
+          : form.payroll_group_id === ALL_GROUPS_VALUE
+            ? `Payroll cutoff created for ${activeGroups.length} active payroll groups.`
+            : 'Payroll cutoff created.',
+      )
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not save the payroll cutoff.')
     } finally {
@@ -359,10 +376,16 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             <label className="text-sm font-semibold text-slate-700">Payroll group
               <select className={inputClass} required value={form.payroll_group_id} onChange={(event) => setField('payroll_group_id', event.target.value)}>
                 <option value="">Select payroll group</option>
+                {!editing && <option value={ALL_GROUPS_VALUE}>All Groups</option>}
                 {(editing ? groups : activeGroups).map((group) => (
                   <option key={group.id} value={group.id}>{group.payroll_group_code} — {group.payroll_group_name}</option>
                 ))}
               </select>
+              {form.payroll_group_id === ALL_GROUPS_VALUE && !editing && (
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Creates a separate matching cutoff for every active group in this company.
+                </span>
+              )}
             </label>
             <label className="text-sm font-semibold text-slate-700">Cutoff code
               <input className={inputClass} maxLength={50} required value={form.cutoff_code} onChange={(event) => setField('cutoff_code', event.target.value)} />

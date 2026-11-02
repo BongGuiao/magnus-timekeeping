@@ -3,6 +3,7 @@ from fastapi import APIRouter
 
 from app.attendance.infrastructure.attendance_dashboard_router import router as attendance_dashboard_router
 from app.attendance.infrastructure.attendance_review_router import router as attendance_review_router
+from app.attendance.infrastructure.attendance_merge_router import router as attendance_merge_router
 from app.attendance.infrastructure.attendance_report_router import router as attendance_report_router
 from app.attendance.infrastructure.authorized_location_router import router as authorized_location_router
 from app.attendance.infrastructure.clock_router import router as clock_router
@@ -20,6 +21,7 @@ for feature_router in (
     device_challenge_router,
     overtime_router,
     attendance_review_router,
+    attendance_merge_router,
     attendance_report_router,
     authorized_location_router,
     attendance_dashboard_router,

@@ -17,6 +17,7 @@ from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.attendance.domain.entities.attendance import AttendanceEntity
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.punch_exceptions import PunchRuleViolation
 from app.auth.application.accounts import employee_display_name
 from app.auth.domain.entities.user import AccountStatus, UserEntity
@@ -587,6 +588,7 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
             repo = uow.get_repo(AttendanceEntity, AttendanceModel)
             records = await repo.find_all(
                 AttendanceModel.user_id == input_dto.user_id,
+                not_merged_source(),
                 order_by=[AttendanceModel.work_date.desc(), AttendanceModel.clock_in_at.desc()],
                 limit=1,
             )
@@ -1304,6 +1306,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             attendance_repo = uow.get_repo(AttendanceEntity, AttendanceModel)
             records = await attendance_repo.find_all(
                 AttendanceModel.user_id == input_dto.user_id,
+                not_merged_source(),
                 func.coalesce(
                     AttendanceModel.corrected_clock_in_at,
                     AttendanceModel.clock_in_at,
@@ -1337,6 +1340,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             if not existing:
                 closed_during_request = await attendance_repo.find_all(
                     AttendanceModel.user_id == input_dto.user_id,
+                    not_merged_source(),
                     or_(
                         AttendanceModel.clock_out_at >= request_started_at,
                         AttendanceModel.corrected_clock_out_at >= request_started_at,
@@ -1713,6 +1717,7 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
             attendance_repo = uow.get_repo(AttendanceEntity, AttendanceModel)
             records = await attendance_repo.find_all(
                 AttendanceModel.user_id == input_dto.user_id,
+                not_merged_source(),
                 func.coalesce(
                     AttendanceModel.corrected_clock_in_at,
                     AttendanceModel.clock_in_at,

@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmploymentAssignmentModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
@@ -44,6 +45,7 @@ async def require_resolved_punches(session: AsyncSession, cutoff: PayrollCutoffM
         .where(
             *assignment_conditions(AttendanceModel.work_date),
             AttendanceModel.is_absent.is_(False), ~schedule_credited,
+            not_merged_source(),
             or_(clock_in.is_(None), clock_out.is_(None)),
         )
     )

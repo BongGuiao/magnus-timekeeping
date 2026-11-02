@@ -4,6 +4,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Enrollment from './pages/Enrollment'
 import Attendance from './pages/Attendance'
+import AttendanceMergeManagement from './pages/AttendanceMergeManagement'
 import AttendanceRecalculation from './pages/AttendanceRecalculation'
 import MySchedule from './pages/MySchedule'
 import ScheduleUploads from './pages/ScheduleUploads'
@@ -49,6 +50,7 @@ import { WorkspaceTabsProvider } from './components/dashboard/WorkspaceTabsConte
 import ErrorBoundary from './components/common/ErrorBoundary'
 import { fetchCurrentAuthorization } from './lib/authApi'
 import {
+  getAvailableRoleCodes,
   getSelectedDashboardRole,
   hasAnyPermission,
   hasEmployeeRoleCode,
@@ -61,6 +63,7 @@ const offCyclePayrollUseCases = new OffCyclePayrollUseCases(new HttpOffCyclePayr
 
 const navViews: NavView[] = [
   'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-org-unit-summary', 'attendance-recalculation', 'companies', 'org-units', 'org-unit-types', 'locations', 'location-types',
+  'attendance-merge-management',
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
@@ -250,6 +253,7 @@ function App() {
     const view = currentView
     const requiredPermissionByView: Partial<Record<NavView, string | string[]>> = {
       attendance: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
+      'attendance-merge-management': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
       'attendance-recalculation': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
       'attendance-detail-report': ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
       'attendance-org-unit-summary': 'payroll.manage',
@@ -323,6 +327,14 @@ function App() {
 
     if (view === 'attendance') {
       return <Attendance employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'attendance-merge-management') {
+      return getAvailableRoleCodes().some(
+        (roleCode) => roleCode.trim().toUpperCase() === 'HR_ADMIN',
+      )
+        ? <AttendanceMergeManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'attendance-detail-report') {

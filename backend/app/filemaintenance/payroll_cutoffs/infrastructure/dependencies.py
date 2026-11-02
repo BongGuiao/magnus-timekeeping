@@ -4,6 +4,7 @@ from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.payroll_cutoffs.application.use_case import (
     CalculateEmployeeCutoffResultsUseCase,
     CreatePayrollCutoffUseCase,
+    CreatePayrollCutoffsForCompanyUseCase,
     GetPayrollCutoffUseCase,
     ListPayrollCutoffsUseCase,
     UpdatePayrollCutoffUseCase,
@@ -14,6 +15,12 @@ def get_create_payroll_cutoff_use_case(
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ) -> CreatePayrollCutoffUseCase:
     return CreatePayrollCutoffUseCase(uow)
+
+
+def get_create_payroll_cutoffs_for_company_use_case(
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+) -> CreatePayrollCutoffsForCompanyUseCase:
+    return CreatePayrollCutoffsForCompanyUseCase(uow)
 
 
 def get_get_payroll_cutoff_use_case(

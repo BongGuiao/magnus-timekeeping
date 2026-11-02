@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState, type FormEvent } from 'react'
+import { ClipboardList, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
@@ -10,7 +11,16 @@ import {
   type AttendanceDetailReportFilters,
   type AttendanceDetailReportRecord,
 } from '../lib/attendanceReportApi'
-import { getSelectedDashboardRole, hasAnyPermission, hasPermission } from '../types/role'
+import {
+  fetchAttendanceMergeAudit,
+} from '../lib/attendanceMergeApi'
+import type { AttendanceMergeAudit } from '../lib/attendanceMergeApi'
+import {
+  getAvailableRoleCodes,
+  getSelectedDashboardRole,
+  hasAnyPermission,
+  hasPermission,
+} from '../types/role'
 
 interface Props {
   employeeName: string
@@ -37,6 +47,14 @@ function formatTime(value: string | null): string {
 function formatReportDate(value: string): string {
   const [year, month, day] = value.split('-')
   return `${month}-${day}-${year}`
+}
+
+function formatAuditDateTime(value: string): string {
+  return new Date(value).toLocaleString('en-PH', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Manila',
+  })
 }
 
 function formatHours(value: number | null | undefined): string {
@@ -68,6 +86,9 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
       ? 'team'
       : 'organization'
   const canFinalizeAttendance = hasPermission('attendance.finalize')
+  const canMergeAttendance = getAvailableRoleCodes().some(
+    (roleCode) => roleCode.trim().toUpperCase() === 'HR_ADMIN',
+  )
   const canReviewCutoffStatus = hasAnyPermission(['attendance.read_org', 'payroll.manage'])
   const [fromDate, setFromDate] = useState(defaultFrom)
   const [toDate, setToDate] = useState(defaultTo)
@@ -88,6 +109,9 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [audit, setAudit] = useState<AttendanceMergeAudit | null>(null)
+  const [auditError, setAuditError] = useState<string | null>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
   const daysWithPunches = records.filter((record) => record.clock_in_at && record.clock_out_at).length
   const totalRegularMinutes = records.reduce((total, record) => total + (record.worked_minutes ?? 0), 0)
   const totalPotentialOvertimeMinutes = records.reduce(
@@ -116,7 +140,6 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
       && attendanceDeadlinePassed
       && selectedAttendanceCutoff.attendance_result_count > 0,
   )
-
   useEffect(() => {
     const timerId = window.setInterval(() => setCurrentTime(Date.now()), 30_000)
     return () => window.clearInterval(timerId)
@@ -218,6 +241,19 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
       employee_no: '',
       cutoff_id: cutoff.cutoff_id,
     })
+  }
+
+  async function showMergeAudit(attendanceId: string) {
+    setAudit(null)
+    setAuditError(null)
+    setAuditLoading(true)
+    try {
+      setAudit(await fetchAttendanceMergeAudit(attendanceId))
+    } catch (cause) {
+      setAuditError(cause instanceof Error ? cause.message : 'Could not load the attendance merge audit.')
+    } finally {
+      setAuditLoading(false)
+    }
   }
 
   async function finalizeAttendance() {
@@ -481,7 +517,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                   const isNewEmployee = index === 0
                     || records[index - 1].employee_no !== record.employee_no
                   return (
-                    <Fragment key={`${record.employee_no}-${record.work_date}`}>
+                    <Fragment key={record.attendance_id ?? `${record.employee_no}-${record.work_date}-record`}>
                       {isNewEmployee && (
                         <tr className="border-t-2 border-slate-300 bg-slate-100">
                           <th
@@ -497,9 +533,9 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                         key={record.attendance_id ?? `${record.employee_no}-${record.work_date}-record`}
                         className={record.attendance_id ? 'align-top hover:bg-slate-50' : 'align-top bg-amber-50/50'}
                       >
-                    <td className="px-4 py-3 font-medium">
-                      <div className="whitespace-nowrap">{formatReportDate(record.work_date)}</div>
-                    </td>
+                      <td className="px-4 py-3 font-medium">
+                        <div className="whitespace-nowrap">{formatReportDate(record.work_date)}</div>
+                      </td>
                     <td className="break-words px-4 py-3" title={`${record.employee_no} · ${record.employee_name}`}>
                       <div className="line-clamp-2">
                         <span className="font-semibold text-slate-900">{record.employee_no}</span>
@@ -540,6 +576,25 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                                 ? `${record.work_type} · ${record.day_type}`
                                 : record.record_status}
                         </div>
+                        {record.is_merge_result && (
+                          <div className="mt-1">
+                            <span className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-semibold text-indigo-800">
+                              Result of attendance merge
+                            </span>
+                            {canMergeAttendance && record.attendance_id && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (record.attendance_id) void showMergeAudit(record.attendance_id)
+                                }}
+                                className="ml-2 inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 underline"
+                              >
+                                <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+                                Audit
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {record.leave_applications.map((leave) => (
                           <div key={leave.application_no} className="mt-1">
                             <div className={`text-xs font-medium ${leave.status === 'APPROVED' ? 'text-emerald-700' : 'text-slate-600'}`}>
@@ -686,6 +741,67 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
         <p className="mt-3 text-xs text-slate-500">
           {records.length} record{records.length === 1 ? '' : 's'} · Reports support up to 31 days per search.
         </p>
+
+        {(auditLoading || auditError || audit) && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+            <section role="dialog" aria-modal="true" aria-labelledby="attendance-merge-audit-title" className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 id="attendance-merge-audit-title" className="text-lg font-bold text-slate-900">Attendance merge audit</h2>
+                  {audit && <p className="mt-1 text-sm text-slate-600">{formatReportDate(audit.work_date)} · {audit.schedule_code}</p>}
+                </div>
+                <button type="button" aria-label="Close audit" onClick={() => { setAudit(null); setAuditError(null) }} className="rounded p-1 text-slate-500 hover:bg-slate-100">
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
+              </div>
+              {auditLoading && <p className="mt-4 text-sm text-slate-600">Loading audit…</p>}
+              {auditError && <p role="alert" className="mt-4 text-sm text-rose-700">{auditError}</p>}
+              {audit && (
+                <div className="mt-4 space-y-4 text-sm text-slate-700">
+                  <dl className="grid gap-2 sm:grid-cols-2">
+                    <div><dt className="font-semibold">Merged at</dt><dd>{formatAuditDateTime(audit.merged_at)}</dd></div>
+                    <div><dt className="font-semibold">HR user ID</dt><dd>{audit.merged_by ?? 'Unavailable'}</dd></div>
+                    <div><dt className="font-semibold">Canonical clock-in</dt><dd>{formatAuditDateTime(audit.canonical_clock_in_at)}</dd></div>
+                    <div><dt className="font-semibold">Canonical clock-out</dt><dd>{formatAuditDateTime(audit.canonical_clock_out_at)}</dd></div>
+                    <div className="sm:col-span-2"><dt className="font-semibold">Reason</dt><dd className="whitespace-pre-wrap">{audit.reason}</dd></div>
+                  </dl>
+                  <div className="rounded-md bg-slate-50 p-3">
+                    <h3 className="font-semibold text-slate-900">Calculation snapshot at merge</h3>
+                    <p>
+                      Expected: {formatTime(String(audit.calculation_snapshot.expected_clock_in_at))}
+                      {' – '}
+                      {formatTime(String(audit.calculation_snapshot.expected_clock_out_at))}
+                    </p>
+                    <p>
+                      Worked {formatHours(Number(audit.calculation_snapshot.worked_hours) * 60)}
+                      {' · '}Late {formatHours(Number(audit.calculation_snapshot.late_minutes))}
+                      {' · '}Undertime {formatHours(Number(audit.calculation_snapshot.undertime_minutes))}
+                    </p>
+                    <p>
+                      Regular OT {formatHours(Number(audit.calculation_snapshot.regular_overtime_minutes))}
+                      {' · '}ND OT {formatHours(Number(audit.calculation_snapshot.night_differential_overtime_minutes))}
+                      {' · '}Total OT {formatHours(Number(audit.calculation_snapshot.total_overtime_minutes))}
+                      {' · '}Night diff {formatHours(Number(audit.calculation_snapshot.night_differential_minutes))}
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-slate-900">Unchanged source records</h3>
+                    <ul className="mt-2 space-y-2">
+                      {audit.sources.map((source) => (
+                        <li key={source.source_attendance_id} className="rounded-md border border-slate-200 p-3">
+                          <p className="font-medium">Source ID: {source.source_attendance_id}</p>
+                          <p>Clock-in: {source.source_snapshot.corrected_clock_in_at ?? source.source_snapshot.clock_in_at ?? '—'}</p>
+                          <p>Clock-out: {source.source_snapshot.corrected_clock_out_at ?? source.source_snapshot.clock_out_at ?? '—'}</p>
+                          <p>Status at merge: {source.source_snapshot.record_status ?? '—'}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </main>
     </div>
   )
