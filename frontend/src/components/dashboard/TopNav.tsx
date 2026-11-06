@@ -160,6 +160,7 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   'attendance-recalculation': RefreshCw,
   'my-schedule': CalendarDays,
   'schedule-uploads': Upload,
+  'schedule-upload-approvals': BadgeCheck,
   'emergency-schedule-approvals': Clock3,
   companies: Building2,
   'org-units': Building2,
@@ -235,6 +236,8 @@ const navLinks: NavLink[] = [
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org'],
       },
       { label: 'Emergency CWS', view: 'my-schedule', permission: 'schedule.read_own' },
+      { label: 'Schedule Uploads', view: 'schedule-uploads', permission: 'schedule.upload_team' },
+      { label: 'Schedule Upload Approvals', view: 'schedule-upload-approvals', permission: 'schedule.approve' },
       {
         label: 'Emergency Schedule Approvals',
         view: 'emergency-schedule-approvals',

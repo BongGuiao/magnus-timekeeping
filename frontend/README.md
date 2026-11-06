@@ -1,5 +1,43 @@
 # React + TypeScript + Vite
 
+## Organizational chart
+
+In **Company Setup > Org Units**, select a company and switch from **Table** to
+**Org chart**. The viewer uses existing parent org unit and manager assignments;
+it needs no database migration or additional dependencies and retains the
+existing `company.setup` permission.
+
+Compact unit and employee cards with tighter branch spacing keep more of the
+hierarchy visible at 100% zoom; zoom and **Fit** remain available for larger charts.
+
+The manager toggle shows the unit's name/description (`org_unit_name`) in bold,
+without repeating it as a heading above the manager box.
+Click a unit's manager to show or hide employee cards for **that org unit only**.
+Child units retain their own managers and separate member branches. Units without
+a manager also have a member toggle. The manager is not repeated as a member card.
+Membership comes from active employment assignments effective today in Philippine
+time, including the effective-to and separation date, excluding inactive or
+archived employees. Duplicate assignments within a unit yield one employee card.
+Unavailable employee records are labeled, not silently omitted.
+
+Expand or collapse individual unit branches, use **Expand all** / **Collapse all**
+to expand or collapse both units and people,
+zoom, or **Fit** the chart. Drag or scroll to pan (swipe on touch screens);
+keyboard users can focus the canvas and scroll with arrow keys.
+**New org unit** and each card's **Edit unit** open the existing forms. Saving
+updates the chart; **Refresh** reloads current data. Employment assignment changes
+in other open panels refresh membership automatically. Loading and permission
+errors are shown explicitly and disable member expansion until a successful retry.
+
+The chart includes every non-deleted unit in the selected company, including
+draft, inactive, disabled, and future-effective units. Deleted units remain
+available only in the table's **Show deleted** view. Unassigned or unavailable
+managers are labeled explicitly. Missing parents and circular relationships
+produce warnings and separate display roots without modifying saved data.
+Purple lines represent unit hierarchy; dashed green lines represent membership,
+not employee supervisor or approval routes. Employee visibility uses the existing
+employee API permissions; this viewer does not grant additional employee access.
+
 ## HR team schedule uploads
 
 Team Schedule Upload offers an HR CSV format only when the account has the exact

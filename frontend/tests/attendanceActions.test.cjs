@@ -39,6 +39,51 @@ function renderAttendance(lastAttendance, cameraActive = false) {
   return renderToStaticMarkup(React.createElement(componentExports.default, { employeeName: 'Test Employee' }))
 }
 
+test('flagged punch confirmation does not claim an approver was already assigned', () => {
+  const componentExports = {}
+  let stateIndex = 0
+  runInNewContext(compiled, {
+    exports: componentExports,
+    document: { body: {} },
+    require(name) {
+      if (name === 'react') return {
+        ...React,
+        useEffect() {},
+        useEffectEvent: (callback) => callback,
+        useState(initial) {
+          const value = stateIndex++ === 6
+            ? {
+                action: 'clock_in', employee_name: 'Test Employee', employee_code: 'EMP001',
+                timestamp: '2026-10-12T08:00:00+08:00', approval_required: true,
+              }
+            : typeof initial === 'function' ? initial() : initial
+          return [value, () => {}]
+        },
+      }
+      if (name === 'react-dom') return { createPortal: (element) => element }
+      if (name === '../hooks/useAttendanceClock') return {
+        useAttendanceClock: () => ({
+          employeeCode: 'EMP001',
+          verifiedUser: { id: 'user', employee_name: 'Test Employee', employee_code: 'EMP001' },
+          lastAttendance: null,
+        }),
+      }
+      if (name === '../hooks/useWebcamCapture') return {
+        useWebcamCapture: () => ({ isActive: false, isCameraApiAvailable: true }),
+      }
+      if (name === '../hooks/useLogout') return { useLogout: () => ({ logout() {} }) }
+      if (name === '../components/dashboard/TopNav' || name === '../components/common/Stepper') {
+        return { __esModule: true, default: () => null }
+      }
+      if (name === '../lib/apiClient' || name === '../lib/attendanceApi') return {}
+      return require(name)
+    },
+  })
+  const html = renderToStaticMarkup(componentExports.default({ employeeName: 'Test Employee' }))
+  assert.ok(html.includes('An approver must review it; contact HR if it remains unresolved.'))
+  assert.ok(!html.includes('Your assigned approver must review it'))
+})
+
 const afterMeal = {
   clock_in_at: '2026-10-12T08:00:00+08:00',
   clock_out_at: null,

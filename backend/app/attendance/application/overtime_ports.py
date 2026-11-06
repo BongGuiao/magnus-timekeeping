@@ -58,6 +58,10 @@ class OvertimeRepository(Protocol):
 
     async def add_application(self, application: OvertimeApplication) -> OvertimeApplication: ...
 
+    async def assign_approver(
+        self, application_id: UUID, employee_id: UUID, actor_id: UUID, on_date: date
+    ) -> None: ...
+
     async def save_application(self, application: OvertimeApplication) -> None: ...
 
     async def save_attendance(self, attendance: OvertimeAttendance) -> None: ...
@@ -71,13 +75,14 @@ class OvertimeRepository(Protocol):
     async def list_applications_for_user(self, user_id: UUID) -> list[OvertimeApplicationRecord]: ...
 
     async def list_pending_applications(
-        self, supervisor_employee_id: Optional[UUID]
+        self, supervisor_employee_id: Optional[UUID], actor_employee_id: Optional[UUID] = None
     ) -> list[OvertimeApplicationRecord]:
         """Pending applications; scoped to a supervisor's team unless the id is None."""
         ...
 
     async def lock_pending_application(
-        self, application_id: UUID, supervisor_employee_id: Optional[UUID]
+        self, application_id: UUID, supervisor_employee_id: Optional[UUID],
+        actor_employee_id: Optional[UUID] = None,
     ) -> Optional[OvertimeApplicationRecord]: ...
 
 

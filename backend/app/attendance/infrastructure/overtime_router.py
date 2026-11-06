@@ -50,6 +50,7 @@ from app.auth.domain.entities.user import Role
 from app.auth.infrastructure.approval_scope import approval_supervisor_scope, has_supervisor_role
 from app.auth.infrastructure.dependencies import (
     get_current_authorization_use_case,
+    require_approval_permission,
     require_any_permission,
     require_permission,
     require_role,
@@ -317,7 +318,7 @@ async def get_my_overtime_applications(
     response_model=ResponseEnvelope[list[OvertimeApplicationSchema]],
 )
 async def get_pending_overtime_applications(
-    claims: dict = Depends(require_permission("overtime.approve_team")),
+    claims: dict = Depends(require_approval_permission("overtime.approve_team")),
     use_case: ListPendingOvertimeApplicationsUseCase = Depends(get_list_pending_overtime_applications_use_case),
 ):
     is_admin = claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims)
@@ -326,8 +327,14 @@ async def get_pending_overtime_applications(
         is_admin=is_admin,
         detail="This account is not linked to a supervisor employee profile.",
     )
+    try:
+        actor_employee_id = UUID(str(claims["employee_id"])) if is_admin and claims.get("employee_id") else None
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=403, detail="Invalid employee profile in authentication token.") from error
     records = await use_case.execute(
-        ListPendingOvertimeApplicationsInput(supervisor_employee_id=supervisor_employee_id)
+        ListPendingOvertimeApplicationsInput(
+            supervisor_employee_id=supervisor_employee_id, actor_employee_id=actor_employee_id
+        )
     )
     return ResponseEnvelope(status="success", data=[_application_schema(record) for record in records])
 
@@ -339,7 +346,7 @@ async def get_pending_overtime_applications(
 async def decide_overtime_application(
     application_id: UUID,
     payload: OvertimeApplicationDecisionSchema,
-    claims: dict = Depends(require_permission("overtime.approve_team")),
+    claims: dict = Depends(require_approval_permission("overtime.approve_team")),
     use_case: DecideOvertimeApplicationUseCase = Depends(get_decide_overtime_application_use_case),
 ):
     is_admin = claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims)

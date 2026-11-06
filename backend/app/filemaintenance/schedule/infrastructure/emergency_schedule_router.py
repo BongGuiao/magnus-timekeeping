@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.schedule.application.emergency_schedule_use_cases import (
     EmergencyScheduleRequestView,
@@ -183,7 +183,7 @@ async def submit_emergency_schedule_request(
 
 @router.get("/pending", response_model=ResponseEnvelope[list[EmergencyScheduleRequestSchema]])
 async def list_pending_emergency_schedule_requests(
-    claims: dict[str, Any] = Depends(require_permission("schedule.approve_emergency")),
+    claims: dict[str, Any] = Depends(require_approval_permission("schedule.approve_emergency")),
     use_case: ListPendingEmergencyScheduleRequestsUseCase = Depends(
         get_list_pending_emergency_schedule_requests_use_case
     ),
@@ -206,7 +206,7 @@ async def list_pending_emergency_schedule_requests(
 async def review_emergency_schedule_request(
     request_id: UUID,
     payload: EmergencyScheduleReviewSchema,
-    claims: dict[str, Any] = Depends(require_permission("schedule.approve_emergency")),
+    claims: dict[str, Any] = Depends(require_approval_permission("schedule.approve_emergency")),
     use_case: ReviewEmergencyScheduleRequestUseCase = Depends(
         get_review_emergency_schedule_request_use_case
     ),

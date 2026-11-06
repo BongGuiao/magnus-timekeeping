@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Collection, Protocol
+from typing import Collection, Literal, Protocol
 from uuid import UUID
 
 from app.filemaintenance.schedule.domain.entities.schedule_upload import (
@@ -32,6 +32,9 @@ class ScheduleUploadLookups(Protocol):
         supervisor_employee_id: UUID,
         employee_codes: Collection[str],
         on_date: date,
+        *,
+        scope: Literal["ORG_UNIT", "LEGACY", "SNAPSHOT"] = "ORG_UNIT",
+        snapshot_employee_ids: Collection[UUID] = (),
     ) -> list[TeamEmployee]: ...
 
     async def find_schedule_templates(
@@ -58,12 +61,18 @@ class ScheduleUploadRepository(ScheduleUploadLookups, Protocol):
 
     async def add_batch(self, batch: NewScheduleUploadBatch) -> UUID: ...
 
+    async def assign_batch_approver(
+        self, batch_id: UUID, employee_ids: Collection[UUID], uploader_id: UUID, on_date: date
+    ) -> None: ...
+
     async def get_batch(
         self,
         batch_id: UUID,
         *,
         for_update: bool = False,
         supervisor_employee_id: UUID | None = None,
+        reviewer_employee_id: UUID | None = None,
+        review_mode: bool = False,
     ) -> ScheduleUploadBatch | None: ...
 
     async def list_batches(
@@ -71,6 +80,8 @@ class ScheduleUploadRepository(ScheduleUploadLookups, Protocol):
         *,
         uploaded_by: UUID | None,
         supervisor_employee_id: UUID | None,
+        reviewer_employee_id: UUID | None,
+        review_mode: bool,
         status: ScheduleUploadBatchStatus | None,
         limit: int,
     ) -> list[ScheduleUploadBatch]: ...

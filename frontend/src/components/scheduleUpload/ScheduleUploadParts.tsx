@@ -26,7 +26,7 @@ export function ScheduleUploadBatchDetails({ batch }: { batch: ScheduleUploadBat
           <dd className="font-semibold text-slate-800">{batch.batch_no}</dd>
         </div>
         <div>
-          <dt className="text-slate-500">Supervisor</dt>
+          <dt className="text-slate-500">Manager / supervisor</dt>
           <dd className="font-semibold text-slate-800">{batch.supervisor_name}</dd>
         </div>
         <div>

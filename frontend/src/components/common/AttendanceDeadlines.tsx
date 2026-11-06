@@ -54,7 +54,7 @@ export default function AttendanceDeadlines({ scope = 'own' }: { scope?: 'own' |
     <details className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm">
       <summary className="cursor-pointer font-semibold text-slate-800">Attendance filing and approval deadlines (Philippine time)</summary>
       <p className="mt-2 text-slate-600">
-        Employees file before the filing deadline; supervisors decide before the approval deadline.
+        Employees file before the filing deadline; assigned approvers decide before the approval deadline.
         Finalized or locked attendance cannot be changed.
       </p>
       <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">

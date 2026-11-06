@@ -39,6 +39,7 @@ class FilingWorkflowTests(unittest.IsolatedAsyncioTestCase):
         application_result = SimpleNamespace(scalar_one_or_none=lambda: self.application)
         return SimpleNamespace(
             execute=AsyncMock(side_effect=[application_result, self.rows, self.rows]),
+            scalar=AsyncMock(side_effect=["LEGACY", uuid4()]),
             flush=AsyncMock(), refresh=AsyncMock(),
         )
 

@@ -52,6 +52,7 @@ test('filing closes while approval remains open, in Philippine time', () => {
   const { html } = render([cutoff])
   assert.ok(html.includes('Philippine time'))
   assert.ok(html.includes('OCT-1'))
+  assert.ok(html.includes('assigned approvers decide before the approval deadline'))
   assert.equal((html.match(/\(closed\)/g) || []).length, 1)
   assert.ok(html.includes('8:00:00 PM'))
 })

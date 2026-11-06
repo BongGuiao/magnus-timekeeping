@@ -735,6 +735,11 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
                     updated_by=data.user_id,
                 )
             )
+            if application.id is None:
+                raise RuntimeError("The submitted overtime application has no id.")
+            await uow.overtime.assign_approver(
+                application.id, employee.id, data.user_id, ph_today(self._clock())
+            )
             attendance.overtime_requested_at = self._clock()
             rules.apply_application_totals(
                 attendance, await uow.overtime.list_applications_for_attendance(attendance.id)
@@ -794,6 +799,7 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
                 raise ConflictError("Approved or payroll-posted overtime applications cannot be edited.")
             if application.status not in ("PENDING", "REJECTED"):
                 raise ConflictError("Only pending or rejected overtime applications can be edited.")
+            was_rejected = application.status == "REJECTED"
 
             cutoff = await uow.overtime.get_cutoff_for_employee_on_date(
                 employee.id,
@@ -836,6 +842,12 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             application.status = "PENDING"
             application.updated_by = data.user_id
             application.row_version += 1
+            if was_rejected:
+                if application.id is None:
+                    raise RuntimeError("The overtime application has no id.")
+                await uow.overtime.assign_approver(
+                    application.id, employee.id, data.user_id, ph_today(self._clock())
+                )
             await uow.overtime.save_application(application)
 
             attendance.overtime_requested_at = self._clock()
@@ -879,6 +891,7 @@ class ListPendingOvertimeApplicationsInput:
     """supervisor_employee_id is None for administrators, who see every pending application."""
 
     supervisor_employee_id: Optional[UUID]
+    actor_employee_id: Optional[UUID] = None
 
 
 class ListPendingOvertimeApplicationsUseCase(
@@ -888,7 +901,9 @@ class ListPendingOvertimeApplicationsUseCase(
         self, data: ListPendingOvertimeApplicationsInput
     ) -> list[OvertimeApplicationRecord]:
         async with self._uow as uow:
-            return await uow.overtime.list_pending_applications(data.supervisor_employee_id)
+            return await uow.overtime.list_pending_applications(
+                data.supervisor_employee_id, data.actor_employee_id
+            )
 
 
 @dataclass
@@ -916,7 +931,9 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
     async def _execute(self, data: DecideOvertimeApplicationInput) -> OvertimeApplicationRecord:
         supervisor_scope = None if data.is_admin else data.actor_employee_id
         async with self._uow as uow:
-            record = await uow.overtime.lock_pending_application(data.application_id, supervisor_scope)
+            record = await uow.overtime.lock_pending_application(
+                data.application_id, supervisor_scope, data.actor_employee_id
+            )
             if record is None:
                 raise RecordNotFoundError(
                     "Pending overtime application was not found for your assigned employees."

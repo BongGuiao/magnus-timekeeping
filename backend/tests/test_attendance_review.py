@@ -1,26 +1,37 @@
 import unittest
 from datetime import date, datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from app.attendance.application.attendance_review_use_cases import (
     ApproveInvalidAttendanceInput,
     ApproveInvalidAttendanceUseCase,
     ListInvalidAttendanceInput,
     ListInvalidAttendanceUseCase,
+    RetryUnresolvedAttendanceRouteUseCase,
 )
+from app.attendance.application.use_case import assign_invalid_attendance_approver
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
 from app.attendance.domain.entities.attendance_review import (
     ReviewableAttendance,
     ReviewableAttendanceRecord,
+    UnresolvedAttendanceRouting,
 )
 from app.attendance.domain.exceptions import ConflictError, RecordNotFoundError, RuleViolationError
 from app.attendance.infrastructure.attendance_review_router import (
     approve_supervisor_invalid_attendance,
     get_supervisor_invalid_attendance,
+    router,
 )
+from app.attendance.infrastructure.dependencies import (
+    get_list_unresolved_attendance_routes_use_case,
+    get_retry_unresolved_attendance_route_use_case,
+)
+from app.auth.infrastructure.approval_routing import ApprovalRoutingError
+from app.auth.infrastructure.dependencies import get_current_authorization_use_case, get_current_user_claims
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import CutoffDeadlineError
 
 # 2026-10-12 17:00 UTC is already 2026-10-13 in Manila.
@@ -48,12 +59,12 @@ class FakeReviewRepository:
         self.saved = None
         self.closed_error = None
 
-    async def list_invalid(self, supervisor_employee_id, today):
-        self.calls.append(("list", supervisor_employee_id, today))
+    async def list_invalid(self, supervisor_employee_id, today, actor_employee_id=None):
+        self.calls.append(("list", supervisor_employee_id, today, actor_employee_id))
         return [self.record] if self.record else []
 
-    async def lock_invalid(self, attendance_id, supervisor_employee_id, today):
-        self.calls.append(("lock", attendance_id, supervisor_employee_id, today))
+    async def lock_invalid(self, attendance_id, supervisor_employee_id, today, actor_employee_id=None):
+        self.calls.append(("lock", attendance_id, supervisor_employee_id, today, actor_employee_id))
         return self.record
 
     async def save_review(self, attendance):
@@ -109,7 +120,7 @@ class ListInvalidAttendanceTests(unittest.IsolatedAsyncioTestCase):
         records = await use_case.execute(ListInvalidAttendanceInput(supervisor_employee_id=supervisor))
 
         self.assertEqual(len(records), 1)
-        self.assertEqual(repository.calls, [("list", supervisor, date(2026, 10, 13))])
+        self.assertEqual(repository.calls, [("list", supervisor, date(2026, 10, 13), None)])
 
 
 class ApproveInvalidAttendanceTests(unittest.IsolatedAsyncioTestCase):
@@ -136,7 +147,7 @@ class ApproveInvalidAttendanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(self.repository.saved, self.record.attendance)
         self.assertEqual(result.attendance.record_status, "VALID")
-        self.assertEqual(self.repository.calls[0][2:], (supervisor, date(2026, 10, 13)))
+        self.assertEqual(self.repository.calls[0][2:], (supervisor, date(2026, 10, 13), None))
         self.refresher.request_refresh.assert_called_once_with(self.record.attendance.user_id)
         kwargs = self.audit.record.await_args.kwargs
         self.assertEqual((kwargs["action"], kwargs["resource"]), ("APPROVE", "attendance"))
@@ -179,6 +190,42 @@ class ReviewRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.status_code, 403)
         use_case.execute.assert_not_awaited()
 
+
+class InvalidAttendanceRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_approver_is_saved_as_unresolved_without_blocking_punch(self):
+        attendance_id, employee_id, actor_id = uuid4(), uuid4(), uuid4()
+        with patch(
+            "app.attendance.application.use_case.assign_org_approval",
+            new=AsyncMock(side_effect=ApprovalRoutingError("No manager configured.")),
+        ), patch(
+            "app.attendance.application.use_case.save_approval_route", new=AsyncMock()
+        ) as save, self.assertLogs("app.attendance.application.use_case", level="WARNING"):
+            await assign_invalid_attendance_approver(
+                MagicMock(), attendance_id, employee_id, actor_id, NOW.date()
+            )
+        self.assertEqual(save.await_args.kwargs["resource_id"], attendance_id)
+        self.assertEqual(save.await_args.kwargs["routing_error"], "No manager configured.")
+        self.assertIsNone(save.await_args.kwargs["approver"])
+
+    async def test_storage_errors_are_not_silently_treated_as_missing_configuration(self):
+        with patch(
+            "app.attendance.application.use_case.assign_org_approval",
+            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                await assign_invalid_attendance_approver(
+                    MagicMock(), uuid4(), uuid4(), uuid4(), NOW.date()
+                )
+
+    async def test_retry_commits_updated_error_before_reporting_failure(self):
+        repository = FakeReviewRepository()
+        repository.retry_unresolved_route = AsyncMock(return_value="Manager still lacks permission.")
+        uow = FakeUnitOfWork(repository)
+        use_case = RetryUnresolvedAttendanceRouteUseCase(uow, clock=lambda: NOW)
+        with self.assertRaisesRegex(ConflictError, "still lacks permission"):
+            await use_case.execute(uuid4(), uuid4())
+        self.assertIsNone(uow.exit_exception)
+
     async def test_supervisor_scope_comes_from_the_employee_claim(self):
         employee_id = uuid4()
         use_case = MagicMock(execute=AsyncMock(return_value=[]))
@@ -216,3 +263,50 @@ class ReviewRouterTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(error.exception.status_code, 403)
         use_case.execute.assert_not_awaited()
+
+
+class UnresolvedAttendanceApiTests(unittest.TestCase):
+    def setUp(self):
+        self.app = FastAPI()
+        self.app.include_router(router, prefix="/attendance")
+        self.record = make_record()
+        self.actor_id = uuid4()
+        self.permissions = ["employees.manage"]
+        self.list_routes = MagicMock(execute=AsyncMock(return_value=[
+            UnresolvedAttendanceRouting(self.record, "No manager configured."),
+        ]))
+        self.retry_route = MagicMock(execute=AsyncMock())
+        self.app.dependency_overrides.update({
+            get_current_user_claims: lambda: {"sub": str(self.actor_id)},
+            get_current_authorization_use_case: lambda: MagicMock(execute=AsyncMock(
+                return_value=MagicMock(permission_codes=self.permissions),
+            )),
+            get_list_unresolved_attendance_routes_use_case: lambda: self.list_routes,
+            get_retry_unresolved_attendance_route_use_case: lambda: self.retry_route,
+        })
+        self.client = TestClient(self.app)
+        self.path = "/attendance/hr/unresolved-attendance-approvals"
+
+    def test_hr_can_list_routes_and_retry(self):
+        response = self.client.get(self.path)
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["data"][0]
+        self.assertEqual(item["id"], str(self.record.attendance.id))
+        self.assertEqual(item["routing_error"], "No manager configured.")
+        response = self.client.post(f"{self.path}/{self.record.attendance.id}/retry")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["data"])
+        self.retry_route.execute.assert_awaited_once_with(self.record.attendance.id, self.actor_id)
+
+    def test_missing_permission_forbids_list_and_retry(self):
+        self.permissions.clear()
+        self.assertEqual(self.client.get(self.path).status_code, 403)
+        self.assertEqual(self.client.post(f"{self.path}/{self.record.attendance.id}/retry").status_code, 403)
+        self.list_routes.execute.assert_not_awaited()
+        self.retry_route.execute.assert_not_awaited()
+
+    def test_failed_retry_reports_configuration_error(self):
+        self.retry_route.execute.side_effect = ConflictError("Manager still lacks permission.")
+        response = self.client.post(f"{self.path}/{self.record.attendance.id}/retry")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "Manager still lacks permission.")

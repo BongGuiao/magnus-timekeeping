@@ -43,6 +43,7 @@ COMPANY_ID = uuid4()
 SUPERVISOR_ID = uuid4()
 UPLOADER_ID = uuid4()
 APPROVER_ID = uuid4()
+APPROVER_EMPLOYEE_ID = uuid4()
 HEADER = "employee_code,schedule_code,assignment_type,effective_from,effective_to,rest_day_pattern_code,reason\n"
 
 
@@ -71,8 +72,12 @@ class FakeScheduleUploadRepository:
         self.links: dict[int, UUID] = {}
         self.locked: set[UUID] = set()
         self.approval_required = True
+        self.assigned_approvals = {}
+        self.active_employees = [self.employee]
 
-    def _visible_to_supervisor(self, batch, supervisor_employee_id):
+    def _visible_to_supervisor(self, batch, supervisor_employee_id, reviewer_employee_id=None, review_mode=False):
+        if batch.approval_routing_mode == "ORG_UNIT" and (review_mode or supervisor_employee_id is not None):
+            return (supervisor_employee_id or reviewer_employee_id) == self.assigned_approvals.get(batch.id)
         if supervisor_employee_id is None:
             return True
         employee_ids = {employee.employee_id for employee in self.team}
@@ -84,7 +89,14 @@ class FakeScheduleUploadRepository:
     async def schedule_approval_required(self, company_ids):
         return self.approval_required
 
-    async def find_team_employees(self, supervisor_employee_id, employee_codes, on_date):
+    async def find_team_employees(
+        self, supervisor_employee_id, employee_codes, on_date, *, scope="ORG_UNIT", snapshot_employee_ids=(),
+    ):
+        if scope == "SNAPSHOT":
+            return [
+                employee for employee in self.active_employees
+                if employee.employee_id in snapshot_employee_ids and employee.employee_code in employee_codes
+            ]
         if supervisor_employee_id != SUPERVISOR_ID:
             return []
         return [employee for employee in self.team if employee.employee_code in employee_codes]
@@ -118,16 +130,29 @@ class FakeScheduleUploadRepository:
         )
         return batch_id
 
-    async def get_batch(self, batch_id, *, for_update=False, supervisor_employee_id=None):
+    async def assign_batch_approver(self, batch_id, employee_ids, uploader_id, on_date):
+        self.assigned_approvals[batch_id] = APPROVER_EMPLOYEE_ID
+        self.batches[batch_id] = replace(self.batches[batch_id], approval_routing_mode="ORG_UNIT")
+
+    async def get_batch(
+        self, batch_id, *, for_update=False, supervisor_employee_id=None,
+        reviewer_employee_id=None, review_mode=False,
+    ):
         batch = self.batches.get(batch_id)
-        if batch is not None and not self._visible_to_supervisor(batch, supervisor_employee_id):
+        if batch is not None and not self._visible_to_supervisor(
+            batch, supervisor_employee_id, reviewer_employee_id, review_mode
+        ):
             return None
         return batch
 
-    async def list_batches(self, *, uploaded_by, supervisor_employee_id, status, limit):
+    async def list_batches(
+        self, *, uploaded_by, supervisor_employee_id, reviewer_employee_id, review_mode, status, limit
+    ):
         batches = [
             batch for batch in self.batches.values()
-            if self._visible_to_supervisor(batch, supervisor_employee_id)
+            if self._visible_to_supervisor(batch, supervisor_employee_id, reviewer_employee_id, review_mode)
+            and (uploaded_by is None or batch.uploaded_by == uploaded_by)
+            and (status is None or batch.status == status)
         ]
         return batches[:limit]
 
@@ -193,6 +218,11 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
             "role": "admin",
             "role_codes": ["SYSTEM_ADMIN"],
         }))
+        self.assertEqual(_schedule_review_supervisor_id({
+            "role": "user",
+            "role_codes": ["MANAGER"],
+            "employee_id": str(supervisor_id),
+        }), supervisor_id)
 
     async def _submit(self, *lines: str) -> ScheduleUploadBatch:
         return await SubmitScheduleUploadUseCase(self.uow, self.reader, self._clock()).execute(_file(*lines))
@@ -205,6 +235,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
             reviewed_at=None,
             review_remarks=None,
             rows=tuple(replace(row, assignment_id=None) for row in batch.rows),
+            approval_routing_mode="LEGACY",
         )
         self.repository.batches[batch.id] = pending
         self.repository.added.clear()
@@ -233,7 +264,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first.is_valid)
         self.assertEqual(first.employee_name, "Ana Cruz")
         self.assertIn("Ends schedule OLD", first.effects[0])
-        self.assertIn("not an active direct report", second.errors[0])
+        self.assertIn("not active or is not in the specified manager's team", second.errors[0])
         self.assertIn("on or after 2026-10-21", third.errors[0])
 
     async def test_invalid_file_is_not_submitted(self):
@@ -249,6 +280,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(batch.reviewed_by)
         self.assertIsNone(batch.rows[0].assignment_id)
         self.assertEqual(self.repository.added, [])
+        self.assertEqual(self.repository.assigned_approvals[batch.id], APPROVER_EMPLOYEE_ID)
 
     async def test_valid_file_applies_and_approves_when_approval_is_disabled(self):
         self.repository.approval_required = False
@@ -336,7 +368,7 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.batch_no, "SCH-2026-000002")
 
     async def test_supervisor_only_sees_own_batches(self):
-        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        batch = self._make_legacy_pending(await self._submit("E001,DAY,REGULAR,2026-11-01,,,"))
         get = GetScheduleUploadBatchUseCase(self.uow)
 
         self.assertEqual((await get.execute(GetScheduleUploadBatchInput(batch.id, UPLOADER_ID))).id, batch.id)
@@ -371,6 +403,33 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ScheduleUploadNotFoundError):
             await get.execute(GetScheduleUploadBatchInput(batch.id, uuid4()))
         self.assertEqual((await get.execute(GetScheduleUploadBatchInput(batch.id))).id, batch.id)
+
+    async def test_org_routed_batch_uses_assigned_reviewer_after_team_changes(self):
+        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        self.repository.team = []
+        get = GetScheduleUploadBatchUseCase(self.uow)
+        with self.assertRaises(ScheduleUploadNotFoundError):
+            await get.execute(GetScheduleUploadBatchInput(
+                batch.id, supervisor_employee_id=SUPERVISOR_ID, review_mode=True,
+            ))
+        self.assertEqual((await get.execute(GetScheduleUploadBatchInput(
+            batch.id, reviewer_employee_id=APPROVER_EMPLOYEE_ID, review_mode=True,
+        ))).id, batch.id)
+        approved = await ApproveScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
+            ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, reviewer_employee_id=APPROVER_EMPLOYEE_ID)
+        )
+        self.assertEqual(approved.status, ScheduleUploadBatchStatus.APPROVED)
+
+    async def test_org_routed_batch_rejects_employee_company_change(self):
+        batch = await self._submit("E001,DAY,REGULAR,2026-11-01,,,")
+        new_company = uuid4()
+        self.repository.active_employees = [replace(self.repository.employee, company_id=new_company)]
+        self.repository.templates.append(replace(self.repository.templates[0], id=uuid4(), company_id=new_company))
+        with self.assertRaisesRegex(ScheduleUploadNoLongerApplicableError, "company changed"):
+            await ApproveScheduleUploadBatchUseCase(self.uow, self._clock()).execute(
+                ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, reviewer_employee_id=APPROVER_EMPLOYEE_ID)
+            )
+        self.assertEqual(self.repository.added, [])
 
 
 if __name__ == "__main__":

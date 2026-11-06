@@ -1,18 +1,20 @@
 import { useEffect, useState } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { LoaderCircle, Pencil, Plus, Trash2 } from 'lucide-react'
+import { List, LoaderCircle, Network, Pencil, Plus, Trash2 } from 'lucide-react'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
 import FormModal from '../components/common/FormModal'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import OrgUnitForm from '../features/orgUnits/OrgUnitForm'
+import OrgChart from '../features/orgUnits/OrgChart'
 import { emptyOrgUnit, orgUnitSchema, toOrgUnitFormValues } from '../features/orgUnits/orgUnitSchema'
 import type { OrgUnitFormValues } from '../features/orgUnits/orgUnitSchema'
 import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchEmployees } from '../lib/employeeApi'
+import { EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, fetchEmploymentAssignments } from '../lib/employeeRelatedApi'
 import {
   createOrgUnit,
   deleteOrgUnit,
@@ -25,6 +27,7 @@ import type { OrgUnitType, OrgUnitWritePayload } from '../lib/orgUnitApi'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
 import type { OrgUnit } from '../types/orgUnit'
+import type { EmploymentAssignment } from '../types/employeeRelated'
 
 interface Props {
   employeeName: string
@@ -51,18 +54,29 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
   const [editingOrgUnit, setEditingOrgUnit] = useState<OrgUnit | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [orgUnitsLoadFailed, setOrgUnitsLoadFailed] = useState(false)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [showDeleted, setShowDeleted] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [displayMode, setDisplayMode] = useState<'table' | 'chart'>('table')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [assignments, setAssignments] = useState<EmploymentAssignment[]>([])
+  const [membersLoading, setMembersLoading] = useState(true)
+  const [membersError, setMembersError] = useState('')
+  const [employeesLoadFailed, setEmployeesLoadFailed] = useState(false)
 
   useEffect(() => {
     let isCurrent = true
     setIsLoading(true)
+    setOrgUnitsLoadFailed(false)
     setErrorMessage('')
     setIsFormOpen(false)
     setEditingOrgUnit(null)
+    setOrgUnits([])
+    setEmployees([])
+    setEmployeesLoadFailed(false)
 
     Promise.allSettled([
       fetchCompanies(),
@@ -85,6 +99,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
         if (orgUnitsResult.status === 'fulfilled') {
           setOrgUnits(orgUnitsResult.value)
         } else {
+          setOrgUnitsLoadFailed(true)
           errors.push(orgUnitsResult.reason instanceof Error
             ? orgUnitsResult.reason.message
             : 'Could not load organization units.')
@@ -92,6 +107,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
         if (employeesResult.status === 'fulfilled') {
           setEmployees(employeesResult.value)
         } else {
+          setEmployeesLoadFailed(true)
           errors.push(employeesResult.reason instanceof Error
             ? employeesResult.reason.message
             : 'Could not load employees.')
@@ -112,7 +128,37 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
     return () => {
       isCurrent = false
     }
-  }, [companyId, showDeleted])
+  }, [companyId, showDeleted, refreshKey])
+
+  useEffect(() => {
+    if (displayMode !== 'chart' || !companyId) return
+    let requestId = 0
+    let isCurrent = true
+    function loadMembers() {
+      const id = ++requestId
+      setMembersLoading(true)
+      setMembersError('')
+      setAssignments([])
+      fetchEmploymentAssignments(undefined, companyId)
+        .then((items) => {
+          if (isCurrent && id === requestId) setAssignments(items)
+        })
+        .catch((error: unknown) => {
+          if (isCurrent && id === requestId) {
+            setMembersError(error instanceof Error ? error.message : 'Could not load org unit members.')
+          }
+        })
+        .finally(() => {
+          if (isCurrent && id === requestId) setMembersLoading(false)
+        })
+    }
+    loadMembers()
+    window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, loadMembers)
+    return () => {
+      isCurrent = false
+      window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, loadMembers)
+    }
+  }, [companyId, displayMode, refreshKey])
 
   useEffect(() => {
     if (!successMessage) return
@@ -323,7 +369,35 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
         {errorMessage && !isFormOpen && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
         {successMessage && <p role="status" className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
 
-        <DataTable
+        <div className="mb-4 inline-flex gap-1 rounded-lg border border-slate-200 bg-white p-1" role="group" aria-label="Org unit view">
+          {([
+            { mode: 'table', label: 'Table', Icon: List },
+            { mode: 'chart', label: 'Org chart', Icon: Network },
+          ] as const).map(({ mode, label, Icon }) => (
+            <button key={mode} type="button" aria-pressed={displayMode === mode} onClick={() => setDisplayMode(mode)} className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-xs font-semibold ${displayMode === mode ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}>
+              <Icon className="h-4 w-4" />{label}
+            </button>
+          ))}
+        </div>
+
+        {displayMode === 'chart' ? (
+          <OrgChart
+            key={companyId}
+            companyId={companyId}
+            companyName={companies.find((company) => company.id === companyId)?.legal_name ?? ''}
+            units={orgUnits}
+            employees={employees}
+            assignments={assignments}
+            membersLoading={membersLoading || isLoading}
+            membersError={employeesLoadFailed ? 'Employee records could not be loaded. Use Refresh to try again.' : membersError}
+            isLoading={isLoading}
+            loadFailed={orgUnitsLoadFailed}
+            loadingEditId={loadingEditId}
+            onEdit={(unit) => void openEdit(unit)}
+            onCreate={openCreate}
+            onRefresh={() => setRefreshKey((current) => current + 1)}
+          />
+        ) : <DataTable
           rows={orgUnits}
           columns={columns}
           getRowKey={(unit) => unit.id}
@@ -346,7 +420,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
               </label>
             </div>
           )}
-        />
+        />}
       </main>
 
       <FormModal<OrgUnitFormValues>

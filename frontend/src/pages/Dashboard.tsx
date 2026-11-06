@@ -37,6 +37,7 @@ import OvertimeApprovalsPanel from '../components/dashboard/OvertimeApprovalsPan
 import OfficialBusinessApprovalsPanel from '../components/dashboard/OfficialBusinessApprovalsPanel'
 import SupervisorAttendanceLocationsPanel from '../features/attendance/SupervisorAttendanceLocationsPanel'
 import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendanceReviewPanel'
+import UnresolvedAttendanceApprovals from '../features/attendance/UnresolvedAttendanceApprovals'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -325,12 +326,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   }, [role])
 
   useEffect(() => {
-    if (
-      role !== 'supervisor'
-      && role !== 'manager'
-      && !(isAdmin && role === 'administrator')
-    ) return
-
     let isCurrent = true
     const refreshPendingLeaveCount = async () => {
       if (!canReviewTeamLeave) return
@@ -688,14 +683,14 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         },
         {
           label: 'Leave Requests',
-          value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+          value: isLoadingSupervisorLeaveCount ? '…' : supervisorLeavesError ? 'Unavailable' : supervisorPendingLeaveCount ?? '—',
           hint: 'Click to review team leave',
           icon: '📋',
           accent: 'indigo',
         },
         {
           label: 'Invalid Attendance',
-          value: isLoadingInvalidAttendance ? '…' : supervisorInvalidAttendance.length,
+          value: isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : supervisorInvalidAttendance.length,
           hint: 'Click to review and approve',
           icon: '⚠️',
           accent: 'amber',
@@ -735,7 +730,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         },
         {
           label: 'Pending Requests',
-          value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+          value: isLoadingSupervisorLeaveCount ? '…' : supervisorLeavesError ? 'Unavailable' : supervisorPendingLeaveCount ?? '—',
           hint: 'Click to review team leave',
           icon: '📋',
           accent: 'indigo',
@@ -824,6 +819,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   })
 
   function closeTeamReviews() {
+    setEmployeePanel(null)
     setAdminPanel(null)
     setIsOfflineReviewOpen(false)
     setIsTeamHoursOpen(false)
@@ -865,7 +861,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   ] : []
   const teamReviews: TeamOverviewItem[] = []
   if (canReviewTeamLeave) teamReviews.push({
-    id: 'leave', label: 'Leave', value: isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—',
+    id: 'leave', label: 'Leave',
+    value: isLoadingSupervisorLeaveCount ? '…' : supervisorLeavesError ? 'Unavailable' : supervisorPendingLeaveCount ?? '—',
     open: isSupervisorLeavePanelOpen,
     onClick: () => toggleTeamReview(isSupervisorLeavePanelOpen, () => { void toggleSupervisorLeavePanel() }),
   })
@@ -904,7 +901,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   })
 
   function toggleEmployeePanel(panel: EmployeeDashboardPanel) {
-    setEmployeePanel((current) => current === panel ? null : panel)
+    const shouldOpen = employeePanel !== panel
+    closeTeamReviews()
+    if (shouldOpen) setEmployeePanel(panel)
   }
 
   const employeeMetrics: TeamOverviewItem[] = []
@@ -980,6 +979,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     id: 'updates', label: 'Holidays & announcements', open: employeePanel === 'updates', controls: 'employee-updates',
     onClick: () => toggleEmployeePanel('updates'),
   })
+  employeeActions.push(...teamReviews
+    .filter((item) => ['leave', 'invalid', 'overtime', 'ob', 'correction'].includes(item.id))
+    .map((item) => ({ ...item, id: `review-${item.id}`, label: `Review ${item.label}` })))
 
   const adminMetrics: TeamOverviewItem[] = visibleMetrics
     .filter((metric) => !['Pending Leave', 'Invalid Attendance'].includes(metric.label))
@@ -994,8 +996,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       }
     })
   const adminReviews: TeamOverviewItem[] = []
-  if (canReviewTeamLeave) adminReviews.push({
-    id: 'leave', label: 'Pending leave',
+  if (canReviewTeamLeave && canReadOrgAttendance) adminReviews.push({
+    id: 'leave', label: 'All pending leave',
     value: isLoadingAdminDashboard ? '…' : adminDashboardError ? 'Unavailable' : adminDashboardSnapshot?.pending_leaves.length ?? '—',
     open: adminPanel === 'pending-leaves',
     onClick: () => toggleTeamReview(adminPanel === 'pending-leaves', () => setAdminPanel('pending-leaves')),
@@ -1007,7 +1009,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     onClick: () => toggleTeamReview(adminPanel === 'invalid-attendance', () => setAdminPanel('invalid-attendance')),
   })
   if (isAdmin) {
-    adminReviews.push(...teamReviews.filter((item) => ['devices', 'overtime', 'ob'].includes(item.id)))
+    adminReviews.push(...teamReviews
+      .filter((item) => ['devices', 'overtime', 'ob', 'leave', 'correction'].includes(item.id))
+      .map((item) => item.id === 'leave'
+        ? { ...item, id: 'assigned-leave', label: 'Assigned leave approvals' }
+        : item))
     adminReviews.push({
       id: 'offline', label: 'Offline attendance review', open: isOfflineReviewOpen, controls: 'offline-attendance-review',
       onClick: () => toggleTeamReview(isOfflineReviewOpen, () => setIsOfflineReviewOpen(true)),
@@ -1019,6 +1025,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
+        <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
         ) : role === 'employee' ? (
@@ -1030,13 +1037,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         {isAdmin && role === 'administrator' && (
           <div id="offline-attendance-review" hidden={!isOfflineReviewOpen}><OfflineAttendanceReviewPanel /></div>
         )}
-        {(role === 'supervisor' || role === 'manager') && hasPermission('attendance.approve_corrections_team') && (
+        {hasPermission('attendance.approve_corrections_team') && (
           <div id="supervisor-attendance-corrections" hidden={!isCorrectionApprovalOpen}>
             <AttendanceCorrectionsPanel scope="team" onPendingCountChange={setPendingCorrectionCount} />
           </div>
         )}
 
-        {canReviewTeamOvertime && (role === 'supervisor' || role === 'manager' || (isAdmin && role === 'administrator')) && isOvertimeApprovalPanelOpen && (
+        {canReviewTeamOvertime && isOvertimeApprovalPanelOpen && (
           <OvertimeApprovalsPanel
             requests={pendingOvertimeRequests}
             isLoading={isLoadingOvertimeRequests}
@@ -1046,7 +1053,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           />
         )}
 
-        {canReviewTeamOfficialBusiness && (isTeamDashboard || (isAdmin && role === 'administrator' && isOfficialBusinessPanelOpen)) && (
+        {canReviewTeamOfficialBusiness && (isTeamDashboard || isOfficialBusinessPanelOpen) && (
           <div hidden={isTeamDashboard && !isOfficialBusinessPanelOpen}>
             <OfficialBusinessApprovalsPanel onPendingCountChange={setPendingOfficialBusinessCount} />
           </div>
@@ -1147,13 +1154,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </h2>
                 <p className="mt-1 text-sm text-slate-500">
                   {adminPanel === 'invalid-attendance'
-                    ? 'Invalid attendance awaiting supervisor review.'
+                    ? 'Invalid attendance assigned to you for review.'
                     : adminPanel === 'no-login'
                       ? 'Attendance records marked absent this month, excluding leave days and shifts whose expected clock-in time has not been reached. Days without an attendance record are not included.'
                     : adminPanel === 'no-logout'
                       ? 'Clocked-in attendance records this month with no clock-out, shown only six hours after the expected clock-out time.'
                     : adminPanel === 'pending-leaves'
-                      ? 'Leave requests awaiting review.'
+                      ? 'Organization-wide overview. Use Assigned leave approvals to review requests assigned to you.'
                       : 'Recorded hours from Monday through today.'}
                 </p>
                 {adminDashboardSnapshot && (
@@ -1171,7 +1178,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
               </button>
             </div>
 
-            {adminDashboardError && (
+            {adminPanel !== 'invalid-attendance' && adminDashboardError && (
               <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                 {adminDashboardError}
               </p>
@@ -1236,7 +1243,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                     <p className="rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                       Loading invalid attendance…
                     </p>
-                  ) : supervisorInvalidAttendance.length ? (
+                  ) : invalidAttendanceError && supervisorInvalidAttendance.length === 0 ? null
+                  : supervisorInvalidAttendance.length ? (
                     <table className="w-full min-w-[760px] text-left text-sm">
                       <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
                         <tr>
@@ -1351,18 +1359,18 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {(role === 'supervisor' || role === 'manager') && canReviewTeamLeave && isSupervisorLeavePanelOpen && (
+        {canReviewTeamLeave && isSupervisorLeavePanelOpen && (
           <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <AttendanceDeadlines scope="team" />
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
                 <h2 className="text-lg font-extrabold text-slate-900">Pending leave approvals</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Review leave applications from employees currently assigned to you.
+                  Review leave applications assigned to you.
                 </p>
               </div>
               <span className="w-fit rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                {isLoadingSupervisorLeaveCount ? '…' : supervisorPendingLeaveCount ?? '—'} pending
+                {isLoadingSupervisorLeaveCount ? '…' : supervisorLeavesError ? 'Unavailable' : `${supervisorPendingLeaveCount ?? '—'} pending`}
               </span>
             </div>
 
@@ -1373,7 +1381,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             )}
             {isLoadingSupervisorLeaves ? (
               <p className="mt-5 text-sm text-slate-500">Loading pending leave applications…</p>
-            ) : supervisorPendingLeaves.length === 0 ? (
+            ) : supervisorLeavesError && supervisorPendingLeaves.length === 0 ? null
+            : supervisorPendingLeaves.length === 0 ? (
               <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                 There are no pending leave applications assigned to you.
               </p>
@@ -1445,7 +1454,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {(role === 'supervisor' || role === 'manager') && canReviewTeamAttendance && isInvalidAttendancePanelOpen && (
+        {canReviewTeamAttendance && isInvalidAttendancePanelOpen && (
           <section className="mt-6 rounded-2xl border border-amber-200 bg-white p-6 shadow-sm">
             <AttendanceDeadlines scope="team" />
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
@@ -1456,7 +1465,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 </p>
               </div>
               <span className="w-fit rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
-                {supervisorInvalidAttendance.length} awaiting approval
+                {isLoadingInvalidAttendance ? '…' : invalidAttendanceError ? 'Unavailable' : `${supervisorInvalidAttendance.length} awaiting approval`}
               </span>
             </div>
 
@@ -1467,7 +1476,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             )}
             {isLoadingInvalidAttendance ? (
               <p className="mt-5 text-sm text-slate-500">Loading invalid attendance…</p>
-            ) : supervisorInvalidAttendance.length === 0 ? (
+            ) : invalidAttendanceError && supervisorInvalidAttendance.length === 0 ? null
+            : supervisorInvalidAttendance.length === 0 ? (
               <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
                 There are no invalid attendance records awaiting your approval.
               </p>

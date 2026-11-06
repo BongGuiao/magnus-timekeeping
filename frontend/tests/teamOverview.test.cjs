@@ -32,7 +32,7 @@ function find(tree, predicate) {
   return null
 }
 
-function dashboard(role, permissions, admin = false, onNavigate) {
+function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = {}) {
   let index = 0
   const states = []
   const dependencies = {
@@ -60,8 +60,8 @@ function dashboard(role, permissions, admin = false, onNavigate) {
       hasPermission: (permission) => permissions.includes(permission),
       hasAnyPermission: (values) => values.some((permission) => permissions.includes(permission)),
     },
-    '../lib/attendanceApi': { fetchSupervisorInvalidAttendance: async () => [] },
-    '../lib/leaveApi': { fetchSupervisorPendingLeaves: async () => [], formatLeaveBalance: () => '' },
+    '../lib/attendanceApi': { fetchSupervisorInvalidAttendance: async () => [], ...apiOverrides.attendance },
+    '../lib/leaveApi': { fetchSupervisorPendingLeaves: async () => [], formatLeaveBalance: () => '', ...apiOverrides.leave },
     '../lib/deviceApi': {}, '../lib/dashboardContentApi': {},
   }
   const source = readFileSync(join(__dirname, '..', 'src', 'pages', 'Dashboard.tsx'), 'utf8')
@@ -75,6 +75,7 @@ function dashboard(role, permissions, admin = false, onNavigate) {
       : { __esModule: true, default: component }
   }
   const Dashboard = load(join('pages', 'Dashboard.tsx'), dependencies, {
+    Error,
     localStorage: { getItem: () => admin ? 'administrator' : role },
   }).default
   return () => {
@@ -229,8 +230,9 @@ test('all roles share the compact welcome header without duplicate overview titl
 test('Administrator metrics and review categories are permission-filtered and mutually exclusive', () => {
   const render = dashboard('administrator', [...permissions, 'attendance.read_org'], true)
   assert.deepEqual(Array.from(render().overview.props.metrics, (item) => item.id), ['missing-in', 'missing-out', 'hours'])
-  assert.deepEqual(Array.from(render().overview.props.reviews, (item) => item.id), ['leave', 'invalid', 'overtime', 'ob', 'devices', 'offline'])
-  for (const id of ['leave', 'invalid', 'overtime', 'ob', 'devices', 'offline', 'missing-in', 'missing-out', 'hours']) {
+  assert.deepEqual(Array.from(render().overview.props.reviews, (item) => item.id),
+    ['leave', 'invalid', 'assigned-leave', 'overtime', 'ob', 'correction', 'devices', 'offline'])
+  for (const id of ['leave', 'invalid', 'assigned-leave', 'overtime', 'ob', 'correction', 'devices', 'offline', 'missing-in', 'missing-out', 'hours']) {
     const overview = render().overview
     const item = [...overview.props.metrics, ...overview.props.reviews].find((item) => item.id === id)
     item.onClick()
@@ -241,6 +243,29 @@ test('Administrator metrics and review categories are permission-filtered and mu
   const limited = dashboard('administrator', [], true)().overview
   assert.equal(limited.props.metrics.length, 0)
   assert.deepEqual(Array.from(limited.props.reviews, (item) => item.id), ['devices', 'offline'])
+  const approvalOnly = dashboard('administrator', ['leave.approve_team'], true)().overview
+  assert.ok(approvalOnly.props.reviews.some((item) => item.id === 'assigned-leave'))
+  assert.ok(!approvalOnly.props.reviews.some((item) => item.id === 'leave'))
+})
+
+test('assigned leave and invalid-attendance failures do not show empty approval queues', async () => {
+  const render = dashboard('manager', permissions, false, undefined, {
+    leave: { fetchSupervisorPendingLeaves: async () => { throw new Error('Leave unavailable') } },
+    attendance: { fetchSupervisorInvalidAttendance: async () => { throw new Error('Attendance unavailable') } },
+  })
+  render().overview.props.reviews.find((item) => item.id === 'leave').onClick()
+  await new Promise((resolve) => setImmediate(resolve))
+  let page = render()
+  assert.equal(page.overview.props.reviews.find((item) => item.id === 'leave').value, 'Unavailable')
+  assert.match(page.html, /Leave unavailable/)
+  assert.doesNotMatch(page.html, /There are no pending leave applications assigned to you/)
+
+  page.overview.props.reviews.find((item) => item.id === 'invalid').onClick()
+  await new Promise((resolve) => setImmediate(resolve))
+  page = render()
+  assert.equal(page.overview.props.reviews.find((item) => item.id === 'invalid').value, 'Unavailable')
+  assert.match(page.html, /Attendance unavailable/)
+  assert.doesNotMatch(page.html, /There are no invalid attendance records awaiting your approval/)
 })
 
 const employeePermissions = ['attendance.read_own', 'attendance.correct_own', 'leave.read_own',
@@ -294,6 +319,32 @@ test('Employee without module rights sees no restricted actions, metrics, or pan
   const correctionsOnly = dashboard('employee', ['attendance.correct_own'])()
   assert.ok(correctionsOnly.overview.props.reviews.some((item) => item.id === 'correction'))
   assert.ok(!correctionsOnly.overview.props.reviews.some((item) => item.id === 'leave'))
+})
+
+test('employee approvers can open assigned reviews without leaving another employee panel open', async () => {
+  const render = dashboard('employee', [...employeePermissions, ...permissions])
+  const expected = ['review-leave', 'review-invalid', 'review-overtime', 'review-ob', 'review-correction']
+  assert.deepEqual(
+    Array.from(render().overview.props.reviews.filter((item) => item.id.startsWith('review-')), (item) => item.id),
+    expected,
+  )
+  render().overview.props.reviews.find((item) => item.id === 'balances').onClick()
+  assert.ok(find(render().tree, (node) => node.props?.id === 'employee-balances'))
+  for (const id of expected) {
+    render().overview.props.reviews.find((item) => item.id === id).onClick()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(find(render().tree, (node) => node.props?.id === 'employee-balances'), null)
+    assert.deepEqual(Array.from(render().overview.props.reviews.filter((item) => item.open), (item) => item.id), [id])
+  }
+  render().overview.props.reviews.find((item) => item.id === 'balances').onClick()
+  assert.deepEqual(Array.from(render().overview.props.reviews.filter((item) => item.open), (item) => item.id), ['balances'])
+})
+
+test('routing alert lookup is available to HR and employee request owners', () => {
+  const permitted = dashboard('employee', ['employees.manage'])()
+  const denied = dashboard('employee', [])()
+  assert.ok(permitted.html.includes('data-component="UnresolvedAttendanceApprovals"'))
+  assert.ok(denied.html.includes('data-component="UnresolvedAttendanceApprovals"'))
 })
 
 test('Recent Attendance preserves its collapsed default and supports immediate dashboard expansion', () => {

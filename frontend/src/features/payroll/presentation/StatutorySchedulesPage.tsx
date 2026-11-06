@@ -1,6 +1,21 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, RefreshCw, Save, Trash2, Pencil, Check, Archive, Minimize2, X } from 'lucide-react'
+import {
+  Archive,
+  Check,
+  HeartPulse,
+  House,
+  Minimize2,
+  Pencil,
+  Plus,
+  ReceiptText,
+  RefreshCw,
+  Save,
+  Shield,
+  Trash2,
+  X,
+  type LucideIcon,
+} from 'lucide-react'
 import TopNav, { type NavView } from '../../../components/dashboard/TopNav'
 import { useCompanySetupSelection } from '../../../hooks/useCompanySetupSelection'
 import { hasPermission } from '../../../types/role'
@@ -28,11 +43,11 @@ interface Props {
   onLoggedOut?: () => void
 }
 
-const tabs: { id: ProgramTab; label: string; description: string }[] = [
-  { id: 'SSS', label: 'SSS', description: 'Social Security System' },
-  { id: 'PHILHEALTH', label: 'PhilHealth', description: 'National Health Insurance' },
-  { id: 'PAGIBIG', label: 'Pag-IBIG', description: 'Home Development Mutual Fund' },
-  { id: 'TAX', label: 'Withholding tax', description: 'Tax brackets by pay period' },
+const tabs: { id: ProgramTab; label: string; description: string; icon: LucideIcon }[] = [
+  { id: 'SSS', label: 'SSS', description: 'Social Security System', icon: Shield },
+  { id: 'PHILHEALTH', label: 'PhilHealth', description: 'National Health Insurance', icon: HeartPulse },
+  { id: 'PAGIBIG', label: 'Pag-IBIG', description: 'Home Development Mutual Fund', icon: House },
+  { id: 'TAX', label: 'Withholding tax', description: 'Tax brackets by pay period', icon: ReceiptText },
 ]
 
 const emptySchedule = {
@@ -575,10 +590,15 @@ export default function StatutorySchedulesPage({
                 resetBracketEditor()
               }}
               aria-current={tab === item.id ? 'page' : undefined}
-              className={`rounded-lg px-4 py-3 text-left transition ${tab === item.id ? 'bg-indigo-600 text-white' : 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-700'}`}
+              className={`flex items-center gap-3 rounded-lg px-4 py-3 text-left transition ${tab === item.id ? 'bg-indigo-600 text-white' : 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-700'}`}
             >
-              <span className="block text-sm font-bold">{item.label}</span>
-              <span className={`mt-0.5 block text-xs ${tab === item.id ? 'text-indigo-100' : 'text-slate-500'}`}>{item.description}</span>
+              <span className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${tab === item.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-indigo-600'}`}>
+                <item.icon aria-hidden="true" size={20} strokeWidth={2} />
+              </span>
+              <span>
+                <span className="block text-sm font-bold">{item.label}</span>
+                <span className={`mt-0.5 block text-xs ${tab === item.id ? 'text-indigo-100' : 'text-slate-500'}`}>{item.description}</span>
+              </span>
             </button>
           ))}
         </nav>

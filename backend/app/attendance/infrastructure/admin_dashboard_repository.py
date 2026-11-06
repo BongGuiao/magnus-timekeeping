@@ -14,6 +14,7 @@ from app.attendance.domain.entities.attendance_employee import AttendanceEmploye
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.auth.infrastructure.db_model import UserModel
+from app.auth.infrastructure.approval_routing import approval_route_scope, legacy_supervisor_scope
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
@@ -132,25 +133,13 @@ class SqlAlchemyAdminDashboardRepository:
         if supervisor_employee_id is not None:
             if today is None:
                 raise ValueError("A date is required when loading team-scoped leave applications.")
-            conditions.append(
-                exists(
-                    select(EmploymentAssignmentModel.id).where(
-                        EmploymentAssignmentModel.employee_id == EmployeeModel.id,
-                        EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-                        EmploymentAssignmentModel.is_active.is_(True),
-                        EmploymentAssignmentModel.status == "ACTIVE",
-                        EmploymentAssignmentModel.effective_from <= today,
-                        or_(
-                            EmploymentAssignmentModel.effective_to.is_(None),
-                            EmploymentAssignmentModel.effective_to >= today,
-                        ),
-                        or_(
-                            EmploymentAssignmentModel.separation_date.is_(None),
-                            EmploymentAssignmentModel.separation_date >= today,
-                        ),
-                    )
-                )
-            )
+            conditions.append(approval_route_scope(
+                "leave_application",
+                LeaveApplicationModel.id,
+                supervisor_employee_id,
+                legacy_supervisor_scope(EmployeeModel.id, supervisor_employee_id, today),
+            ))
+            conditions.append(EmployeeModel.id != supervisor_employee_id)
         rows = (
             await self._session.execute(
                 select(

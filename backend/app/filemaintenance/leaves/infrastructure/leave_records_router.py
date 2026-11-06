@@ -14,7 +14,7 @@ from redis.exceptions import RedisError
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
@@ -549,7 +549,7 @@ async def get_employee_entitlement(
 )
 async def create_leave_application(
     payload: LeaveApplicationCreateSchema,
-    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.submit")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -606,7 +606,7 @@ async def create_leave_application(
 @applications_router.put("/update", response_model=ResponseEnvelope[LeaveApplicationEntity])
 async def update_leave_application(
     payload: LeaveApplicationUpdateSchema,
-    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.submit")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -637,7 +637,10 @@ async def update_leave_application(
     stamp_audit_fields(values, actor_id, creating=False)
     try:
         result = _require_record(
-            await use_case.update_with_approval_posting(payload.id, values, actor_id),
+            await use_case.update_with_approval_posting(
+                payload.id, values, actor_id,
+                expected_employee_id=_employee_id(claims) if claims.get("role") != "admin" else None,
+            ),
             "Leave application not found.",
         )
     except ValueError as error:
@@ -659,7 +662,7 @@ async def update_leave_application(
 )
 async def submit_leave_application(
     application_id: UUID,
-    claims: dict[str, Any] = Depends(require_permission("leave.submit")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.submit")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -671,7 +674,10 @@ async def submit_leave_application(
             detail="You can only submit your own leave application.",
         )
     try:
-        result = await use_case.submit_draft_for_approval(application_id, actor_id)
+        result = await use_case.submit_draft_for_approval(
+            application_id, actor_id,
+            expected_employee_id=_employee_id(claims) if claims.get("role") != "admin" else None,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -715,7 +721,7 @@ async def list_leave_applications(
     response_model=ResponseEnvelope[int],
 )
 async def count_supervisor_pending_leave_applications(
-    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -732,7 +738,7 @@ async def count_supervisor_pending_leave_applications(
     response_model=ResponseEnvelope[list[SupervisorPendingLeaveSchema]],
 )
 async def list_supervisor_pending_leave_applications(
-    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
 ):
     _actor_id(claims)
@@ -751,7 +757,7 @@ async def list_supervisor_pending_leave_applications(
 async def decide_supervisor_pending_leave_application(
     application_id: UUID,
     payload: SupervisorLeaveDecisionSchema,
-    claims: dict[str, Any] = Depends(require_permission("leave.approve_team")),
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.approve_team")),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):

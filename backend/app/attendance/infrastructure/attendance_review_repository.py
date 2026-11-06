@@ -2,37 +2,38 @@ from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance.domain.entities.attendance_review import (
     ReviewableAttendance,
     ReviewableAttendanceRecord,
+    UnresolvedAttendanceRouting,
 )
+from app.attendance.domain.exceptions import RecordNotFoundError
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.entity_mapping import copy_fields, to_attendance_employee
 from app.auth.infrastructure.db_model import UserModel
-from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    approval_route_scope,
+    assign_org_approval,
+    legacy_supervisor_scope,
+)
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
+from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import require_attendance_open
 
 
-def _supervised_as_of(statement, supervisor_employee_id: UUID, today: date):
-    return statement.join(
-        EmploymentAssignmentModel,
-        EmploymentAssignmentModel.employee_id == EmployeeModel.id,
-    ).where(
-        EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-        EmploymentAssignmentModel.is_active.is_(True),
-        EmploymentAssignmentModel.status == "ACTIVE",
-        EmploymentAssignmentModel.effective_from <= today,
-        or_(
-            EmploymentAssignmentModel.effective_to.is_(None),
-            EmploymentAssignmentModel.effective_to >= today,
-        ),
-        or_(
-            EmploymentAssignmentModel.separation_date.is_(None),
-            EmploymentAssignmentModel.separation_date >= today,
-        ),
+def _review_scope(supervisor_employee_id: Optional[UUID], actor_employee_id: Optional[UUID], today: date):
+    legacy = (
+        legacy_supervisor_scope(EmployeeModel.id, supervisor_employee_id, today)
+        if supervisor_employee_id is not None else true()
+    )
+    reviewer_id = supervisor_employee_id or actor_employee_id
+    return and_(
+        approval_route_scope("invalid_attendance", AttendanceModel.id, reviewer_id, legacy),
+        EmployeeModel.id != reviewer_id if reviewer_id is not None else true(),
     )
 
 
@@ -62,28 +63,76 @@ class SqlAlchemyAttendanceReviewRepository:
         self._session = session
 
     async def list_invalid(
-        self, supervisor_employee_id: Optional[UUID], today: date
+        self, supervisor_employee_id: Optional[UUID], today: date, actor_employee_id: Optional[UUID] = None
     ) -> list[ReviewableAttendanceRecord]:
         statement = _invalid_attendance_statement().order_by(
             AttendanceModel.work_date.desc(), EmployeeModel.employee_no
         )
-        if supervisor_employee_id is not None:
-            statement = _supervised_as_of(statement, supervisor_employee_id, today).distinct()
+        statement = statement.where(_review_scope(supervisor_employee_id, actor_employee_id, today))
         rows = (await self._session.execute(statement)).all()
         return [_record(attendance, employee) for attendance, employee in rows]
 
     async def lock_invalid(
-        self, attendance_id: UUID, supervisor_employee_id: Optional[UUID], today: date
+        self, attendance_id: UUID, supervisor_employee_id: Optional[UUID], today: date,
+        actor_employee_id: Optional[UUID] = None,
     ) -> Optional[ReviewableAttendanceRecord]:
         statement = (
             _invalid_attendance_statement()
             .with_for_update(of=AttendanceModel)
             .where(AttendanceModel.id == attendance_id)
         )
-        if supervisor_employee_id is not None:
-            statement = _supervised_as_of(statement, supervisor_employee_id, today)
+        statement = statement.where(_review_scope(supervisor_employee_id, actor_employee_id, today))
         row = (await self._session.execute(statement)).first()
         return _record(*row) if row is not None else None
+
+    async def list_unresolved_routes(self) -> list[UnresolvedAttendanceRouting]:
+        rows = (await self._session.execute(
+            select(AttendanceModel, EmployeeModel, ApprovalRouteModel)
+            .join(ApprovalRouteModel, ApprovalRouteModel.resource_id == AttendanceModel.id)
+            .join(EmployeeModel, EmployeeModel.id == ApprovalRouteModel.employee_id)
+            .where(
+                ApprovalRouteModel.resource_type == "invalid_attendance",
+                ApprovalRouteModel.routing_mode == "UNRESOLVED",
+                ApprovalRouteModel.is_current.is_(True),
+                AttendanceModel.record_status == "INVALID",
+            )
+            .order_by(AttendanceModel.work_date.desc(), EmployeeModel.employee_no)
+        )).all()
+        unresolved = []
+        for attendance, employee, route in rows:
+            if route.routing_error is None:
+                raise RuntimeError("An unresolved attendance approval has no routing error.")
+            unresolved.append(UnresolvedAttendanceRouting(_record(attendance, employee), route.routing_error))
+        return unresolved
+
+    async def retry_unresolved_route(self, attendance_id: UUID, actor_id: UUID, today: date) -> Optional[str]:
+        row = (await self._session.execute(
+            select(ApprovalRouteModel)
+            .join(AttendanceModel, AttendanceModel.id == ApprovalRouteModel.resource_id)
+            .where(
+                AttendanceModel.id == attendance_id,
+                AttendanceModel.record_status == "INVALID",
+                ApprovalRouteModel.resource_type == "invalid_attendance",
+                ApprovalRouteModel.routing_mode == "UNRESOLVED",
+                ApprovalRouteModel.is_current.is_(True),
+            )
+            .with_for_update(of=(AttendanceModel, ApprovalRouteModel))
+        )).scalar_one_or_none()
+        if row is None:
+            raise RecordNotFoundError("Unresolved attendance approval was not found or has already been routed.")
+        if row.employee_id is None:
+            raise ValueError("The unresolved attendance approval has no employee. Contact an administrator.")
+        try:
+            await assign_org_approval(
+                self._session, resource_type="invalid_attendance", resource_id=attendance_id,
+                employee_id=row.employee_id, assigned_by=actor_id, on_date=today,
+                permission_code="attendance.read_team",
+            )
+        except ApprovalRoutingError as error:
+            row.routing_error = str(error)
+            await self._session.flush()
+            return str(error)
+        return None
 
     async def save_review(self, attendance: ReviewableAttendance) -> None:
         model = await self._session.get(AttendanceModel, attendance.id)

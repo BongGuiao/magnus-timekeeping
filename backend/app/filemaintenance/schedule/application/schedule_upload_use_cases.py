@@ -115,17 +115,27 @@ async def _save_upload_batch(
                     effective_to=resolved.row.effective_to,
                     rest_day_pattern_code=resolved.row.rest_day_pattern_code,
                     reason=resolved.row.reason,
+                    company_id=resolved.employee.company_id,
                 )
                 for resolved in evaluation.resolved_rows
             ),
         )
     )
+    company_ids = {resolved.employee.company_id for resolved in evaluation.resolved_rows}
+    approval_required = await repository.schedule_approval_required(company_ids)
+    if approval_required:
+        await repository.assign_batch_approver(
+            batch_id,
+            {resolved.employee.employee_id for resolved in evaluation.resolved_rows},
+            data.uploaded_by,
+            ph_today(now),
+        )
     batch = await repository.get_batch(batch_id)
     if batch is None:
         raise RuntimeError("The schedule upload batch could not be reloaded after saving.")
-    company_ids = {resolved.employee.company_id for resolved in evaluation.resolved_rows}
-    if await repository.schedule_approval_required(company_ids):
+    if approval_required:
         return batch
+    batch = replace(batch, approval_routing_mode="ORG_UNIT")
     approved = batch.approve_on_submission(now)
     if data.supervisor_employee_id is None:
         approved = replace(
@@ -188,6 +198,8 @@ class ListScheduleUploadBatchesInput:
     uploaded_by: UUID | None = None
     supervisor_employee_id: UUID | None = None
     status: ScheduleUploadBatchStatus | None = None
+    reviewer_employee_id: UUID | None = None
+    review_mode: bool = False
 
 
 class ListScheduleUploadBatchesUseCase(_ScheduleUploadUseCase, BaseUseCase[list[ScheduleUploadBatch]]):
@@ -196,6 +208,8 @@ class ListScheduleUploadBatchesUseCase(_ScheduleUploadUseCase, BaseUseCase[list[
             return await uow.schedule_uploads.list_batches(
                 uploaded_by=data.uploaded_by,
                 supervisor_employee_id=data.supervisor_employee_id,
+                reviewer_employee_id=data.reviewer_employee_id,
+                review_mode=data.review_mode,
                 status=data.status,
                 limit=MAX_LISTED_BATCHES,
             )
@@ -208,6 +222,8 @@ class GetScheduleUploadBatchInput:
     batch_id: UUID
     uploaded_by: UUID | None = None
     supervisor_employee_id: UUID | None = None
+    reviewer_employee_id: UUID | None = None
+    review_mode: bool = False
 
 
 class GetScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[ScheduleUploadBatch]):
@@ -216,6 +232,8 @@ class GetScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[Schedule
             batch = await uow.schedule_uploads.get_batch(
                 data.batch_id,
                 supervisor_employee_id=data.supervisor_employee_id,
+                reviewer_employee_id=data.reviewer_employee_id,
+                review_mode=data.review_mode,
             )
         if batch is None or (data.uploaded_by is not None and batch.uploaded_by != data.uploaded_by):
             raise ScheduleUploadNotFoundError("Schedule upload batch not found.")
@@ -228,17 +246,22 @@ class ReviewScheduleUploadBatchInput:
     reviewer_id: UUID
     remarks: str | None = None
     supervisor_employee_id: UUID | None = None
+    reviewer_employee_id: UUID | None = None
 
 
 async def _load_for_update(
     uow: ScheduleUploadUnitOfWork,
     batch_id: UUID,
     supervisor_employee_id: UUID | None = None,
+    reviewer_employee_id: UUID | None = None,
+    review_mode: bool = False,
 ) -> ScheduleUploadBatch:
     batch = await uow.schedule_uploads.get_batch(
         batch_id,
         for_update=True,
         supervisor_employee_id=supervisor_employee_id,
+        reviewer_employee_id=reviewer_employee_id,
+        review_mode=review_mode,
     )
     if batch is None:
         raise ScheduleUploadNotFoundError("Schedule upload batch not found.")
@@ -254,13 +277,26 @@ async def _apply_schedule_upload(
 ) -> ScheduleUploadBatch:
     repository = uow.schedule_uploads
     await repository.lock_employees({row.employee_id for row in batch.rows})
-    evaluation = await ScheduleUploadValidator(repository).evaluate(
+    evaluation = await ScheduleUploadValidator(
+        repository,
+        scope="SNAPSHOT" if batch.approval_routing_mode == "ORG_UNIT" else "LEGACY",
+        snapshot_employee_ids={row.employee_id for row in batch.rows},
+    ).evaluate(
         supervisor_employee_id=batch.supervisor_employee_id,
         raw_rows=[row.to_raw() for row in batch.rows],
         today=ph_today(now),
     )
     if not evaluation.validation.is_valid:
         raise ScheduleUploadNoLongerApplicableError(evaluation.validation.error_messages())
+    if batch.approval_routing_mode == "ORG_UNIT":
+        saved_rows = {row.row_no: row for row in batch.rows}
+        changed_company = [
+            f"Row {resolved.row.row_no}: the employee's company changed or was not recorded"
+            for resolved in evaluation.resolved_rows
+            if saved_rows[resolved.row.row_no].company_id != resolved.employee.company_id
+        ]
+        if changed_company:
+            raise ScheduleUploadNoLongerApplicableError(changed_company)
 
     for revision in evaluation.plan.revisions:
         await repository.revise_assignment(revision, actor_id)
@@ -314,7 +350,9 @@ class ApproveScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[Sche
 
     async def _execute(self, data: ReviewScheduleUploadBatchInput) -> ScheduleUploadBatch:
         async with self._uow as uow:
-            batch = await _load_for_update(uow, data.batch_id, data.supervisor_employee_id)
+            batch = await _load_for_update(
+                uow, data.batch_id, data.supervisor_employee_id, data.reviewer_employee_id, True
+            )
             now = self._clock()
             approved = batch.approve(data.reviewer_id, now, (data.remarks or "").strip() or None)
             return await _apply_schedule_upload(uow, batch, approved, data.reviewer_id, now)
@@ -323,7 +361,9 @@ class ApproveScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[Sche
 class RejectScheduleUploadBatchUseCase(_ScheduleUploadUseCase, BaseUseCase[ScheduleUploadBatch]):
     async def _execute(self, data: ReviewScheduleUploadBatchInput) -> ScheduleUploadBatch:
         async with self._uow as uow:
-            batch = await _load_for_update(uow, data.batch_id, data.supervisor_employee_id)
+            batch = await _load_for_update(
+                uow, data.batch_id, data.supervisor_employee_id, data.reviewer_employee_id, True
+            )
             rejected = batch.reject(data.reviewer_id, self._clock(), data.remarks or "")
             await uow.schedule_uploads.save_batch_review(rejected)
             return rejected

@@ -40,6 +40,7 @@ from app.filemaintenance.schedule.infrastructure.schedule_upload_repository impo
 from app.filemaintenance.schedule.infrastructure.schedule_upload_router import router
 from backend.tests.test_schedule_upload_use_cases import (
     APPROVER_ID,
+    APPROVER_EMPLOYEE_ID,
     COMPANY_ID,
     NOW,
     SUPERVISOR_ID,
@@ -55,6 +56,7 @@ class HrRepository(FakeScheduleUploadRepository):
     def __init__(self):
         super().__init__()
         self.second_employee = replace(self.employee, employee_id=uuid4(), employee_code="E002", employee_name="Second Employee")
+        self.active_employees.append(self.second_employee)
         self.teams = {SUPERVISOR_ID: self.team, SECOND_SUPERVISOR_ID: [self.second_employee]}
         self.supervisors = [SupervisorEmployee(SUPERVISOR_ID, "S001"), SupervisorEmployee(SECOND_SUPERVISOR_ID, "S002")]
         self.company_approval = {}
@@ -62,7 +64,20 @@ class HrRepository(FakeScheduleUploadRepository):
     async def find_supervisors(self, employee_codes, on_date):
         return [supervisor for supervisor in self.supervisors if supervisor.employee_code in employee_codes]
 
-    async def find_team_employees(self, supervisor_employee_id, employee_codes, on_date):
+    async def find_team_employees(
+        self, supervisor_employee_id, employee_codes, on_date, *, scope="ORG_UNIT", snapshot_employee_ids=(),
+    ):
+        if scope == "SNAPSHOT":
+            current = {
+                employee.employee_id: employee
+                for employees in self.teams.values() for employee in employees
+            }
+            for employee in self.active_employees:
+                current.setdefault(employee.employee_id, employee)
+            return [
+                employee for employee in current.values()
+                if employee.employee_id in snapshot_employee_ids and employee.employee_code in employee_codes
+            ]
         return [employee for employee in self.teams.get(supervisor_employee_id, []) if employee.employee_code in employee_codes]
 
     async def schedule_approval_required(self, company_ids):
@@ -142,7 +157,7 @@ class HrScheduleUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_hr_cannot_change_reporting_relationships_or_upload_outside_specified_team(self):
         upload = hr_file("S002,E001,DAY,REGULAR,2026-11-01,,,")
         result = await self.preview.execute(upload)
-        self.assertIn("not an active direct report", result.rows[0].errors[0])
+        self.assertIn("not active or is not in the specified manager's team", result.rows[0].errors[0])
         with self.assertRaises(ScheduleUploadRejectedFileError):
             await self.submit.execute(upload)
         self.assertEqual(self.repo.teams[SUPERVISOR_ID], self.repo.team)
@@ -199,7 +214,7 @@ class HrScheduleUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_independent_approval_and_revalidation_remain_usable(self):
         batch = (await self.submit.execute(self.valid))[0]
         approved = await ApproveScheduleUploadBatchUseCase(self.uow, lambda: NOW).execute(
-            ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, "Approved"),
+            ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, "Approved", reviewer_employee_id=APPROVER_EMPLOYEE_ID),
         )
         self.assertEqual(approved.status, ScheduleUploadBatchStatus.APPROVED)
         self.assertEqual(approved.reviewed_by, APPROVER_ID)
@@ -221,15 +236,14 @@ class HrScheduleUploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repo.added, [])
         self.assertEqual(self.repo.links, {})
 
-    async def test_approval_revalidates_stored_supervisor_after_reporting_change(self):
+    async def test_approval_keeps_assigned_reviewer_after_reporting_change(self):
         batch = (await self.submit.execute(self.valid))[1]
         self.repo.teams[SECOND_SUPERVISOR_ID] = []
-        with self.assertRaises(ScheduleUploadNoLongerApplicableError):
-            await ApproveScheduleUploadBatchUseCase(self.uow, lambda: NOW).execute(
-                ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, "Approved"),
-            )
-        self.assertEqual(self.repo.batches[batch.id].status, ScheduleUploadBatchStatus.PENDING_APPROVAL)
-        self.assertEqual(self.repo.added, [])
+        approved = await ApproveScheduleUploadBatchUseCase(self.uow, lambda: NOW).execute(
+            ReviewScheduleUploadBatchInput(batch.id, APPROVER_ID, "Approved", reviewer_employee_id=APPROVER_EMPLOYEE_ID),
+        )
+        self.assertEqual(approved.status, ScheduleUploadBatchStatus.APPROVED)
+        self.assertEqual(len(self.repo.added), 1)
 
     async def test_file_limits_and_missing_supervisor_header_apply_before_database_lookup(self):
         self.repo.find_supervisors = AsyncMock()
@@ -261,7 +275,7 @@ class HrScheduleUploadApiTests(unittest.TestCase):
         self.permissions = ["schedule.upload_team"]
         self.claims = {"sub": str(UPLOADER_ID), "email": "hr@example.invalid"}
         self.authorization = SimpleNamespace(execute=AsyncMock(side_effect=lambda _user_id: SimpleNamespace(
-            role_codes=self.role_codes, permission_codes=self.permissions,
+            role_codes=self.role_codes, permission_codes=self.permissions, employee_id=None,
         )))
         self.repo = HrRepository()
         self.uow = TransactionalFakeUnitOfWork(self.repo)

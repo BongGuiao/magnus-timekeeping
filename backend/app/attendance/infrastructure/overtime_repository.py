@@ -3,7 +3,7 @@ from datetime import date
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
@@ -14,11 +14,18 @@ from app.attendance.domain.entities.overtime import (
     OvertimeCutoff,
 )
 from app.attendance.domain.overtime_rules import OPEN_APPLICATION_STATUSES
+from app.attendance.domain.exceptions import ConflictError
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.entity_mapping import copy_fields as _copy_fields
 from app.attendance.infrastructure.entity_mapping import to_attendance_employee as _employee
 from app.auth.infrastructure.db_model import UserModel
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    approval_route_scope,
+    assign_org_approval,
+    legacy_supervisor_scope,
+)
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 from app.filemaintenance.schedule.infrastructure.db_model import ScheduleSegmentModel
@@ -116,23 +123,15 @@ def _record(row) -> OvertimeApplicationRecord:
     )
 
 
-def _supervised_by(statement, supervisor_employee_id: UUID):
-    return statement.join(
-        EmploymentAssignmentModel,
-        EmploymentAssignmentModel.employee_id == EmployeeModel.id,
-    ).where(
-        EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-        EmploymentAssignmentModel.is_active.is_(True),
-        EmploymentAssignmentModel.status == "ACTIVE",
-        EmploymentAssignmentModel.effective_from <= AttendanceModel.work_date,
-        or_(
-            EmploymentAssignmentModel.effective_to.is_(None),
-            EmploymentAssignmentModel.effective_to >= AttendanceModel.work_date,
-        ),
-        or_(
-            EmploymentAssignmentModel.separation_date.is_(None),
-            EmploymentAssignmentModel.separation_date >= AttendanceModel.work_date,
-        ),
+def _approval_scope(supervisor_employee_id: UUID | None, actor_employee_id: UUID | None):
+    legacy_scope = (
+        true() if supervisor_employee_id is None
+        else legacy_supervisor_scope(EmployeeModel.id, supervisor_employee_id, AttendanceModel.work_date)
+    )
+    reviewer_id = supervisor_employee_id or actor_employee_id
+    return and_(
+        approval_route_scope("overtime_application", OvertimeApplicationModel.id, reviewer_id, legacy_scope),
+        EmployeeModel.id != reviewer_id if reviewer_id is not None else true(),
     )
 
 
@@ -302,6 +301,23 @@ class SqlAlchemyOvertimeRepository:
         await self._session.refresh(model)
         return _copy_fields(model, OvertimeApplication)
 
+    async def assign_approver(
+        self, application_id: UUID, employee_id: UUID, actor_id: UUID, on_date: date
+    ) -> None:
+        try:
+            await assign_org_approval(
+                self._session,
+                resource_type="overtime_application",
+                resource_id=application_id,
+                employee_id=employee_id,
+                assigned_by=actor_id,
+                on_date=on_date,
+                permission_code="overtime.approve_team",
+                hold_unresolved=True,
+            )
+        except ApprovalRoutingError as error:
+            raise ConflictError(str(error)) from error
+
     async def save_application(self, application: OvertimeApplication) -> None:
         model = await self._session.get(OvertimeApplicationModel, application.id)
         for name in (
@@ -355,7 +371,7 @@ class SqlAlchemyOvertimeRepository:
         return [_record(row) for row in (await self._session.execute(statement)).all()]
 
     async def list_pending_applications(
-        self, supervisor_employee_id: Optional[UUID]
+        self, supervisor_employee_id: Optional[UUID], actor_employee_id: Optional[UUID] = None
     ) -> list[OvertimeApplicationRecord]:
         statement = (
             select(OvertimeApplicationModel, AttendanceModel, EmployeeModel)
@@ -366,15 +382,15 @@ class SqlAlchemyOvertimeRepository:
                 OvertimeApplicationModel.is_active.is_(True),
                 EmployeeModel.is_active.is_(True),
                 EmployeeModel.record_status == "ACTIVE",
+                _approval_scope(supervisor_employee_id, actor_employee_id),
             )
             .order_by(OvertimeApplicationModel.created_at, EmployeeModel.employee_no)
         )
-        if supervisor_employee_id is not None:
-            statement = _supervised_by(statement, supervisor_employee_id).distinct()
         return [_record(row) for row in (await self._session.execute(statement)).all()]
 
     async def lock_pending_application(
-        self, application_id: UUID, supervisor_employee_id: Optional[UUID]
+        self, application_id: UUID, supervisor_employee_id: Optional[UUID],
+        actor_employee_id: Optional[UUID] = None,
     ) -> Optional[OvertimeApplicationRecord]:
         statement = (
             select(OvertimeApplicationModel, AttendanceModel, EmployeeModel)
@@ -385,10 +401,9 @@ class SqlAlchemyOvertimeRepository:
                 OvertimeApplicationModel.id == application_id,
                 OvertimeApplicationModel.status == "PENDING",
                 OvertimeApplicationModel.is_active.is_(True),
+                _approval_scope(supervisor_employee_id, actor_employee_id),
             )
         )
-        if supervisor_employee_id is not None:
-            statement = _supervised_by(statement, supervisor_employee_id)
         row = (await self._session.execute(statement)).first()
         return _record(row) if row is not None else None
 

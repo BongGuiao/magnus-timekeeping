@@ -175,6 +175,7 @@ class ScheduleUploadBatchRow:
     rest_day_pattern_code: str | None
     reason: str | None
     assignment_id: UUID | None = None
+    company_id: UUID | None = None
 
     def to_raw(self) -> RawScheduleUploadRow:
         return RawScheduleUploadRow(
@@ -213,6 +214,7 @@ class ScheduleUploadBatch:
     reviewed_at: datetime | None = None
     review_remarks: str | None = None
     rows: tuple[ScheduleUploadBatchRow, ...] = field(default=())
+    approval_routing_mode: str | None = None
 
     def _ensure_pending(self) -> None:
         if self.status is not ScheduleUploadBatchStatus.PENDING_APPROVAL:

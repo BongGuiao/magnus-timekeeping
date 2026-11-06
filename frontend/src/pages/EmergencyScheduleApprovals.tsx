@@ -78,7 +78,7 @@ export default function EmergencyScheduleApprovals({
         <header>
           <h1 className="text-xl font-bold text-slate-900">Emergency Schedule Approvals</h1>
           <p className="mt-1 text-xs text-slate-600">
-            Review one-day schedule replacement requests from employees currently assigned to you.
+            Review one-day schedule replacement requests assigned to you.
             Approval does not change their regular schedule.
           </p>
         </header>
@@ -98,7 +98,7 @@ export default function EmergencyScheduleApprovals({
           {requests === null ? (
             <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading requests…</p>
           ) : requests.length === 0 ? (
-            <p className="px-5 py-6 text-xs text-slate-500">There are no pending emergency schedule requests for your team.</p>
+            <p className="px-5 py-6 text-xs text-slate-500">There are no pending emergency schedule requests assigned to you.</p>
           ) : (
             <ul className="divide-y divide-slate-100">
               {requests.map((request) => (

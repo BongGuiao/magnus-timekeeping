@@ -415,11 +415,11 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
             </label>
             <label className="text-sm font-semibold text-slate-700">Employee filing deadline (optional)
               <input className={inputClass} type="datetime-local" max={form.attendance_deadline || undefined} value={form.employee_filing_deadline} onChange={(event) => setField('employee_filing_deadline', event.target.value)} />
-              <span className="mt-1 block text-xs font-normal text-slate-500">Enter in your browser&apos;s local time. Employees must finish filing and editing requests by this time. If blank, the supervisor approval deadline also applies to filing.</span>
+              <span className="mt-1 block text-xs font-normal text-slate-500">Enter in your browser&apos;s local time. Employees must finish filing and editing requests by this time. If blank, the approval deadline also applies to filing.</span>
             </label>
-            <label className="text-sm font-semibold text-slate-700">Supervisor approval deadline (Attendance deadline)
+            <label className="text-sm font-semibold text-slate-700">Approval deadline (Attendance deadline)
               <input className={inputClass} type="datetime-local" required={Boolean(form.employee_filing_deadline)} min={form.employee_filing_deadline || undefined} value={form.attendance_deadline} onChange={(event) => setField('attendance_deadline', event.target.value)} />
-              <span className="mt-1 block text-xs font-normal text-slate-500">Supervisors must finish approvals by this time. HR can then finalize attendance and approve payroll. Finalizing or locking closes both stages.</span>
+              <span className="mt-1 block text-xs font-normal text-slate-500">Assigned approvers must finish approvals by this time. HR can then finalize attendance and approve payroll. Finalizing or locking closes both stages.</span>
             </label>
             <label className="text-sm font-semibold text-slate-700">Calculation version (optional)
               <input className={inputClass} maxLength={50} value={form.calculation_version} onChange={(event) => setField('calculation_version', event.target.value)} />

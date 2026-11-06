@@ -7,6 +7,8 @@ from app.attendance.application.admin_dashboard_use_cases import GetAdminDashboa
 from app.attendance.application.attendance_review_use_cases import (
     ApproveInvalidAttendanceUseCase,
     ListInvalidAttendanceUseCase,
+    ListUnresolvedAttendanceRoutesUseCase,
+    RetryUnresolvedAttendanceRouteUseCase,
 )
 from app.attendance.application.authorized_location_use_cases import ListMyAttendanceLocationsUseCase
 from app.attendance.application.punch_use_cases import (
@@ -149,6 +151,18 @@ def get_approve_invalid_attendance_use_case(
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ) -> ApproveInvalidAttendanceUseCase:
     return ApproveInvalidAttendanceUseCase(uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client))
+
+
+def get_list_unresolved_attendance_routes_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> ListUnresolvedAttendanceRoutesUseCase:
+    return ListUnresolvedAttendanceRoutesUseCase(uow)
+
+
+def get_retry_unresolved_attendance_route_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> RetryUnresolvedAttendanceRouteUseCase:
+    return RetryUnresolvedAttendanceRouteUseCase(uow)
 
 
 def get_list_my_attendance_locations_use_case(

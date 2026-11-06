@@ -33,7 +33,7 @@ from app.attendance.domain.entities.supervisor_attendance_location import (
     SupervisorAttendanceLocations,
 )
 from app.attendance.infrastructure.http_errors import http_errors
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 
 router = APIRouter()
@@ -187,7 +187,7 @@ def _dashboard_schema(dashboard: AdminDashboard) -> AdminDashboardSnapshotSchema
     dependencies=[Depends(require_permission("leave.approve_team"))],
 )
 async def get_admin_dashboard_snapshot(
-    claims: dict = Depends(require_permission("attendance.read_org")),
+    claims: dict = Depends(require_approval_permission("attendance.read_org")),
     use_case: GetAdminDashboardUseCase = Depends(get_admin_dashboard_use_case),
 ):
     try:
@@ -208,7 +208,7 @@ async def get_admin_dashboard_snapshot(
     dependencies=[Depends(require_permission("leave.approve_team"))],
 )
 async def get_team_dashboard_snapshot(
-    claims: dict = Depends(require_permission("attendance.read_team")),
+    claims: dict = Depends(require_approval_permission("attendance.read_team")),
     use_case: GetAdminDashboardUseCase = Depends(get_admin_dashboard_use_case),
 ):
     try:

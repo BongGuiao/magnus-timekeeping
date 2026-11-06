@@ -40,3 +40,9 @@ class ReviewableAttendance:
 class ReviewableAttendanceRecord:
     attendance: ReviewableAttendance
     employee: AttendanceEmployee
+
+
+@dataclass(frozen=True)
+class UnresolvedAttendanceRouting:
+    record: ReviewableAttendanceRecord
+    routing_error: str

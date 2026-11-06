@@ -15,6 +15,7 @@ from app.attendance.application.use_case import (
 )
 from app.attendance.domain.entities.attendance import AttendanceEntity
 from app.auth.domain.entities.user import UserEntity
+from app.auth.infrastructure.approval_routing import ApprovalRoutingError
 from app.enrollment.domain.entities.enrollment import FaceEnrollmentEntity
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 
@@ -130,11 +131,12 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.use_case._resolve_schedule_day = AsyncMock(return_value=self.schedule)
         self.use_case._resolve_day_type = AsyncMock(return_value="REG")
 
-    async def clock_in(self):
+    async def clock_in(self, device_approved=True):
         with patch("app.attendance.application.use_case.datetime", wraps=datetime) as clock:
             clock.now.return_value = self.now.astimezone(timezone.utc)
             return await self.use_case._execute(ClockAttendanceInputDTO(
                 user_id=self.user_id, image_bytes=b"image", enforce_geofence=False,
+                device_approved=device_approved,
             ))
 
     async def test_rejected_punch_does_not_create_attendance(self):
@@ -150,6 +152,70 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.expected_clock_out_at, self.start + timedelta(hours=9))
         self.assertEqual(record.punch_metadata["schedule_context"]["early_clock_in_allowance_minutes"], 30)
         self.assertEqual(record.late_minutes, 0)
+
+    async def test_flagged_clock_in_is_recorded_when_org_approver_is_missing(self):
+        attendance_id = uuid4()
+
+        def persist(record):
+            record.id = attendance_id
+            return record
+
+        self.attendance.add.side_effect = persist
+        with patch(
+            "app.attendance.application.use_case.assign_org_approval",
+            new=AsyncMock(side_effect=ApprovalRoutingError("No manager configured.")),
+        ), patch(
+            "app.attendance.application.use_case.save_approval_route", new=AsyncMock()
+        ) as save, self.assertLogs("app.attendance.application.use_case", level="WARNING"):
+            result = await self.clock_in(device_approved=False)
+
+        self.assertTrue(result.approval_required)
+        self.assertEqual(self.attendance.add.await_args.args[0].record_status, "INVALID")
+        self.assertEqual(save.await_args.kwargs["resource_id"], attendance_id)
+        self.assertEqual(save.await_args.kwargs["routing_error"], "No manager configured.")
+
+    async def test_flagged_clock_out_assigns_route_when_record_was_valid(self):
+        self.now = self.start + timedelta(hours=9)
+        record = AttendanceEntity(
+            id=uuid4(), user_id=self.user_id, work_date=self.start.date(),
+            clock_in_at=self.start, expected_clock_in_at=self.start,
+            expected_clock_out_at=self.now, record_status="VALID",
+            punch_metadata={"schedule_context": {"ot_eligible": False}},
+        )
+        self.attendance.find_all.return_value = [record]
+        self.attendance.update = AsyncMock(side_effect=lambda updated: updated)
+        with patch(
+            "app.attendance.application.use_case.resolve_record_break_rules",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "app.attendance.application.use_case.assign_invalid_attendance_approver", new=AsyncMock()
+        ) as assign:
+            result = await self.clock_in(device_approved=False)
+        self.assertTrue(result.approval_required)
+        self.assertEqual(record.record_status, "INVALID")
+        self.assertEqual(assign.await_args.args[1:], (
+            record.id, self.employee_id, self.user_id, self.now.date(),
+        ))
+
+    async def test_clock_out_preserves_existing_invalid_route(self):
+        self.now = self.start + timedelta(hours=9)
+        record = AttendanceEntity(
+            id=uuid4(), user_id=self.user_id, work_date=self.start.date(),
+            clock_in_at=self.start, expected_clock_in_at=self.start,
+            expected_clock_out_at=self.now, record_status="INVALID",
+            punch_metadata={"schedule_context": {"ot_eligible": False}},
+        )
+        self.attendance.find_all.return_value = [record]
+        self.attendance.update = AsyncMock(side_effect=lambda updated: updated)
+        with patch(
+            "app.attendance.application.use_case.resolve_record_break_rules",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "app.attendance.application.use_case.assign_invalid_attendance_approver", new=AsyncMock()
+        ) as assign:
+            result = await self.clock_in(device_approved=False)
+        self.assertTrue(result.approval_required)
+        assign.assert_not_awaited()
 
     async def test_previous_evening_punch_uses_next_days_shift(self):
         self.now = self.start.replace(hour=23, minute=45)

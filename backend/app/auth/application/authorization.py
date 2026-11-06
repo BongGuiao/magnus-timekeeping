@@ -6,6 +6,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import distinct, or_, select
 
 from app.auth.domain.entities.user import AccountStatus
+from app.auth.infrastructure.approval_routing import (
+    ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS,
+    active_org_unit_manager_condition,
+)
 from app.auth.infrastructure.db_model import RoleModel
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.uc_base import BaseUseCase
@@ -23,6 +27,7 @@ class CurrentAuthorization:
     role_codes: list[str]
     permission_codes: list[str]
     employee_code: str | None
+    employee_id: UUID | None = None
 
 
 class GetCurrentAuthorizationUseCase(BaseUseCase[CurrentAuthorization]):
@@ -67,17 +72,27 @@ class GetCurrentAuthorizationUseCase(BaseUseCase[CurrentAuthorization]):
                 )
                 .order_by(PermissionModel.permission_code)
             )
-            employee_code = await uow.session.scalar(
-                select(EmployeeModel.employee_no)
+            employee = (await uow.session.execute(
+                select(
+                    EmployeeModel.id, EmployeeModel.employee_no,
+                    EmployeeModel.is_active, EmployeeModel.record_status,
+                )
                 .join(UserModel, UserModel.employee_id == EmployeeModel.id)
                 .where(
                     UserModel.id == user_id,
                     UserModel.is_active.is_(True),
                     UserModel.account_status == AccountStatus.ACTIVE.value,
                 )
-            )
+            )).first()
+            effective_permission_codes = set(permission_codes)
+            is_active_employee = bool(employee and employee.is_active and employee.record_status == "ACTIVE")
+            if is_active_employee and await uow.session.scalar(
+                select(active_org_unit_manager_condition(employee.id, today))
+            ):
+                effective_permission_codes |= ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS
             return CurrentAuthorization(
                 role_codes=list(role_codes),
-                permission_codes=list(permission_codes),
-                employee_code=employee_code,
+                permission_codes=sorted(effective_permission_codes),
+                employee_code=employee.employee_no if employee else None,
+                employee_id=employee.id if is_active_employee else None,
             )

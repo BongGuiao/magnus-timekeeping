@@ -1,12 +1,21 @@
 from collections import defaultdict
 from datetime import date
-from typing import Any, Collection
+from typing import Any, Collection, Literal
 from uuid import UUID
 
-from sqlalchemy import exists, insert, or_, select, update
+from sqlalchemy import and_, exists, insert, or_, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.generics.uow import GenUnitOfWork
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    approval_route_scope,
+    resolve_org_unit_approver,
+    save_approval_route,
+)
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
+import logging
+from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     EmployeeScheduleView,
@@ -23,6 +32,7 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     SupervisorEmployee,
 )
 from app.filemaintenance.schedule.domain.schedule_timeline import AssignmentRevision
+from app.filemaintenance.schedule.domain.schedule_upload_exceptions import ScheduleUploadStateError
 from app.filemaintenance.schedule.infrastructure.db_model import (
     EmployeeScheduleAssignmentModel,
     RestDayPatternModel,
@@ -87,6 +97,30 @@ def _batch_employee_scope(supervisor_employee_id: UUID):
     return ~batch_has_out_of_scope_employee
 
 
+def _batch_review_scope(supervisor_employee_id: UUID | None, reviewer_employee_id: UUID | None):
+    legacy_scope = _batch_employee_scope(supervisor_employee_id) if supervisor_employee_id else true()
+    reviewer_id = supervisor_employee_id or reviewer_employee_id
+    current_route = exists(select(ApprovalRouteModel.id).where(
+        ApprovalRouteModel.resource_type == "schedule_upload_batch",
+        ApprovalRouteModel.resource_id == ScheduleUploadBatchModel.id,
+        ApprovalRouteModel.is_current.is_(True),
+    ))
+    own_schedule = exists(select(ScheduleUploadBatchRowModel.id).where(
+        ScheduleUploadBatchRowModel.batch_id == ScheduleUploadBatchModel.id,
+        ScheduleUploadBatchRowModel.employee_id == reviewer_id,
+    )) if reviewer_id is not None else None
+    return and_(
+        or_(
+            approval_route_scope(
+                "schedule_upload_batch", ScheduleUploadBatchModel.id, reviewer_id, legacy_scope,
+            ),
+            and_(ScheduleUploadBatchModel.status != "PENDING_APPROVAL", ~current_route, legacy_scope),
+        ),
+        or_(ScheduleUploadBatchModel.status != "PENDING_APPROVAL", ~own_schedule)
+        if own_schedule is not None else true(),
+    )
+
+
 class SqlAlchemyScheduleUploadRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -132,8 +166,25 @@ class SqlAlchemyScheduleUploadRepository:
         supervisor_employee_id: UUID,
         employee_codes: Collection[str],
         on_date: date,
+        *,
+        scope: Literal["ORG_UNIT", "LEGACY", "SNAPSHOT"] = "ORG_UNIT",
+        snapshot_employee_ids: Collection[UUID] = (),
     ) -> list[TeamEmployee]:
         assignment = EmploymentAssignmentModel
+        conditions = [
+            EmployeeModel.employee_no.in_(list(employee_codes)),
+            EmployeeModel.is_active.is_(True),
+            EmployeeModel.record_status == "ACTIVE",
+            assignment.is_active.is_(True),
+            assignment.status == "ACTIVE",
+            assignment.effective_from <= on_date,
+            or_(assignment.effective_to.is_(None), assignment.effective_to >= on_date),
+            or_(assignment.separation_date.is_(None), assignment.separation_date >= on_date),
+        ]
+        if scope == "LEGACY":
+            conditions.append(assignment.supervisor_employee_id == supervisor_employee_id)
+        elif scope == "SNAPSHOT":
+            conditions.append(EmployeeModel.id.in_(list(snapshot_employee_ids)))
         rows = await self._session.execute(
             select(
                 EmployeeModel.id.label("employee_id"),
@@ -142,28 +193,27 @@ class SqlAlchemyScheduleUploadRepository:
                 *_EMPLOYEE_NAME_COLUMNS,
             )
             .join(assignment, assignment.employee_id == EmployeeModel.id)
-            .where(
-                EmployeeModel.employee_no.in_(list(employee_codes)),
-                EmployeeModel.is_active.is_(True),
-                EmployeeModel.record_status == "ACTIVE",
-                assignment.supervisor_employee_id == supervisor_employee_id,
-                assignment.is_active.is_(True),
-                assignment.status == "ACTIVE",
-                assignment.effective_from <= on_date,
-                or_(assignment.effective_to.is_(None), assignment.effective_to >= on_date),
-                or_(assignment.separation_date.is_(None), assignment.separation_date >= on_date),
-            )
+            .where(*conditions)
             .distinct()
         )
-        return [
-            TeamEmployee(
+        team = []
+        for row in rows.mappings():
+            if scope == "ORG_UNIT":
+                try:
+                    approver = await resolve_org_unit_approver(
+                        self._session, row["employee_id"], on_date, None
+                    )
+                except ApprovalRoutingError as error:
+                    raise ScheduleUploadStateError(f"Employee {row['employee_code']}: {error}") from error
+                if approver.employee_id != supervisor_employee_id:
+                    continue
+            team.append(TeamEmployee(
                 employee_id=row["employee_id"],
                 employee_code=row["employee_code"],
                 employee_name=_employee_name(row),
                 company_id=row["company_id"],
-            )
-            for row in rows.mappings()
-        ]
+            ))
+        return team
 
     async def find_schedule_templates(
         self,
@@ -256,6 +306,7 @@ class SqlAlchemyScheduleUploadRepository:
                 batch_id=model.id,
                 row_no=row.row_no,
                 employee_id=row.employee_id,
+                company_id=row.company_id,
                 employee_code=row.employee_code,
                 employee_name=row.employee_name,
                 schedule_code=row.schedule_code,
@@ -270,8 +321,60 @@ class SqlAlchemyScheduleUploadRepository:
         await self._session.flush()
         return model.id
 
+    async def assign_batch_approver(
+        self, batch_id: UUID, employee_ids: Collection[UUID], uploader_id: UUID, on_date: date
+    ) -> None:
+        uploader_employee_id = await self._session.scalar(
+            select(UserModel.employee_id).where(UserModel.id == uploader_id)
+        )
+        excluded = frozenset({uploader_employee_id}) if uploader_employee_id else frozenset()
+        approvers = []
+        routing_errors = []
+        for employee_id in sorted(set(employee_ids)):
+            try:
+                approvers.append(await resolve_org_unit_approver(
+                    self._session, employee_id, on_date, "schedule.approve",
+                    excluded_employee_ids=excluded,
+                ))
+            except ApprovalRoutingError as error:
+                routing_errors.append(str(error))
+        if not employee_ids:
+            raise ScheduleUploadStateError("A schedule batch must contain at least one employee.")
+        if routing_errors:
+            routing_error = "; ".join(dict.fromkeys(routing_errors))
+            logging.getLogger(__name__).warning("Schedule batch %s needs an approver: %s", batch_id, routing_error)
+            await save_approval_route(
+                self._session, resource_type="schedule_upload_batch", resource_id=batch_id,
+                employee_id=sorted(set(employee_ids))[0], assigned_by=uploader_id,
+                approver=None, routing_error=routing_error,
+            )
+            return
+        if len({approver.employee_id for approver in approvers}) != 1:
+            raise ScheduleUploadStateError(
+                "The schedule batch has more than one organization approver. Split it into separate uploads."
+            )
+        await save_approval_route(
+            self._session,
+            resource_type="schedule_upload_batch",
+            resource_id=batch_id,
+            assigned_by=uploader_id,
+            employee_id=None,
+            approver=approvers[0],
+        )
+
     def _batch_query(self):
-        return select(ScheduleUploadBatchModel, *_EMPLOYEE_NAME_COLUMNS).join(
+        routing_mode = (
+            select(ApprovalRouteModel.routing_mode)
+            .where(
+                ApprovalRouteModel.resource_type == "schedule_upload_batch",
+                ApprovalRouteModel.resource_id == ScheduleUploadBatchModel.id,
+                ApprovalRouteModel.is_current.is_(True),
+            )
+            .correlate(ScheduleUploadBatchModel)
+            .scalar_subquery()
+            .label("approval_routing_mode")
+        )
+        return select(ScheduleUploadBatchModel, *_EMPLOYEE_NAME_COLUMNS, routing_mode).join(
             EmployeeModel, EmployeeModel.id == ScheduleUploadBatchModel.supervisor_employee_id
         )
 
@@ -292,6 +395,7 @@ class SqlAlchemyScheduleUploadRepository:
             reviewed_at=model.reviewed_at,
             review_remarks=model.review_remarks,
             rows=rows,
+            approval_routing_mode=row._mapping["approval_routing_mode"],
         )
 
     async def get_batch(
@@ -300,10 +404,12 @@ class SqlAlchemyScheduleUploadRepository:
         *,
         for_update: bool = False,
         supervisor_employee_id: UUID | None = None,
+        reviewer_employee_id: UUID | None = None,
+        review_mode: bool = False,
     ) -> ScheduleUploadBatch | None:
         query = self._batch_query().where(ScheduleUploadBatchModel.id == batch_id)
-        if supervisor_employee_id is not None:
-            query = query.where(_batch_employee_scope(supervisor_employee_id))
+        if review_mode or supervisor_employee_id is not None:
+            query = query.where(_batch_review_scope(supervisor_employee_id, reviewer_employee_id))
         if for_update:
             query = query.with_for_update(of=ScheduleUploadBatchModel)
         row = (await self._session.execute(query)).first()
@@ -320,6 +426,7 @@ class SqlAlchemyScheduleUploadRepository:
                 ScheduleUploadBatchRow(
                     row_no=model.row_no,
                     employee_id=model.employee_id,
+                    company_id=model.company_id,
                     employee_code=model.employee_code,
                     employee_name=model.employee_name,
                     schedule_code=model.schedule_code,
@@ -339,14 +446,16 @@ class SqlAlchemyScheduleUploadRepository:
         *,
         uploaded_by: UUID | None,
         supervisor_employee_id: UUID | None,
+        reviewer_employee_id: UUID | None,
+        review_mode: bool,
         status: ScheduleUploadBatchStatus | None,
         limit: int,
     ) -> list[ScheduleUploadBatch]:
         query = self._batch_query()
         if uploaded_by is not None:
             query = query.where(ScheduleUploadBatchModel.uploaded_by == uploaded_by)
-        if supervisor_employee_id is not None:
-            query = query.where(_batch_employee_scope(supervisor_employee_id))
+        if review_mode or supervisor_employee_id is not None:
+            query = query.where(_batch_review_scope(supervisor_employee_id, reviewer_employee_id))
         if status is not None:
             query = query.where(ScheduleUploadBatchModel.status == status.value)
         rows = await self._session.execute(

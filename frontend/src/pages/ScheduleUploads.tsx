@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { Download } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { ScheduleUploadBatchDetails, ScheduleUploadStatusBadge } from '../components/scheduleUpload/ScheduleUploadParts'
@@ -25,7 +26,7 @@ interface Props {
 }
 
 const COLUMN_GUIDE: { name: string; required: boolean; description: string }[] = [
-  { name: 'employee_code', required: true, description: 'Employee number of one of your direct reports.' },
+  { name: 'employee_code', required: true, description: 'Employee number routed to you as org-unit manager.' },
   { name: 'schedule_code', required: true, description: 'Active schedule template code in the employee’s company.' },
   { name: 'assignment_type', required: true, description: 'For example REGULAR or TEMPORARY.' },
   { name: 'effective_from', required: true, description: 'YYYY-MM-DD, tomorrow or later.' },
@@ -41,7 +42,7 @@ function PreviewTable({ preview, hrAdmin }: { preview: ScheduleUploadPreview; hr
         <thead className="bg-slate-50 uppercase text-slate-500">
           <tr>
             <th className="px-3 py-2">Row</th>
-            {hrAdmin && <th className="px-3 py-2">Supervisor code</th>}
+            {hrAdmin && <th className="px-3 py-2">Org-unit manager code</th>}
             <th className="px-3 py-2">Employee</th>
             <th className="px-3 py-2">Schedule</th>
             <th className="px-3 py-2">Type</th>
@@ -129,6 +130,7 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
   const [refreshKey, setRefreshKey] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -136,10 +138,13 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
     let isCurrent = true
     fetchMyScheduleUploads()
       .then((result) => {
-        if (isCurrent) setBatches(result)
+        if (isCurrent) {
+          setBatches(result)
+          setLoadError('')
+        }
       })
       .catch((cause: unknown) => {
-        if (isCurrent) setError(cause instanceof Error ? cause.message : 'Could not load your schedule uploads.')
+        if (isCurrent) setLoadError(cause instanceof Error ? cause.message : 'Could not load your schedule uploads.')
       })
       .finally(() => {
         if (isCurrent) setLoading(false)
@@ -149,7 +154,10 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
     }
   }, [refreshKey])
 
-  const reloadBatches = () => setRefreshKey((current) => current + 1)
+  const reloadBatches = () => {
+    setLoading(true)
+    setRefreshKey((current) => current + 1)
+  }
 
   async function run(action: () => Promise<void>) {
     setError('')
@@ -178,7 +186,7 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
     link.href = url
     link.download = 'schedule_upload_template.csv'
     link.click()
-    URL.revokeObjectURL(url)
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   })
 
   const checkFile = () => run(async () => {
@@ -219,9 +227,9 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
           <h2 className="text-sm font-bold text-slate-900">Team Schedule Upload</h2>
           <p className="mt-1 text-xs text-slate-600">
             {hrAdmin
-              ? 'HR_ADMIN mode: upload on behalf of multiple supervisors using supervisor_employee_code. Employees must already report to the specified supervisor. One batch is created per supervisor.'
-              : 'Upload schedules for your direct reports as a CSV file.'}
-            {' '}Each batch follows the existing company approval settings. Approved schedules end or pause the employee’s current schedule automatically.
+              ? 'HR_ADMIN mode: enter each employee’s org-unit manager in supervisor_employee_code. One batch is created per manager.'
+              : 'Upload schedules for employees whose org-unit manager is you as a CSV file.'}
+            {' '}When approval is required, the org-unit manager reviews the batch; if that manager uploaded it, the parent unit’s manager reviews it. Existing company auto-approval settings still apply. Approved schedules end or pause the employee’s current schedule automatically.
           </p>
         </header>
 
@@ -238,22 +246,22 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
               type="button"
               onClick={() => void downloadTemplate()}
               disabled={busy}
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              Download template
+              <Download className="h-3.5 w-3.5" aria-hidden="true" /> Download template
             </button>
           </div>
           <ul className="mt-3 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
             {hrAdmin && (
               <li><code className="font-semibold text-slate-800">supervisor_employee_code</code>
-                <span className="text-rose-600"> *</span> — Active supervisor employee number for this row. Does not change reporting assignments.
+                <span className="text-rose-600"> *</span> — Active org-unit manager’s employee number for this row. Does not change reporting assignments.
               </li>
             )}
             {COLUMN_GUIDE.map((column) => (
               <li key={column.name}>
                 <code className="font-semibold text-slate-800">{column.name}</code>
                 {column.required ? <span className="text-rose-600"> *</span> : null} — {hrAdmin && column.name === 'employee_code'
-                  ? 'Employee number of a direct report of the supervisor specified on this row.' : column.description}
+                  ? 'Employee number in an org unit managed by the person specified on this row.' : column.description}
               </li>
             ))}
           </ul>
@@ -312,6 +320,13 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
           </div>
           {loading ? (
             <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading uploads…</p>
+          ) : loadError ? (
+            <div className="space-y-2 px-5 py-6 text-xs">
+              <p role="alert" className="text-rose-700">{loadError}</p>
+              <button type="button" onClick={reloadBatches} className="font-semibold text-indigo-700 underline">
+                Retry loading uploads
+              </button>
+            </div>
           ) : batches.length === 0 ? (
             <p className="px-5 py-6 text-xs text-slate-500">You have not uploaded any schedules yet.</p>
           ) : (
@@ -320,7 +335,7 @@ function ScheduleUploadsContent({ hrAdmin, onSubmitted }: ScheduleUploadPanelPro
                 <thead className="bg-slate-50 uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-2">Batch</th>
-                    <th className="px-4 py-2">Supervisor</th>
+                    <th className="px-4 py-2">Manager / supervisor</th>
                     <th className="px-4 py-2">File</th>
                     <th className="px-4 py-2">Rows</th>
                     <th className="px-4 py-2">Submitted</th>

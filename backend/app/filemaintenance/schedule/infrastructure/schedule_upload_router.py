@@ -5,8 +5,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from pydantic import BaseModel, Field
 
 from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.domain.entities.user import Role
 from app.auth.infrastructure.approval_scope import approval_supervisor_scope, has_supervisor_role
-from app.auth.infrastructure.dependencies import get_current_authorization_use_case, require_permission
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case, require_approval_permission, require_permission,
+)
 from app.core.generics.mapper import ResponseEnvelope
 from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     ApproveScheduleUploadBatchUseCase,
@@ -255,9 +258,13 @@ def _employee_id(claims: dict) -> UUID:
 def _schedule_review_supervisor_id(claims: dict) -> UUID | None:
     return approval_supervisor_scope(
         claims,
-        is_admin=not has_supervisor_role(claims),
+        is_admin=claims.get("role") == Role.ADMIN.value and not has_supervisor_role(claims),
         detail=NOT_LINKED_TO_EMPLOYEE,
     )
+
+
+def _schedule_reviewer_employee_id(claims: dict) -> UUID | None:
+    return _employee_id(claims) if claims.get("employee_id") else None
 
 
 async def _file_input(claims: dict, file: UploadFile, *, hr_admin: bool = False) -> ScheduleUploadFileInput:
@@ -344,7 +351,7 @@ async def download_schedule_upload_template(
 @router.post("/preview", response_model=ResponseEnvelope[ScheduleUploadPreviewSchema])
 async def preview_schedule_upload(
     file: UploadFile = File(...),
-    claims: dict = Depends(require_permission(UPLOAD_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(UPLOAD_PERMISSION)),
     use_case: PreviewScheduleUploadUseCase = Depends(get_preview_schedule_upload_use_case),
 ):
     data = await _file_input(claims, file)
@@ -360,7 +367,7 @@ async def preview_schedule_upload(
 )
 async def submit_schedule_upload(
     file: UploadFile = File(...),
-    claims: dict = Depends(require_permission(UPLOAD_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(UPLOAD_PERMISSION)),
     use_case: SubmitScheduleUploadUseCase = Depends(get_submit_schedule_upload_use_case),
 ):
     data = await _file_input(claims, file)
@@ -412,13 +419,15 @@ async def list_schedule_uploads_for_review(
     batch_status: ScheduleUploadBatchStatus | None = Query(
         default=ScheduleUploadBatchStatus.PENDING_APPROVAL, alias="status"
     ),
-    claims: dict = Depends(require_permission(APPROVE_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(APPROVE_PERMISSION)),
     use_case: ListScheduleUploadBatchesUseCase = Depends(get_list_schedule_upload_batches_use_case),
 ):
     batches = await use_case.execute(
         ListScheduleUploadBatchesInput(
             status=batch_status,
             supervisor_employee_id=_schedule_review_supervisor_id(claims),
+            reviewer_employee_id=_schedule_reviewer_employee_id(claims),
+            review_mode=True,
         )
     )
     return ResponseEnvelope(status="success", data=[_summary_schema(batch) for batch in batches])
@@ -427,7 +436,7 @@ async def list_schedule_uploads_for_review(
 @router.get("/review/{batch_id}", response_model=ResponseEnvelope[ScheduleUploadBatchSchema])
 async def get_schedule_upload_for_review(
     batch_id: UUID,
-    claims: dict = Depends(require_permission(APPROVE_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(APPROVE_PERMISSION)),
     use_case: GetScheduleUploadBatchUseCase = Depends(get_get_schedule_upload_batch_use_case),
 ):
     with schedule_upload_http_errors():
@@ -435,6 +444,8 @@ async def get_schedule_upload_for_review(
             GetScheduleUploadBatchInput(
                 batch_id=batch_id,
                 supervisor_employee_id=_schedule_review_supervisor_id(claims),
+                reviewer_employee_id=_schedule_reviewer_employee_id(claims),
+                review_mode=True,
             )
         )
     return ResponseEnvelope(status="success", data=_batch_schema(batch))
@@ -444,7 +455,7 @@ async def get_schedule_upload_for_review(
 async def approve_schedule_upload(
     batch_id: UUID,
     payload: ScheduleUploadReviewRequest | None = None,
-    claims: dict = Depends(require_permission(APPROVE_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(APPROVE_PERMISSION)),
     use_case: ApproveScheduleUploadBatchUseCase = Depends(get_approve_schedule_upload_batch_use_case),
 ):
     with schedule_upload_http_errors():
@@ -454,6 +465,7 @@ async def approve_schedule_upload(
                 reviewer_id=_user_id(claims),
                 remarks=payload.remarks if payload else None,
                 supervisor_employee_id=_schedule_review_supervisor_id(claims),
+                reviewer_employee_id=_schedule_reviewer_employee_id(claims),
             )
         )
     return ResponseEnvelope(status="success", data=_batch_schema(batch))
@@ -463,7 +475,7 @@ async def approve_schedule_upload(
 async def reject_schedule_upload(
     batch_id: UUID,
     payload: ScheduleUploadReviewRequest,
-    claims: dict = Depends(require_permission(APPROVE_PERMISSION)),
+    claims: dict = Depends(require_approval_permission(APPROVE_PERMISSION)),
     use_case: RejectScheduleUploadBatchUseCase = Depends(get_reject_schedule_upload_batch_use_case),
 ):
     with schedule_upload_http_errors():
@@ -473,6 +485,7 @@ async def reject_schedule_upload(
                 reviewer_id=_user_id(claims),
                 remarks=payload.remarks,
                 supervisor_employee_id=_schedule_review_supervisor_id(claims),
+                reviewer_employee_id=_schedule_reviewer_employee_id(claims),
             )
         )
     return ResponseEnvelope(status="success", data=_summary_schema(batch))

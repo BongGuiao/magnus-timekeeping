@@ -18,7 +18,7 @@ from app.auth.infrastructure.adapters import Argon2PasswordHasher, Elasticsearch
 from app.auth.infrastructure.user_account_repository import SqlAlchemyUserAccountUnitOfWork
 from app.core import security as security_service
 from app.core.config import settings
-from app.auth.domain.entities.user import Role, is_system_admin
+from app.auth.domain.entities.user import Role, is_system_admin, resolve_app_role
 from app.attendance.infrastructure.clock_policy import (
     AttendanceClockPolicy,
     optional_bearer_scheme,
@@ -68,7 +68,7 @@ def get_current_authorization_use_case(
     return GetCurrentAuthorizationUseCase(uow)
 
 
-def require_permission(permission_code: str):
+def require_permission(permission_code: str, *, verify_approval_identity: bool = False):
     async def permission_checker(
         claims: dict = Depends(get_current_user_claims),
         use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
@@ -86,9 +86,29 @@ def require_permission(permission_code: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Permission denied.",
             )
+        if verify_approval_identity:
+            claimed_employee_id = claims.get("employee_id")
+            try:
+                token_employee_id = UUID(str(claimed_employee_id)) if claimed_employee_id is not None else None
+            except (TypeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="The session employee profile is invalid. Sign in again.",
+                ) from error
+            if token_employee_id != authorization.employee_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your employee profile changed. Sign in again before reviewing approvals.",
+                )
+            role_codes = [role_code.strip().upper() for role_code in authorization.role_codes]
+            return {**claims, "role_codes": role_codes, "role": resolve_app_role(role_codes).value}
         return claims
 
     return permission_checker
+
+
+def require_approval_permission(permission_code: str):
+    return require_permission(permission_code, verify_approval_identity=True)
 
 
 def require_any_permission(*permission_codes: str):

@@ -20,7 +20,12 @@ from app.attendance.infrastructure.attendance_merge_queries import not_merged_so
 from app.attendance.infrastructure.entity_mapping import copy_fields
 from app.attendance.infrastructure.overtime_adapters import queue_recent_attendance_refresh
 from app.auth.infrastructure.db_model import UserModel
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    approval_route_scope,
+    assign_org_approval,
+)
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
@@ -248,7 +253,7 @@ async def list_corrections(
 
 @router.get("/pending", response_model=ResponseEnvelope[list[CorrectionOutput]])
 async def pending_corrections(
-    claims: dict = Depends(require_permission("attendance.approve_corrections_team")),
+    claims: dict = Depends(require_approval_permission("attendance.approve_corrections_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     async with uow as active:
@@ -259,7 +264,10 @@ async def pending_corrections(
             .join(EmployeeModel, EmployeeModel.id == AttendanceCorrectionModel.employee_id)
             .where(AttendanceCorrectionModel.status == "PENDING",
                    AttendanceCorrectionModel.employee_id != account.employee_id,
-                   _team(account.employee_id, AttendanceCorrectionModel.employee_id))
+                   approval_route_scope(
+                       "attendance_correction", AttendanceCorrectionModel.id, account.employee_id,
+                       _team(account.employee_id, AttendanceCorrectionModel.employee_id),
+                   ))
             .order_by(AttendanceCorrectionModel.created_at).limit(200)
         )).all()
         result = [_output(request, employee) for request, employee in rows]
@@ -277,13 +285,6 @@ async def create_correction(
         session = _session(active)
         account = await _account(session, actor, lock=True)
         await _open(session, account.employee_id, payload.work_date, "FILING")
-        if not await session.scalar(select(EmploymentAssignmentModel.id).where(
-            EmploymentAssignmentModel.employee_id == account.employee_id,
-            EmploymentAssignmentModel.supervisor_employee_id.is_not(None),
-            EmploymentAssignmentModel.supervisor_employee_id != account.employee_id,
-            *_active_assignment(datetime.now(timezone.utc).astimezone(MANILA).date()),
-        ).limit(1)):
-            raise HTTPException(status_code=409, detail="A current supervisor must be assigned before filing a correction.")
         record = await _attendance(session, actor, payload.work_date)
         day = await _day(session, account, payload.work_date, record)
         _validate_missing(day, payload)
@@ -300,6 +301,19 @@ async def create_correction(
         )
         session.add(request)
         await session.flush()
+        try:
+            await assign_org_approval(
+                session,
+                resource_type="attendance_correction",
+                resource_id=request.id,
+                employee_id=account.employee_id,
+                assigned_by=actor,
+                on_date=datetime.now(timezone.utc).astimezone(MANILA).date(),
+                permission_code="attendance.approve_corrections_team",
+                hold_unresolved=True,
+            )
+        except ApprovalRoutingError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         await session.refresh(request)
         employee = await session.get(EmployeeModel, account.employee_id)
         result = _output(request, employee)
@@ -311,7 +325,7 @@ async def create_correction(
 @router.post("/{request_id}/decision", response_model=ResponseEnvelope[CorrectionOutput])
 async def decide_correction(
     request_id: UUID, payload: CorrectionDecision,
-    claims: dict = Depends(require_permission("attendance.approve_corrections_team")),
+    claims: dict = Depends(require_approval_permission("attendance.approve_corrections_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -322,10 +336,13 @@ async def decide_correction(
         request = await session.scalar(select(AttendanceCorrectionModel).where(
             AttendanceCorrectionModel.id == request_id,
             AttendanceCorrectionModel.employee_id != reviewer.employee_id,
-            _team(reviewer.employee_id, AttendanceCorrectionModel.employee_id),
+            approval_route_scope(
+                "attendance_correction", AttendanceCorrectionModel.id, reviewer.employee_id,
+                _team(reviewer.employee_id, AttendanceCorrectionModel.employee_id),
+            ),
         ).with_for_update())
         if request is None:
-            raise HTTPException(status_code=404, detail="Correction request not found for your direct reports.")
+            raise HTTPException(status_code=404, detail="Correction request not found for your assigned employees.")
         if request.status != "PENDING" or request.row_version != payload.row_version:
             raise HTTPException(status_code=409, detail="This request has changed or was already reviewed; reload the list.")
         account = await _account(session, request.user_id, lock=True)

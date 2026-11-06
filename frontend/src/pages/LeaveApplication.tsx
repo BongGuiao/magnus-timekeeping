@@ -129,7 +129,7 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       setApplications((current) => current.map((application) =>
         application.id === submittedApplication.id ? submittedApplication : application,
       ))
-      setSuccess('Leave application submitted for supervisor approval.')
+      setSuccess('Leave application submitted to your assigned approver.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not submit your leave application for approval.')
     } finally {

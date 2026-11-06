@@ -190,7 +190,7 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
       setRequests((current) => upsert(current, record))
       resetForm()
       setSuccess(submit
-        ? `${record.request_no} was submitted for supervisor approval.`
+        ? `${record.request_no} was submitted to your assigned approver.`
         : `${record.request_no} was saved as a draft.`)
     } catch (cause) {
       setError(errorText(cause))
@@ -212,7 +212,7 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
       setRequests((current) => upsert(current, next))
       if (editing?.id === record.id) resetForm()
       setSuccess(action === 'submit'
-        ? `${next.request_no} was submitted for supervisor approval.`
+        ? `${next.request_no} was submitted to your assigned approver.`
         : `${next.request_no} was cancelled.`)
     } catch (cause) {
       setError(errorText(cause))
@@ -252,7 +252,7 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
               </button>
             )}
           </div>
-          <p className="mt-2 text-xs leading-5 text-slate-500">Save as a draft to finish later, or submit it directly for supervisor approval. Overlapping draft, pending, or approved requests are not allowed.</p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">Save as a draft to finish later, or submit it to your assigned approver. Overlapping draft, pending, or approved requests are not allowed.</p>
           {loading && <p role="status" className="mt-4 text-sm text-slate-500">Loading official business details...</p>}
           <form onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void save(true) }} className="mt-5">
             <fieldset disabled={disabled} className="grid gap-4 sm:grid-cols-2">

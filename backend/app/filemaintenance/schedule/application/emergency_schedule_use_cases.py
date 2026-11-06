@@ -17,6 +17,11 @@ from app.attendance.application.use_case import (
 )
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
+from app.auth.infrastructure.approval_routing import (
+    approval_route_scope,
+    assign_org_approval,
+    legacy_supervisor_scope,
+)
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
@@ -542,26 +547,6 @@ class SubmitEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
             await _require_template(
                 uow, data.employee_id, data.schedule_template_id, data.work_date
             )
-            supervisor_ids = set(
-                (
-                    await uow.session.scalars(
-                        select(EmploymentAssignmentModel.supervisor_employee_id)
-                        .where(
-                            EmploymentAssignmentModel.employee_id == data.employee_id,
-                            *_active_employment_conditions(data.work_date),
-                            EmploymentAssignmentModel.supervisor_employee_id.is_not(None),
-                        )
-                        .distinct()
-                    )
-                ).all()
-            )
-            if not supervisor_ids:
-                raise ValueError("No supervisor is assigned for the requested work date.")
-            if len(supervisor_ids) > 1:
-                raise ValueError("More than one supervisor is assigned for the requested work date; contact HR.")
-            if employee.id in supervisor_ids:
-                raise ValueError("An employee cannot approve their own emergency schedule request.")
-
             await uow.session.execute(
                 select(EmployeeModel.id)
                 .where(EmployeeModel.id == employee.id)
@@ -586,6 +571,16 @@ class SubmitEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
             )
             uow.session.add(request)
             await uow.session.flush()
+            await assign_org_approval(
+                uow.session,
+                resource_type="emergency_schedule_request",
+                resource_id=request.id,
+                employee_id=employee.id,
+                assigned_by=data.user_id,
+                on_date=ph_today(utc_now()),
+                permission_code="schedule.approve_emergency",
+                hold_unresolved=True,
+            )
             result = await uow.session.execute(
                 _request_query().where(EmergencyScheduleRequestModel.id == request.id)
             )
@@ -630,13 +625,17 @@ class ListPendingEmergencyScheduleRequestsUseCase(
                 raise RuntimeError("UnitOfWork session is not active.")
             rows = await uow.session.execute(
                 _request_query()
-                .join(
-                    EmploymentAssignmentModel,
-                    EmploymentAssignmentModel.employee_id == EmergencyScheduleRequestModel.employee_id,
-                )
                 .where(
-                    EmploymentAssignmentModel.supervisor_employee_id == data.supervisor_employee_id,
-                    *_active_employment_conditions(EmergencyScheduleRequestModel.work_date),
+                    approval_route_scope(
+                        "emergency_schedule_request",
+                        EmergencyScheduleRequestModel.id,
+                        data.supervisor_employee_id,
+                        legacy_supervisor_scope(
+                            EmergencyScheduleRequestModel.employee_id,
+                            data.supervisor_employee_id,
+                            EmergencyScheduleRequestModel.work_date,
+                        ),
+                    ),
                     EmergencyScheduleRequestModel.employee_id != data.supervisor_employee_id,
                     EmergencyScheduleRequestModel.status == "PENDING_APPROVAL",
                 )
@@ -679,17 +678,23 @@ class ReviewEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
                 raise ValueError("This emergency schedule request has already been reviewed.")
             if request.employee_id == data.supervisor_employee_id or request.requested_by == data.reviewer_user_id:
                 raise ValueError("You cannot approve your own emergency schedule request.")
-            supervisor_assignment = await uow.session.scalar(
-                select(EmploymentAssignmentModel.id)
-                .where(
-                    EmploymentAssignmentModel.employee_id == request.employee_id,
-                    EmploymentAssignmentModel.supervisor_employee_id == data.supervisor_employee_id,
-                    *_active_employment_conditions(request.work_date),
+            assigned = await uow.session.scalar(
+                select(EmergencyScheduleRequestModel.id).where(
+                    EmergencyScheduleRequestModel.id == request.id,
+                    approval_route_scope(
+                        "emergency_schedule_request",
+                        EmergencyScheduleRequestModel.id,
+                        data.supervisor_employee_id,
+                        legacy_supervisor_scope(
+                            EmergencyScheduleRequestModel.employee_id,
+                            data.supervisor_employee_id,
+                            EmergencyScheduleRequestModel.work_date,
+                        ),
+                    ),
                 )
-                .limit(1)
             )
-            if supervisor_assignment is None:
-                raise ValueError("Only the employee's assigned supervisor may review this request.")
+            if assigned is None:
+                raise ValueError("Only the assigned approver may review this request.")
             await require_attendance_open(
                 uow.session, request.employee_id, request.work_date, request.work_date,
                 stage="APPROVAL",

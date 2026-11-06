@@ -290,6 +290,10 @@ export interface SupervisorInvalidAttendance {
   time_out: string | null
 }
 
+export interface UnresolvedAttendanceApproval extends SupervisorInvalidAttendance {
+  routing_error: string
+}
+
 export interface OvertimeApplicationInput {
   overtime_type: OvertimeApplicationType
   requested_start_at?: string
@@ -453,6 +457,81 @@ export async function approveSupervisorInvalidAttendance(attendanceId: string): 
     )
   } catch (err) {
     throw new Error(getAttendanceErrorMessage(err, 'Could not approve this attendance record.'))
+  }
+}
+
+export async function fetchUnresolvedAttendanceApprovals(): Promise<UnresolvedAttendanceApproval[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<UnresolvedAttendanceApproval[]>>(
+      '/attendance/hr/unresolved-attendance-approvals',
+    )
+    return response.data.data
+  } catch (err) {
+    if (err instanceof AxiosError && err.response?.status === 404) {
+      throw new Error(
+        'Attendance approval routing is unavailable on the running backend. Complete the database upgrade and deploy the matching backend version.',
+      )
+    }
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load attendance routing alerts.'))
+  }
+}
+
+export async function retryUnresolvedAttendanceApproval(attendanceId: string): Promise<void> {
+  try {
+    await apiClient.post<ApiSuccessEnvelope<boolean>>(
+      `/attendance/hr/unresolved-attendance-approvals/${encodeURIComponent(attendanceId)}/retry`,
+    )
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not assign an attendance approver.'))
+  }
+}
+
+export type ApprovalResourceType =
+  | 'overtime_application' | 'leave_application' | 'official_business_request'
+  | 'attendance_correction' | 'invalid_attendance' | 'emergency_schedule_request' | 'schedule_upload_batch'
+
+export interface UnresolvedApproval {
+  id: string
+  resource_type: ApprovalResourceType
+  resource_id: string
+  employee_name: string
+  employee_code: string
+  routing_error: string
+  created_at: string
+}
+
+export interface UnresolvedApprovals {
+  records: UnresolvedApproval[]
+  approvers: Array<{ employee_id: string; label: string }>
+  can_manage: boolean
+}
+
+export async function fetchUnresolvedApprovals(): Promise<UnresolvedApprovals> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<UnresolvedApprovals>>('/attendance/approval-routing/unresolved')
+    return response.data.data
+  } catch (error) {
+    if (error instanceof AxiosError && error.response?.status === 404) {
+      throw new Error('Approval routing alerts are unavailable on this backend. Deploy the matching backend version after the reviewed database upgrade.')
+    }
+    throw new Error(getAttendanceErrorMessage(error, 'Could not load approval routing alerts.'))
+  }
+}
+
+export async function recoverUnresolvedApproval(
+  routeId: string, approverEmployeeId?: string, reason?: string,
+): Promise<void> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<{
+      routing_mode: 'ORG_UNIT' | 'UNRESOLVED'; routing_error: string | null
+    }>>(`/attendance/approval-routing/${encodeURIComponent(routeId)}/recover`, {
+      approver_employee_id: approverEmployeeId || null, reason: reason || null,
+    })
+    if (response.data.data.routing_mode === 'UNRESOLVED') {
+      throw new Error(response.data.data.routing_error || 'No independent approver could be assigned. Contact HR.')
+    }
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not assign an independent approver.'))
   }
 }
 

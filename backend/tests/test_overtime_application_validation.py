@@ -124,6 +124,7 @@ class FakeOvertimeRepository:
         self.saved_attendances = []
         self.employee_user_id = uuid4()
         self.schedule_break_rules = []
+        self.assigned_approvals = []
 
     async def get_active_employee_id_for_user(self, user_id):
         return self.employee.id
@@ -177,6 +178,9 @@ class FakeOvertimeRepository:
         self.applications.append(application)
         return application
 
+    async def assign_approver(self, application_id, employee_id, actor_id, on_date):
+        self.assigned_approvals.append((application_id, employee_id, actor_id, on_date))
+
     async def save_application(self, application):
         self.saved_application = application
 
@@ -190,10 +194,10 @@ class FakeOvertimeRepository:
     async def list_applications_for_user(self, user_id):
         return []
 
-    async def list_pending_applications(self, supervisor_employee_id):
+    async def list_pending_applications(self, supervisor_employee_id, actor_employee_id=None):
         return []
 
-    async def lock_pending_application(self, application_id, supervisor_employee_id):
+    async def lock_pending_application(self, application_id, supervisor_employee_id, actor_employee_id=None):
         self.supervisor_scope = supervisor_employee_id
         return self.pending_record
 
@@ -334,6 +338,9 @@ class SubmitOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.attendance.requested_regular_overtime_minutes, 30)
         self.assertEqual(self.attendance.overtime_requested_at, NOW)
         self.assertEqual(record.application.status, "PENDING")
+        self.assertEqual(self.repository.assigned_approvals, [
+            (record.application.id, self.repository.employee.id, self.user_id, NOW.date()),
+        ])
         self.refresher.request_refresh.assert_called_once_with(self.user_id)
         self.audit.record.assert_awaited_once()
         self.assertEqual(self.audit.record.await_args.kwargs["action"], "SUBMIT")
@@ -470,6 +477,7 @@ class UpdateOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.application.status, "PENDING")
         self.assertIs(self.repository.saved_attendance, self.attendance)
         self.assertEqual(self.attendance.requested_night_differential_overtime_minutes, 45)
+        self.assertEqual(self.repository.assigned_approvals, [])
         self.refresher.request_refresh.assert_called_once_with(self.user_id)
         self.audit.record.assert_awaited_once()
         self.assertEqual(self.audit.record.await_args.kwargs["action"], "UPDATE")
@@ -482,6 +490,9 @@ class UpdateOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.application.status, "PENDING")
         self.assertIsNone(self.application.supervisor_approved_minutes)
         self.assertIsNone(self.application.final_payable_minutes)
+        self.assertEqual(self.repository.assigned_approvals, [
+            (self.application.id, self.employee.id, self.user_id, NOW.date()),
+        ])
 
     async def test_approved_application_cannot_be_edited(self):
         self.application.status = "APPROVED"

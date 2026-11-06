@@ -65,7 +65,7 @@ export default function AttendanceCorrectionsPanel({ scope, onPendingCountChange
         reason: reason.trim(), supporting_reference: reference.trim() || null,
       })
       setRequests((current) => [result, ...current]); setDay(null); setReason(''); setReference('')
-      setSuccess('Correction submitted for supervisor approval. Original punches are unchanged.')
+      setSuccess('Correction submitted to your assigned approver. Original punches are unchanged.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not submit correction.')
     } finally { setSaving(null) }
@@ -159,7 +159,7 @@ export default function AttendanceCorrectionsPanel({ scope, onPendingCountChange
         </div>
       )}
       {loading ? <p role="status">Loading correction requests...</p> : error && requests.length === 0 ? null : requests.length === 0
-        ? <p className="text-sm text-slate-500">{scope === 'team' ? 'No pending corrections from your direct reports.' : 'No correction requests filed.'}</p>
+        ? <p className="text-sm text-slate-500">{scope === 'team' ? 'No pending corrections assigned to you.' : 'No correction requests filed.'}</p>
         : <ul className="space-y-4">
           {requests.map((request) => (
             <li key={request.id} className="rounded-lg border border-slate-200 p-4 text-sm">

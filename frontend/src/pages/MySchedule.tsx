@@ -42,7 +42,7 @@ function earliestEmergencyFilingDate() {
 
 function requestStatusLabel(status: EmergencyScheduleRequest['status']) {
   return {
-    PENDING_APPROVAL: 'Pending supervisor approval',
+    PENDING_APPROVAL: 'Pending approval',
     APPROVED: 'Approved',
     REJECTED: 'Rejected',
   }[status]
@@ -201,7 +201,7 @@ export default function MySchedule({ employeeName, onNavigate, onLoggedOut }: Pr
               <h2 className="text-sm font-bold text-slate-900">Request an emergency schedule change</h2>
               <p className="mt-1 text-xs text-slate-600">
                 Request a one-day replacement schedule. Your regular schedule stays unchanged; the replacement
-                affects attendance only after your supervisor approves it. You may file up to 7 days after the
+                affects attendance only after your assigned approver approves it. You may file up to 7 days after the
                 work date if it is within the current open payroll cutoff. Approved past-date requests recalculate
                 attendance from recorded punches. Use the date the shift starts, including overnight schedules.
               </p>
@@ -266,7 +266,7 @@ export default function MySchedule({ employeeName, onNavigate, onLoggedOut }: Pr
                     disabled={submitting || templatesLoading || templates.length === 0}
                     className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {submitting ? 'Submitting…' : 'Submit for supervisor approval'}
+                    {submitting ? 'Submitting…' : 'Submit for approval'}
                   </button>
                 </div>
               </form>
@@ -290,7 +290,7 @@ export default function MySchedule({ employeeName, onNavigate, onLoggedOut }: Pr
                         </p>
                         <p className="mt-1 text-slate-600">{request.reason}</p>
                         {request.review_remarks && (
-                          <p className="mt-1 text-slate-500">Supervisor note: {request.review_remarks}</p>
+                          <p className="mt-1 text-slate-500">Approver note: {request.review_remarks}</p>
                         )}
                       </div>
                       <span className={`font-semibold ${

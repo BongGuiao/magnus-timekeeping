@@ -173,7 +173,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
       setPeriod({ requested_start_at: '', requested_end_at: '' })
       setReason('')
       setWork('')
-      setSuccess('Overtime application submitted for supervisor approval.')
+      setSuccess('Overtime application submitted to your assigned approver.')
     } catch (cause) {
       setError(errorText(cause))
     } finally {

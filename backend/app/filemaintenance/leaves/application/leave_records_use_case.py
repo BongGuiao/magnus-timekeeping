@@ -8,6 +8,13 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, func, select
+from app.auth.infrastructure.approval_routing import (
+    approval_route_scope,
+    assign_org_approval,
+    legacy_supervisor_scope,
+)
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
+from app.auth.infrastructure.db_model import UserModel
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
     DeadlineStage, require_attendance_open,
 )
@@ -406,6 +413,8 @@ class LeaveApplicationUseCase:
         self.uow = uow
 
     async def create(self, values: dict[str, Any]) -> LeaveApplicationEntity:
+        if values.get("status") in ("APPROVED", "REJECTED"):
+            raise ValueError("Create a draft or pending leave application and use its approval workflow.")
         local_start = values["start_at"].astimezone(ZoneInfo("Asia/Manila"))
         async with self.uow as active_uow:
             session = active_uow.session
@@ -424,6 +433,17 @@ class LeaveApplicationUseCase:
             model = LeaveApplicationModel(**values)
             session.add(model)
             await session.flush()
+            if model.status == "PENDING":
+                await assign_org_approval(
+                    session,
+                    resource_type="leave_application",
+                    resource_id=model.id,
+                    employee_id=model.employee_id,
+                    assigned_by=values.get("created_by"),
+                    on_date=datetime.now(ZoneInfo("Asia/Manila")).date(),
+                    permission_code="leave.approve_team",
+                    hold_unresolved=True,
+                )
             await session.refresh(model)
             return _to_entity(model, LeaveApplicationEntity)
 
@@ -434,6 +454,8 @@ class LeaveApplicationUseCase:
         self,
         record_id: UUID,
         actor_id: UUID,
+        *,
+        expected_employee_id: UUID | None = None,
     ) -> LeaveApplicationEntity | None:
         async with self.uow as active_uow:
             result = await active_uow.session.execute(
@@ -444,6 +466,8 @@ class LeaveApplicationUseCase:
             model = result.scalar_one_or_none()
             if model is None or not model.is_active:
                 return None
+            if expected_employee_id is not None and model.employee_id != expected_employee_id:
+                raise ValueError("You can only submit your own leave application.")
             if model.status != "DRAFT":
                 raise ValueError("Only draft leave applications can be submitted for approval.")
             await _require_leave_open(
@@ -458,6 +482,16 @@ class LeaveApplicationUseCase:
             )
 
             now = datetime.now(timezone.utc)
+            await assign_org_approval(
+                active_uow.session,
+                resource_type="leave_application",
+                resource_id=model.id,
+                employee_id=model.employee_id,
+                assigned_by=actor_id,
+                on_date=now.astimezone(ZoneInfo("Asia/Manila")).date(),
+                permission_code="leave.approve_team",
+                hold_unresolved=True,
+            )
             model.status = "PENDING"
             model.submitted_at = now
             model.updated_by = actor_id
@@ -520,19 +554,14 @@ class LeaveApplicationUseCase:
             )
             .join(EmployeeModel, EmployeeModel.id == LeaveApplicationModel.employee_id)
             .join(LeaveTypeModel, LeaveTypeModel.id == LeaveApplicationModel.leave_type_id)
-            .join(
-                EmploymentAssignmentModel,
-                EmploymentAssignmentModel.employee_id == LeaveApplicationModel.employee_id,
-            )
             .where(
-                EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-                EmploymentAssignmentModel.is_active.is_(True),
-                EmploymentAssignmentModel.status == "ACTIVE",
-                EmploymentAssignmentModel.effective_from <= as_of,
-                (EmploymentAssignmentModel.effective_to.is_(None))
-                | (EmploymentAssignmentModel.effective_to >= as_of),
-                (EmploymentAssignmentModel.separation_date.is_(None))
-                | (EmploymentAssignmentModel.separation_date >= as_of),
+                approval_route_scope(
+                    "leave_application",
+                    LeaveApplicationModel.id,
+                    supervisor_employee_id,
+                    legacy_supervisor_scope(LeaveApplicationModel.employee_id, supervisor_employee_id, as_of),
+                ),
+                LeaveApplicationModel.employee_id != supervisor_employee_id,
                 EmployeeModel.is_active.is_(True),
                 EmployeeModel.record_status == "ACTIVE",
                 LeaveApplicationModel.status == "PENDING",
@@ -576,19 +605,14 @@ class LeaveApplicationUseCase:
         statement = (
             select(func.count(func.distinct(LeaveApplicationModel.id)))
             .join(EmployeeModel, EmployeeModel.id == LeaveApplicationModel.employee_id)
-            .join(
-                EmploymentAssignmentModel,
-                EmploymentAssignmentModel.employee_id == LeaveApplicationModel.employee_id,
-            )
             .where(
-                EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-                EmploymentAssignmentModel.is_active.is_(True),
-                EmploymentAssignmentModel.status == "ACTIVE",
-                EmploymentAssignmentModel.effective_from <= as_of,
-                (EmploymentAssignmentModel.effective_to.is_(None))
-                | (EmploymentAssignmentModel.effective_to >= as_of),
-                (EmploymentAssignmentModel.separation_date.is_(None))
-                | (EmploymentAssignmentModel.separation_date >= as_of),
+                approval_route_scope(
+                    "leave_application",
+                    LeaveApplicationModel.id,
+                    supervisor_employee_id,
+                    legacy_supervisor_scope(LeaveApplicationModel.employee_id, supervisor_employee_id, as_of),
+                ),
+                LeaveApplicationModel.employee_id != supervisor_employee_id,
                 EmployeeModel.is_active.is_(True),
                 EmployeeModel.record_status == "ACTIVE",
                 LeaveApplicationModel.status == "PENDING",
@@ -609,22 +633,17 @@ class LeaveApplicationUseCase:
     ) -> LeaveApplicationEntity | None:
         statement = (
             select(LeaveApplicationModel)
-            .join(
-                EmploymentAssignmentModel,
-                EmploymentAssignmentModel.employee_id == LeaveApplicationModel.employee_id,
-            )
             .where(
                 LeaveApplicationModel.id == application_id,
                 LeaveApplicationModel.status == "PENDING",
                 LeaveApplicationModel.is_active.is_(True),
-                EmploymentAssignmentModel.supervisor_employee_id == supervisor_employee_id,
-                EmploymentAssignmentModel.is_active.is_(True),
-                EmploymentAssignmentModel.status == "ACTIVE",
-                EmploymentAssignmentModel.effective_from <= as_of,
-                (EmploymentAssignmentModel.effective_to.is_(None))
-                | (EmploymentAssignmentModel.effective_to >= as_of),
-                (EmploymentAssignmentModel.separation_date.is_(None))
-                | (EmploymentAssignmentModel.separation_date >= as_of),
+                LeaveApplicationModel.employee_id != supervisor_employee_id,
+                approval_route_scope(
+                    "leave_application",
+                    LeaveApplicationModel.id,
+                    supervisor_employee_id,
+                    legacy_supervisor_scope(LeaveApplicationModel.employee_id, supervisor_employee_id, as_of),
+                ),
             )
             .with_for_update(of=LeaveApplicationModel)
         )
@@ -654,6 +673,8 @@ class LeaveApplicationUseCase:
         record_id: UUID,
         values: dict[str, Any],
         actor_id: UUID | None,
+        *,
+        expected_employee_id: UUID | None = None,
     ) -> LeaveApplicationEntity | None:
         async with self.uow as active_uow:
             result = await active_uow.session.execute(
@@ -664,11 +685,40 @@ class LeaveApplicationUseCase:
             model = result.scalar_one_or_none()
             if model is None:
                 return None
+            if expected_employee_id is not None and (
+                model.employee_id != expected_employee_id or model.status != "DRAFT"
+            ):
+                raise ValueError("Only your own draft leave application can be changed.")
 
             next_status = values.get("status", model.status)
             next_employee_id = values.get("employee_id", model.employee_id)
             next_leave_type_id = values.get("leave_type_id", model.leave_type_id)
             next_start_at = values.get("start_at", model.start_at)
+            route_mode = None
+            if model.status == "PENDING":
+                route_mode = await active_uow.session.scalar(
+                    select(ApprovalRouteModel.routing_mode).where(
+                        ApprovalRouteModel.resource_type == "leave_application",
+                        ApprovalRouteModel.resource_id == model.id,
+                        ApprovalRouteModel.is_current.is_(True),
+                    )
+                )
+                if route_mode != "LEGACY" and next_employee_id != model.employee_id:
+                    raise ValueError("The employee cannot be changed while an organization-routed leave is pending.")
+            if (
+                next_status in ("APPROVED", "REJECTED")
+                and next_status != model.status
+                and (model.status != "PENDING" or route_mode != "LEGACY")
+            ):
+                raise ValueError("Use the assigned approval workflow to approve or reject this leave application.")
+            if next_status in ("APPROVED", "REJECTED") and next_status != model.status:
+                if actor_id is None:
+                    raise ValueError("An actor is required to approve or reject a leave application.")
+                actor_employee_id = await active_uow.session.scalar(
+                    select(UserModel.employee_id).where(UserModel.id == actor_id)
+                )
+                if actor_employee_id == next_employee_id:
+                    raise ValueError("You cannot approve or reject your own leave application.")
             stage: DeadlineStage = (
                 "APPROVAL"
                 if next_status in ("APPROVED", "REJECTED") or model.status == "APPROVED"
@@ -701,6 +751,17 @@ class LeaveApplicationUseCase:
             }.intersection(values):
                 raise ValueError("The leave entitlement charge cannot be changed after approval.")
 
+            if next_status == "PENDING" and model.status != "PENDING":
+                await assign_org_approval(
+                    active_uow.session,
+                    resource_type="leave_application",
+                    resource_id=model.id,
+                    employee_id=next_employee_id,
+                    assigned_by=actor_id,
+                    on_date=datetime.now(ZoneInfo("Asia/Manila")).date(),
+                    permission_code="leave.approve_team",
+                    hold_unresolved=True,
+                )
             for key, value in values.items():
                 setattr(model, key, value)
             if next_status == "APPROVED" and not was_approved:

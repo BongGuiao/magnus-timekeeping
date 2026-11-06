@@ -20,6 +20,22 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 Use the same pair of `-f` options with `docker compose down` to stop that
 environment.
 
+### Celery dependency compatibility
+
+Keep the Celery, Kombu, and Redis Python client pins in `requirements.txt`
+together. Celery 5.3.6 permits newer Kombu releases whose Redis transport is
+incompatible with the pinned Redis 5.0.1 client. Kombu is pinned to 5.3.7 to
+prevent workers from crash-looping with `kombu.exceptions.VersionMismatch`.
+The Python client version is separate from the Redis server image.
+
+After changing these dependencies, rebuild the backend services using the same
+environment overlay as the running stack:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build web celery_worker celery_beat
+docker exec -w /app/backend celery_worker celery -A celery_app:app inspect ping --timeout 10
+```
+
 ### Uploading leave entitlements
 
 Users with `leave.manage` can download a CSV template and upload balances from
@@ -92,6 +108,35 @@ baseline for their current schema and seed state before Alembic is used there.
 Do not run the initial `upgrade head` or blindly use `alembic stamp head`
 against an existing installation; stamping records a revision but does not
 apply or verify its changes.
+
+For the organization-approval routing migration, stop **all application
+writers** (API instances, workers, scheduled jobs, and integrations) before
+running the migration. Start only the matching new application version after
+the migration completes; do not run old and new writers together. An old
+writer running after the backfill can create a pending request without a
+routing record, which the new application deliberately refuses to approve.
+Back up the database first. The migration cannot be downgraded after
+organization-assigned or unresolved routes have been recorded.
+
+For an existing installation **without Alembic tracking**, review
+[manual_org_unit_approval_routes.sql](backend/sql/manual_org_unit_approval_routes.sql)
+against its actual baseline before authorizing execution. This transactional
+script applies only revision `f4a6b8c0d2e4`, adds the schedule-row company snapshot,
+and preserves existing request routing as `LEGACY`. It does not create or stamp
+Alembic state, assign org-unit approvers to old requests, or reconcile earlier
+schema differences. It refuses tracked databases, missing prerequisite tables
+(including the prior attendance merge-audit tables), and existing or partially
+installed routing schema. Run with `psql`'s `ON_ERROR_STOP=1` only after a backup
+and stopping every writer as described above; a lock timeout aborts the upgrade
+rather than waiting indefinitely. Restart only the matching release after
+commit. Do not remove the routing schema after new routes have been recorded.
+
+For an untracked installation, also review
+[manual_revoke_supervisor_approval_permissions.sql](backend/sql/manual_revoke_supervisor_approval_permissions.sql)
+and apply it after the routing script, while writers remain stopped. It mirrors
+revision `a7b9c1d3e5f7`: the SUPERVISOR role alone no longer grants team approval
+permissions; active org-unit managers receive them through the application.
+Neither manual script should be applied to an Alembic-managed installation.
 
 For each schema change, update the SQLAlchemy model, generate and review a
 revision, and then apply it:
@@ -423,19 +468,96 @@ approval and unlock actions are audited. Apply
 `backend/sql/20261023_add_payroll_cutoff_approval_permission.sql` to add
 `payroll.approve` and grant it to HR and system administrator roles.
 
+## Organization-based employee approvals
+
+New leave, overtime, official-business, attendance-correction, emergency
+schedule, schedule-upload, and invalid-attendance approvals use the manager
+of the employee's currently effective org unit. Ordinary members use their
+own-unit manager. A manager's own request uses only the immediate parent-unit
+manager. This is a single approval, not a chain up to the President.
+A manager cannot approve their own request.
+For a schedule batch uploaded by its manager, the uploader is excluded and
+only the immediate parent is considered. A missing, inactive, or non-independent
+manager holds the request unresolved; the system does not search higher ancestors.
+
+Each employee must have one current company/org-unit assignment, and the
+hierarchy must contain active units in the same company without cycles. The
+selected manager needs an active employee-linked account. Being the active
+manager of an org unit grants the team approval permissions
+`leave.approve_team`, `overtime.approve_team`,
+`official_business.approve_team`, `attendance.approve_corrections_team`,
+`schedule.approve_emergency`, `schedule.approve` (schedule upload batches),
+and `attendance.read_team` (invalid attendance); no role grant is needed.
+The `SUPERVISOR` role alone does not authorize new approvals. Existing role-based
+team read access and legacy pending-request scope are preserved.
+The optional Position ID does not grant approval authority. A configured
+manager who lacks an active account or a required role permission is a
+configuration error; the system does not silently skip them for another
+manager.
+
+The approver is saved when the request is submitted and does not change when
+the org chart changes. Requests that were already pending before the migration
+continue using their previous supervisor-based scope, but self-approval is blocked.
+An organization-routed leave cannot be approved through the generic
+leave-update endpoint; use its
+assigned approval queue. If an approver's account is linked to a different
+employee or their roles change, their current account and permissions govern
+access; sign in again after an employee-link change.
+
+Changing an org-unit manager does not reassign existing pending requests. If the
+saved approver becomes inactive or loses the required permission, restore their
+access or cancel and resubmit the request where supported. There is currently
+no reassignment control for an already assigned route; plan manager transitions
+accordingly. Recovery applies only to currently unresolved, still-pending requests;
+it never replaces an already assigned organization or legacy approver.
+
+When an org approver cannot be found, new requests are saved pending with
+`UNRESOLVED` routing, rather than choosing an unrelated supervisor. Attendance
+punches are still recorded. Requesters see a dashboard alert directing them to HR.
+Users with `employees.manage` see unresolved requests across all seven resource
+types (up to the latest 100 per type), with **Retry routing** after correcting the
+configuration. Alternatively, HR can select an independent active org-unit manager
+and supply an audit reason. The selected manager must have an active employee-linked
+account and manage an active unit in each affected company. The requester, schedule
+uploader, and assigning HR employee cannot be selected. This assigns one reviewer,
+not an approval; the usual approval queues remain in use. Failed recovery retains
+the alert and displays the routing error. Existing invalid-attendance HR endpoints
+remain available for compatibility.
+
+An **Approval routing alerts unavailable** message means the lookup failed;
+it does not confirm that requests lack an approver. A missing endpoint (HTTP 404)
+indicates that the running backend does not provide the new routing API. Complete
+the reviewed database upgrade and deploy the matching backend version together;
+do not restart the new backend against the old schema. Use **Retry loading
+alerts** after resolving the deployment or connection problem.
+
+These rules apply to new submissions only. Payroll approval rules are unchanged.
+
+The optional PostgreSQL routing tests require
+`APPROVAL_ROUTING_TEST_DATABASE_URL` to point to a separately migrated,
+disposable database named `approval_routing_test*`. They roll back their
+synthetic fixtures and must never target the application database. When running
+them alongside other database tests, also set `DATABASE_URL` to that same
+disposable database.
+
 ## Schedule approval policy
 
-Team Schedule Upload is available in an employee form's **Schedule** tab,
-not the navigation menu. Users with `schedule.upload_team` can open the form
-from Employees; supervisors without employee-management permission get
-read-only employee details and the existing team upload workflow.
-Supervisor and HR_ADMIN upload modes, validation, and approval rules are unchanged.
+Team Schedule Upload is available from the Timekeeping menu and an employee
+form's **Schedule** tab. In team mode, employees must belong to org units
+managed by the uploader. In HR_ADMIN mode, the existing
+`supervisor_employee_code` CSV column must contain each employee's org-unit
+manager; one batch is created per specified manager. If a batch would require
+more than one approver, split it into separate uploads. Schedule upload
+approvals are available from the Timekeeping menu to users with
+`schedule.approve`. A saved batch keeps its assigned approver if the org chart
+changes, but must be rejected and reuploaded if an employee changes company.
 
 The company-level **Require schedule approval** parameter controls direct
 employee schedule assignments and supervisor schedule-upload batches. It is
 enabled by default. When enabled, direct assignments remain drafts and uploads
 wait for an independent reviewer; when disabled, new direct assignments and
-uploads are approved immediately. Changing the parameter does not automatically
+uploads are approved immediately and do not require a manager's linked account
+or approval permission. Changing the parameter does not automatically
 approve existing drafts or pending uploads. For a batch spanning multiple
 companies, approval is required if any included company requires it. Apply
 `backend/sql/20261024_add_schedule_assignment_approval_parameter.sql`.
@@ -471,7 +593,7 @@ Apply `backend/sql/20261023_add_payroll_cutoff_half_designation.sql`.
 
 ## Attendance finalization before payroll
 
-Payroll Cutoffs has an **Employee filing deadline** and a **Supervisor approval
+Payroll Cutoffs has an **Employee filing deadline** and an **Approval
 deadline** (the existing `attendance_deadline`). Both must be timezone-aware and
 after the last cutoff day ends in Philippine time. Approval must be on or after
 filing; setting a filing deadline requires an approval deadline.
@@ -479,7 +601,7 @@ filing; setting a filing deadline requires an approval deadline.
 After filing closes, employees cannot create, edit, submit, or cancel OT,
 leave, or official business requests covered by that cutoff. Emergency schedule
 requests and employee attendance recalculation also respect the filing window.
-Supervisors can still approve or reject submitted requests until approval closes.
+Assigned approvers can still approve or reject submitted requests until approval closes.
 The exact deadline instant remains allowed. Finalized attendance or locked
 payroll closes both windows. Requests spanning cutoffs must satisfy every
 applicable cutoff. Dates without a matching employee cutoff retain the existing
@@ -487,8 +609,10 @@ unrestricted deadline behavior.
 
 Existing cutoffs with no separate filing deadline use `attendance_deadline`
 for both stages. Leave filing, previously missing the cutoff deadline check,
-now follows this policy too. Employee application screens and supervisor review
-screens display the applicable deadlines in Philippine time.
+now follows this policy too. Employee application screens and approval review
+screens display the applicable deadlines in Philippine time. Reviewers see
+deadlines for their direct reports and employees with pending requests assigned
+to them through org-unit routing.
 
 **Production schema prerequisite:** apply
 `backend/sql/20261101_employee_filing_deadline.sql` to update **payroll.cutoffs**
@@ -578,8 +702,7 @@ attendance must first be resolved through the existing HR/review process.
 
 **Supervisor/Manager Dashboard → Team overview → Review queue → Attendance corrections** shows the
 pending request count when the role has team approval rights. Click the button to open or hide **Attendance Correction
-Approvals**, which shows current direct
-reports' pending requests, original and requested times, reason, and supporting
+Approvals**, which shows pending requests assigned to the reviewer, original and requested times, reason, and supporting
 reference. `attendance.approve_corrections_team` permits Approve/Reject with
 mandatory review notes. Self-approval, duplicate pending requests, stale
 versions, and approval after punches have changed are rejected. Employees
@@ -600,7 +723,8 @@ with a prominent personalized Welcome heading instead of a separate hero banner.
 The compact header retains a purple Today card displaying the Philippine date.
 Administrator metrics and reviews use the same presentation and exclusive panel
 behavior; offline attendance review is opened from its Review queue button.
-Existing role permissions and data scopes are preserved.
+Existing permissions remain required. Approval queues follow the org-unit
+routing above; other dashboard data retains its existing scope.
 Dashboard navigation actions use an arrow icon; expandable records use a
 chevron. Unloaded counts say **Not loaded** instead of a dash, and positive
 pending counts are emphasized without changing their order. Failed approval-list

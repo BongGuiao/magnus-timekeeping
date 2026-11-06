@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
-from typing import Sequence
+from typing import Collection, Literal, Sequence
 from uuid import UUID
 
 from app.filemaintenance.schedule.application.schedule_upload_ports import ScheduleUploadLookups
@@ -62,8 +62,16 @@ def _row_result(
 class ScheduleUploadValidator:
     """Validates uploaded rows against the supervisor's team and current schedule data."""
 
-    def __init__(self, lookups: ScheduleUploadLookups):
+    def __init__(
+        self,
+        lookups: ScheduleUploadLookups,
+        *,
+        scope: Literal["ORG_UNIT", "LEGACY", "SNAPSHOT"] = "ORG_UNIT",
+        snapshot_employee_ids: Collection[UUID] = (),
+    ):
         self._lookups = lookups
+        self._scope = scope
+        self._snapshot_employee_ids = snapshot_employee_ids
 
     async def evaluate(
         self,
@@ -164,7 +172,8 @@ class ScheduleUploadValidator:
         if not rows:
             return {}
         team = await self._lookups.find_team_employees(
-            supervisor_employee_id, {row.employee_code for row in rows}, today
+            supervisor_employee_id, {row.employee_code for row in rows}, today,
+            scope=self._scope, snapshot_employee_ids=self._snapshot_employee_ids,
         )
         employees_by_code = defaultdict(list)
         for employee in team:
@@ -185,7 +194,7 @@ class ScheduleUploadValidator:
             matches = employees_by_code.get(row.employee_code, [])
             if not matches:
                 errors.append(
-                    f"Employee {row.employee_code} is not an active direct report of the submitting supervisor."
+                    f"Employee {row.employee_code} is not active or is not in the specified manager's team."
                 )
                 continue
             if len(matches) > 1:

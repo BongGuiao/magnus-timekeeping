@@ -585,7 +585,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
               {!isBrowserApproved && (
                 <div className="mt-3 flex flex-col gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs text-indigo-800">
-                    You can still record attendance, but punches from this browser will be marked invalid and require supervisor approval.
+                    You can still record attendance, but punches from this browser will be marked invalid and require approval.
                   </p>
                   {!hasBrowserRegistration && (
                     <div className="flex w-full flex-col gap-2 sm:max-w-sm">
@@ -820,7 +820,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
             <p className="mt-1 text-xs text-slate-400">{formatDateTime(attendanceSuccess.timestamp)}</p>
             {attendanceSuccess.approval_required && (
               <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
-                This attendance record is invalid because it includes a punch without approved browser proof. Your supervisor must approve it.
+                This attendance record is invalid because it includes a punch without approved browser proof. An approver must review it; contact HR if it remains unresolved.
               </p>
             )}
             <button

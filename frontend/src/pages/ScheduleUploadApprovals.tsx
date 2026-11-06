@@ -31,6 +31,7 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
   const [refreshKey, setRefreshKey] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
@@ -38,10 +39,13 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
     let isCurrent = true
     fetchScheduleUploadsForReview(statusFilter)
       .then((result) => {
-        if (isCurrent) setBatches(result)
+        if (isCurrent) {
+          setBatches(result)
+          setLoadError('')
+        }
       })
       .catch((cause: unknown) => {
-        if (isCurrent) setError(cause instanceof Error ? cause.message : 'Could not load schedule uploads.')
+        if (isCurrent) setLoadError(cause instanceof Error ? cause.message : 'Could not load schedule uploads.')
       })
       .finally(() => {
         if (isCurrent) setLoading(false)
@@ -51,7 +55,10 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
     }
   }, [statusFilter, refreshKey])
 
-  const reloadBatches = () => setRefreshKey((current) => current + 1)
+  const reloadBatches = () => {
+    setLoading(true)
+    setRefreshKey((current) => current + 1)
+  }
 
   function changeStatusFilter(status: ScheduleUploadBatchStatus) {
     if (status === statusFilter) return
@@ -88,7 +95,7 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
 
   const reject = (batch: ScheduleUploadBatch) => run(async () => {
     if (!remarks.trim()) {
-      setError('Enter the reason for rejecting this batch so the supervisor can correct it.')
+      setError('Enter the reason for rejecting this batch so the uploader can correct it.')
       return
     }
     await rejectScheduleUpload(batch.id, remarks.trim())
@@ -104,8 +111,8 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
         <header>
           <h1 className="text-xl font-bold text-slate-900">Schedule Upload Approvals</h1>
           <p className="mt-1 text-xs text-slate-600">
-            Review schedule batches uploaded by supervisors. Approving re-checks every row and applies the whole batch;
-            the employees’ overlapping schedules are ended or paused automatically. You cannot approve your own uploads.
+            Review batches assigned to you through the org-unit hierarchy. Approving re-checks every row and applies the
+            whole batch; overlapping schedules are ended or paused automatically. You cannot approve your own uploads.
           </p>
         </header>
 
@@ -132,6 +139,13 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           {loading ? (
             <p role="status" className="px-5 py-6 text-xs text-slate-500">Loading batches…</p>
+          ) : loadError ? (
+            <div className="space-y-2 px-5 py-6 text-xs">
+              <p role="alert" className="text-rose-700">{loadError}</p>
+              <button type="button" onClick={reloadBatches} className="font-semibold text-indigo-700 underline">
+                Retry loading batches
+              </button>
+            </div>
           ) : batches.length === 0 ? (
             <p className="px-5 py-6 text-xs text-slate-500">No batches with this status.</p>
           ) : (
@@ -140,7 +154,7 @@ export default function ScheduleUploadApprovals({ employeeName, onNavigate, onLo
                 <thead className="bg-slate-50 uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-2">Batch</th>
-                    <th className="px-4 py-2">Supervisor</th>
+                    <th className="px-4 py-2">Manager / supervisor</th>
                     <th className="px-4 py-2">File</th>
                     <th className="px-4 py-2">Rows</th>
                     <th className="px-4 py-2">Submitted</th>

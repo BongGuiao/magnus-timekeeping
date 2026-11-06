@@ -5,7 +5,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import and_, exists, false, func, or_, select
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.attendance.domain.worked_minutes import (
     allocate_official_business_minutes,
@@ -22,6 +23,7 @@ from app.attendance.infrastructure.db_model import (
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.application.correction_finalization import require_resolved_punches
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
 from app.auth.infrastructure.db_model import UserModel
 from app.auth.infrastructure.dependencies import (
     get_current_user_claims,
@@ -54,6 +56,7 @@ from app.filemaintenance.schedule.infrastructure.db_model import (
     RestDayPatternModel,
     ScheduleSegmentModel,
 )
+from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model import EmergencyScheduleRequestModel
 from app.filemaintenance.location.infrastructure.db_model import Location as LocationModel
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
@@ -89,6 +92,71 @@ class AttendanceWorkflowDeadline(BaseModel):
     status: str
 
 
+def _pending_org_approval_deadline_scope(
+    approver_employee_id: UUID, permissions: set[str],
+) -> ColumnElement[bool]:
+    route = ApprovalRouteModel
+    pending_requests = (
+        (
+            "leave.approve_team", "leave_application",
+            exists(select(LeaveApplicationModel.id).where(
+                LeaveApplicationModel.id == route.resource_id,
+                LeaveApplicationModel.status == "PENDING",
+                LeaveApplicationModel.is_active.is_(True),
+            )),
+        ),
+        (
+            "overtime.approve_team", "overtime_application",
+            exists(select(OvertimeApplicationModel.id).where(
+                OvertimeApplicationModel.id == route.resource_id,
+                OvertimeApplicationModel.status == "PENDING",
+                OvertimeApplicationModel.is_active.is_(True),
+            )),
+        ),
+        (
+            "official_business.approve_team", "official_business_request",
+            exists(select(OfficialBusinessRequestModel.id).where(
+                OfficialBusinessRequestModel.id == route.resource_id,
+                OfficialBusinessRequestModel.status == "PENDING",
+                OfficialBusinessRequestModel.is_active.is_(True),
+            )),
+        ),
+        (
+            "attendance.approve_corrections_team", "attendance_correction",
+            exists(select(AttendanceCorrectionModel.id).where(
+                AttendanceCorrectionModel.id == route.resource_id,
+                AttendanceCorrectionModel.status == "PENDING",
+            )),
+        ),
+        (
+            "schedule.approve_emergency", "emergency_schedule_request",
+            exists(select(EmergencyScheduleRequestModel.id).where(
+                EmergencyScheduleRequestModel.id == route.resource_id,
+                EmergencyScheduleRequestModel.status == "PENDING_APPROVAL",
+            )),
+        ),
+        (
+            "attendance.read_team", "invalid_attendance",
+            exists(select(AttendanceModel.id).where(
+                AttendanceModel.id == route.resource_id,
+                AttendanceModel.record_status == "INVALID",
+            )),
+        ),
+    )
+    authorized_pending = [
+        and_(route.resource_type == resource_type, pending)
+        for permission, resource_type, pending in pending_requests
+        if permission in permissions
+    ]
+    return exists(select(route.id).where(
+        route.employee_id == EmploymentAssignmentModel.employee_id,
+        route.approver_employee_id == approver_employee_id,
+        route.routing_mode == "ORG_UNIT",
+        route.is_current.is_(True),
+        or_(false(), *authorized_pending),
+    ))
+
+
 @router.get("/attendance-deadlines", response_model=ResponseEnvelope[list[AttendanceWorkflowDeadline]])
 async def list_attendance_workflow_deadlines(
     scope: str = Query(default="own", pattern="^(own|team)$"),
@@ -119,8 +187,10 @@ async def list_attendance_workflow_deadlines(
                 EmploymentAssignmentModel.payroll_group_id == PayrollCutoffModel.payroll_group_id,
             )
             .where(
-                (EmploymentAssignmentModel.supervisor_employee_id == employee_id)
-                if scope == "team" else (EmploymentAssignmentModel.employee_id == employee_id),
+                or_(
+                    EmploymentAssignmentModel.supervisor_employee_id == employee_id,
+                    _pending_org_approval_deadline_scope(employee_id, set(authorization.permission_codes)),
+                ) if scope == "team" else (EmploymentAssignmentModel.employee_id == employee_id),
                 EmploymentAssignmentModel.is_active.is_(True),
                 EmploymentAssignmentModel.status == "ACTIVE",
                 EmploymentAssignmentModel.effective_from <= PayrollCutoffModel.period_end,

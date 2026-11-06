@@ -6,7 +6,7 @@ from uuid import UUID
 from app.attendance.application.attendance_review_ports import AttendanceReviewUnitOfWork
 from app.attendance.application.clock import ph_today, utc_now
 from app.attendance.application.ports import AuditTrail, RecentAttendanceRefresher
-from app.attendance.domain.entities.attendance_review import ReviewableAttendanceRecord
+from app.attendance.domain.entities.attendance_review import ReviewableAttendanceRecord, UnresolvedAttendanceRouting
 from app.attendance.domain.exceptions import ConflictError, RecordNotFoundError
 from app.core.generics.uc_base import BaseUseCase
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import CutoffDeadlineError
@@ -17,6 +17,7 @@ class ListInvalidAttendanceInput:
     """supervisor_employee_id is None for administrators, who review every team."""
 
     supervisor_employee_id: Optional[UUID]
+    actor_employee_id: Optional[UUID] = None
 
 
 class ListInvalidAttendanceUseCase(BaseUseCase[list[ReviewableAttendanceRecord]]):
@@ -26,7 +27,9 @@ class ListInvalidAttendanceUseCase(BaseUseCase[list[ReviewableAttendanceRecord]]
 
     async def _execute(self, data: ListInvalidAttendanceInput) -> list[ReviewableAttendanceRecord]:
         async with self._uow as uow:
-            return await uow.review.list_invalid(data.supervisor_employee_id, ph_today(self._clock()))
+            return await uow.review.list_invalid(
+                data.supervisor_employee_id, ph_today(self._clock()), data.actor_employee_id
+            )
 
 
 @dataclass
@@ -34,6 +37,7 @@ class ApproveInvalidAttendanceInput:
     attendance_id: UUID
     actor_id: UUID
     supervisor_employee_id: Optional[UUID]
+    actor_employee_id: Optional[UUID] = None
 
 
 class ApproveInvalidAttendanceUseCase(BaseUseCase[ReviewableAttendanceRecord]):
@@ -53,7 +57,7 @@ class ApproveInvalidAttendanceUseCase(BaseUseCase[ReviewableAttendanceRecord]):
         now = self._clock()
         async with self._uow as uow:
             record = await uow.review.lock_invalid(
-                data.attendance_id, data.supervisor_employee_id, ph_today(now)
+                data.attendance_id, data.supervisor_employee_id, ph_today(now), data.actor_employee_id
             )
             if record is None:
                 raise RecordNotFoundError(
@@ -77,3 +81,24 @@ class ApproveInvalidAttendanceUseCase(BaseUseCase[ReviewableAttendanceRecord]):
             after={"record_status": "VALID", "approved_at": now.isoformat()},
         )
         return record
+
+
+class ListUnresolvedAttendanceRoutesUseCase(BaseUseCase[list[UnresolvedAttendanceRouting]]):
+    def __init__(self, uow: AttendanceReviewUnitOfWork):
+        self._uow = uow
+
+    async def _execute(self) -> list[UnresolvedAttendanceRouting]:
+        async with self._uow as uow:
+            return await uow.review.list_unresolved_routes()
+
+
+class RetryUnresolvedAttendanceRouteUseCase(BaseUseCase[None]):
+    def __init__(self, uow: AttendanceReviewUnitOfWork, clock: Callable[[], datetime] = utc_now):
+        self._uow = uow
+        self._clock = clock
+
+    async def _execute(self, attendance_id: UUID, actor_id: UUID) -> None:
+        async with self._uow as uow:
+            error = await uow.review.retry_unresolved_route(attendance_id, actor_id, ph_today(self._clock()))
+        if error is not None:
+            raise ConflictError(error)

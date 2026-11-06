@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import Date, bindparam, cast, exists, func, or_, select, text
+from sqlalchemy import Date, bindparam, cast, exists, func, or_, select, text, true
 
 from app.attendance.application.use_case import resolve_schedule_day
 from app.attendance.infrastructure.db_model import OfficialBusinessRequestModel
@@ -14,8 +14,13 @@ from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.auth.domain.entities.user import Role
 from app.auth.infrastructure.approval_scope import approval_supervisor_scope, has_supervisor_role
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    approval_route_scope,
+    assign_org_approval,
+)
 from app.auth.infrastructure.db_model import UserModel
-from app.auth.infrastructure.dependencies import require_permission
+from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import (
@@ -164,7 +169,28 @@ def _reviewer(claims: dict) -> tuple[UUID, bool, UUID | None]:
         is_admin=is_admin,
         detail="This account is not linked to a supervisor employee profile.",
     )
+    if is_admin and claims.get("employee_id") is not None:
+        try:
+            employee_id = UUID(str(claims["employee_id"]))
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=403, detail="Invalid employee profile in authentication token.") from error
     return actor_id, is_admin, employee_id
+
+
+async def _assign_request_approver(session, request, user_id: UUID) -> None:
+    try:
+        await assign_org_approval(
+            session,
+            resource_type="official_business_request",
+            resource_id=request.id,
+            employee_id=request.employee_id,
+            assigned_by=user_id,
+            on_date=datetime.now(MANILA).date(),
+            permission_code="official_business.approve_team",
+            hold_unresolved=True,
+        )
+    except ApprovalRoutingError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 
 def _active_session(active_uow):
@@ -596,6 +622,8 @@ async def create_official_business_request(
         _apply_payload(request, payload)
         session.add(request)
         result = await _refresh_output(session, request, employee)
+        if payload.submit:
+            await _assign_request_approver(session, request, user_id)
 
     await log_entity_action(
         es_client,
@@ -695,6 +723,7 @@ async def submit_official_business_request(
         request.status = "PENDING"
         request.updated_by = user_id
         request.row_version += 1
+        await _assign_request_approver(session, request, user_id)
         result = await _refresh_output(session, request, employee)
 
     await log_entity_action(
@@ -750,7 +779,7 @@ async def cancel_official_business_request(
 
 @router.get("/pending", response_model=ResponseEnvelope[list[OfficialBusinessSchema]])
 async def get_pending_official_business_requests(
-    claims: dict = Depends(require_permission("official_business.approve_team")),
+    claims: dict = Depends(require_approval_permission("official_business.approve_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
 ):
     _, is_admin, reviewer_employee_id = _reviewer(claims)
@@ -767,8 +796,10 @@ async def get_pending_official_business_requests(
             )
             .order_by(OfficialBusinessRequestModel.created_at, EmployeeModel.employee_no)
         )
-        if not is_admin:
-            statement = statement.where(_supervised_by(reviewer_employee_id))
+        legacy_scope = true() if is_admin else _supervised_by(reviewer_employee_id)
+        statement = statement.where(approval_route_scope(
+            "official_business_request", OfficialBusinessRequestModel.id, reviewer_employee_id, legacy_scope,
+        ))
         if reviewer_employee_id is not None:
             statement = statement.where(OfficialBusinessRequestModel.employee_id != reviewer_employee_id)
         rows = [tuple(row) for row in (await session.execute(statement)).all()]
@@ -780,7 +811,7 @@ async def get_pending_official_business_requests(
 async def decide_official_business_request(
     request_id: UUID,
     payload: OfficialBusinessDecisionSchema,
-    claims: dict = Depends(require_permission("official_business.approve_team")),
+    claims: dict = Depends(require_approval_permission("official_business.approve_team")),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
@@ -797,8 +828,10 @@ async def decide_official_business_request(
                 OfficialBusinessRequestModel.is_active.is_(True),
             )
         )
-        if not is_admin:
-            statement = statement.where(_supervised_by(reviewer_employee_id))
+        legacy_scope = true() if is_admin else _supervised_by(reviewer_employee_id)
+        statement = statement.where(approval_route_scope(
+            "official_business_request", OfficialBusinessRequestModel.id, reviewer_employee_id, legacy_scope,
+        ))
         row = (await session.execute(statement)).first()
         if row is None:
             raise HTTPException(

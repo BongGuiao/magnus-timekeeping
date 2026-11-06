@@ -21,6 +21,11 @@ from app.attendance.infrastructure.attendance_merge_queries import not_merged_so
 from app.attendance.infrastructure.punch_exceptions import PunchRuleViolation
 from app.auth.application.accounts import employee_display_name
 from app.auth.domain.entities.user import AccountStatus, UserEntity
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    assign_org_approval,
+    save_approval_route,
+)
 from app.auth.infrastructure.db_model import UserModel
 from app.enrollment.domain.entities.enrollment import EnrollmentStatus, FaceEnrollmentEntity
 from app.enrollment.infrastructure.db_model import FaceEnrollmentModel
@@ -69,6 +74,32 @@ DEFAULT_EXPECTED_CLOCK_OUT = time(18, 0)
 MAX_OPEN_ATTENDANCE_AGE = timedelta(hours=24)
 MAX_FACE_MATCH_CANDIDATES = 10000
 FACE_EXTRACTION_LIMITER = CapacityLimiter(1)
+
+
+async def assign_invalid_attendance_approver(
+    session: AsyncSession, attendance_id: UUID, employee_id: UUID, actor_id: UUID, on_date: date
+) -> None:
+    try:
+        await assign_org_approval(
+            session,
+            resource_type="invalid_attendance",
+            resource_id=attendance_id,
+            employee_id=employee_id,
+            assigned_by=actor_id,
+            on_date=on_date,
+            permission_code="attendance.read_team",
+        )
+    except ApprovalRoutingError as error:
+        logger.warning("Attendance approval routing requires HR attention: %s", error)
+        await save_approval_route(
+            session,
+            resource_type="invalid_attendance",
+            resource_id=attendance_id,
+            employee_id=employee_id,
+            assigned_by=actor_id,
+            approver=None,
+            routing_error=str(error),
+        )
 
 
 async def lock_attendance_user(
@@ -1438,6 +1469,12 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                         punch_metadata=initial_metadata
                     )
                 )
+                if created.record_status == "INVALID":
+                    if created.id is None:
+                        raise RuntimeError("The invalid attendance record was saved without an ID.")
+                    await assign_invalid_attendance_approver(
+                        uow.session, created.id, employee.id, input_dto.user_id, now_local.date()
+                    )
                 action_taken = "clock_in"
                 timestamp = created.clock_in_at
                 approval_required = created.record_status == "INVALID"
@@ -1608,6 +1645,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     clock_out_meta["geofence_validation"] = clock_out_geofence
                 if input_dto.clock_channel:
                     clock_out_meta["clock_policy"] = input_dto.clock_channel
+                was_invalid = existing.record_status == "INVALID"
                 if not input_dto.device_approved:
                     existing.record_status = "INVALID"
                     clock_out_meta["approval_required"] = "Browser approval is required."
@@ -1616,6 +1654,12 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 existing.punch_metadata = current_meta
 
                 updated = await attendance_repo.update(existing)
+                if updated.record_status == "INVALID" and not was_invalid:
+                    if updated.id is None:
+                        raise RuntimeError("The invalid attendance record was saved without an ID.")
+                    await assign_invalid_attendance_approver(
+                        uow.session, updated.id, employee.id, input_dto.user_id, now_local.date()
+                    )
                 action_taken = "clock_out"
                 timestamp = updated.clock_out_at
                 approval_required = updated.record_status == "INVALID"

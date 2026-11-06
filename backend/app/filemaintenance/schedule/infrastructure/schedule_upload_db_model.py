@@ -95,6 +95,9 @@ class ScheduleUploadBatchRowModel(Base):
     employee_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("hr.employees.id"), nullable=False
     )
+    company_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("core.companies.id"), nullable=True
+    )
     employee_code: Mapped[str] = mapped_column(String(30), nullable=False)
     employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
     schedule_code: Mapped[str] = mapped_column(String(30), nullable=False)
