@@ -1,0 +1,7 @@
+payroll_group_code,payroll_group_name
+GRP01,Executive
+GRP02,Managerial
+GRP03,Officer
+GRP04,Rank and File
+GRP05,Sr. Managerial
+GRP06,Supervisory

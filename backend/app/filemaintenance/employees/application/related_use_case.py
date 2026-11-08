@@ -1,4 +1,4 @@
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from datetime import date
 from typing import Any
 from uuid import UUID
@@ -44,6 +44,15 @@ ASSIGNMENT_UUID_FIELDS = (
 SKILL_DATE_FIELDS = ("issued_date", "expiry_date")
 SKILL_UUID_FIELDS = ("id", "employee_id", "verified_by", "created_by", "updated_by")
 PROTECTED_FIELDS = ("id", "employee_id", "created_at", "created_by", "row_version")
+
+
+@dataclass
+class EmploymentAssignmentBatchItem:
+    """One imported row: created, or an override of the existing employee/company assignment."""
+
+    action: str  # "CREATE" or "UPDATE"
+    assignment: EmploymentAssignmentEntity
+    before: EmploymentAssignmentEntity | None = None
 
 
 def _normalize(payload: dict[str, Any], date_fields: tuple[str, ...], uuid_fields: tuple[str, ...]) -> dict[str, Any]:
@@ -434,11 +443,11 @@ class CreateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity])
             return result
 
 
-class CreateEmploymentAssignmentsBatchUseCase(BaseUseCase[list[EmploymentAssignmentEntity]]):
+class CreateEmploymentAssignmentsBatchUseCase(BaseUseCase[list[EmploymentAssignmentBatchItem]]):
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
-    async def _execute(self, rows: list[dict[str, Any]]) -> list[EmploymentAssignmentEntity]:
+    async def _execute(self, rows: list[dict[str, Any]]) -> list[EmploymentAssignmentBatchItem]:
         if not rows or len(rows) > 500:
             raise ValueError("The batch must contain between 1 and 500 assignment rows.")
 
@@ -483,25 +492,58 @@ class CreateEmploymentAssignmentsBatchUseCase(BaseUseCase[list[EmploymentAssignm
                 )
             )).all())
 
+            repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
             active_employees: set[UUID] = set()
+            create_plans: list[tuple[int, dict[str, Any]]] = []
+            # (values, before entity, merged entity, validated values)
+            update_plans: list[tuple[int, dict[str, Any], EmploymentAssignmentEntity, EmploymentAssignmentEntity, dict[str, Any]]] = []
             for row_number, values in prepared:
                 try:
                     pair = (values["employee_id"], values["company_id"])
                     if pair in existing_pairs:
-                        raise ValueError("An employment assignment already exists for this employee and company.")
-                    is_active = values.get("is_active", True) and values.get("status", "ACTIVE") == "ACTIVE"
-                    if is_active and values["employee_id"] in active_employees:
-                        raise ValueError("An employee can have only one active employment assignment.")
-                    if is_active:
-                        active_employees.add(values["employee_id"])
-                    await _ensure_single_active_assignment(uow, values)
-                    await _validate_assignment(uow, values)
+                        # Override the current assignment for this employee and company:
+                        # prefer the active one, otherwise the most recent.
+                        matches = await repo.find_all(
+                            EmploymentAssignmentModel.employee_id == pair[0],
+                            EmploymentAssignmentModel.company_id == pair[1],
+                            order_by=[
+                                EmploymentAssignmentModel.is_active.desc(),
+                                EmploymentAssignmentModel.effective_from.desc(),
+                                EmploymentAssignmentModel.created_at.desc(),
+                            ],
+                            limit=1,
+                        )
+                        existing = matches[0]
+                        existing.authorized_geofence_ids = await _get_assignment_geofence_ids(uow, existing.id)
+                        existing.location_ids = await _get_assignment_location_ids(uow, existing.id)
+                        updated = _apply_changes(existing, values)
+                        validation_values = updated.__dict__.copy()
+                        is_active = bool(validation_values.get("is_active", True)) and validation_values.get("status") == "ACTIVE"
+                        if is_active and updated.employee_id in active_employees:
+                            raise ValueError("An employee can have only one active employment assignment.")
+                        if is_active:
+                            active_employees.add(updated.employee_id)
+                        await _ensure_single_active_assignment(uow, validation_values, existing.id)
+                        if "location_ids" not in values:
+                            validation_values.pop("location_ids", None)
+                        await _validate_assignment(
+                            uow, validation_values, (existing.company_id, existing.operational_group),
+                        )
+                        update_plans.append((row_number, values, existing, updated, validation_values))
+                    else:
+                        is_active = values.get("is_active", True) and values.get("status", "ACTIVE") == "ACTIVE"
+                        if is_active and values["employee_id"] in active_employees:
+                            raise ValueError("An employee can have only one active employment assignment.")
+                        if is_active:
+                            active_employees.add(values["employee_id"])
+                        await _ensure_single_active_assignment(uow, values)
+                        await _validate_assignment(uow, values)
+                        create_plans.append((row_number, values))
                 except ValueError as error:
                     raise ValueError(f"CSV row {row_number}: {error}") from error
 
-            repo = uow.get_repo(EmploymentAssignmentEntity, EmploymentAssignmentModel)
-            created: list[EmploymentAssignmentEntity] = []
-            for _, values in prepared:
+            items_by_row: dict[int, EmploymentAssignmentBatchItem] = {}
+            for row_number, values in create_plans:
                 result = await repo.add(values)
                 await _replace_assignment_geofences(
                     uow, result.id, values["company_id"], values.get("authorized_geofence_ids", [])
@@ -511,8 +553,29 @@ class CreateEmploymentAssignmentsBatchUseCase(BaseUseCase[list[EmploymentAssignm
                 )
                 result.authorized_geofence_ids = values.get("authorized_geofence_ids", [])
                 result.location_ids = values.get("location_ids", [])
-                created.append(result)
-            return created
+                items_by_row[row_number] = EmploymentAssignmentBatchItem(action="CREATE", assignment=result)
+            for row_number, values, before, updated, validation_values in update_plans:
+                updated.location_ids = validation_values["location_ids"]
+                updated.primary_location_id = validation_values["primary_location_id"]
+                updated.authorized_geofence_ids = validation_values["authorized_geofence_ids"]
+                result = await repo.update(updated)
+                if "authorized_geofence_ids" in values:
+                    await _replace_assignment_geofences(
+                        uow, updated.id, updated.company_id, updated.authorized_geofence_ids or []
+                    )
+                if any(
+                    field in values
+                    for field in ("location_ids", "primary_location_id", "authorized_geofence_ids")
+                ):
+                    await _replace_assignment_locations(
+                        uow, updated.id, updated.company_id, updated.location_ids or []
+                    )
+                result.authorized_geofence_ids = updated.authorized_geofence_ids or []
+                result.location_ids = updated.location_ids or []
+                items_by_row[row_number] = EmploymentAssignmentBatchItem(
+                    action="UPDATE", assignment=result, before=before,
+                )
+            return [items_by_row[row_number] for row_number, _ in prepared]
 
 
 class UpdateEmploymentAssignmentUseCase(BaseUseCase[EmploymentAssignmentEntity]):

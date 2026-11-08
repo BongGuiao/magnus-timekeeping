@@ -146,19 +146,20 @@ async def create_assignments_batch(
             }
             for row in payload
         ]
-        results = await use_case.execute(stamped_payload)
+        items = await use_case.execute(stamped_payload)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-    for result in results:
+    for item in items:
         await log_entity_action(
             es_client,
             user_id=user_id,
-            action="CREATE",
+            action=item.action,
             resource="employment_assignment",
-            resource_id=result.id,
-            after=result,
+            resource_id=item.assignment.id,
+            before=item.before,
+            after=item.assignment,
         )
-    return ResponseEnvelope(status="success", data=results)
+    return ResponseEnvelope(status="success", data=[item.assignment for item in items])
 
 
 @assignments_router.put(

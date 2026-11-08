@@ -711,7 +711,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       const created = await createEmploymentAssignmentsBatch(batchRows)
       window.dispatchEvent(new Event(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT))
       setAssignmentRefreshVersion((current) => current + 1)
-      setAssignmentCsvMessage(`${created.length} employment assignment${created.length === 1 ? '' : 's'} imported successfully.`)
+      setAssignmentCsvMessage(`${created.length} employment assignment${created.length === 1 ? '' : 's'} imported successfully. Existing employee/company assignments were overridden with the uploaded values.`)
     } catch (error) {
       setAssignmentCsvError(error instanceof Error
         ? `The entire file was rejected. ${error.message}`
@@ -801,7 +801,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       <div>
         <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
-          Imports assignments for existing employees. The whole file is rejected if a row is invalid, duplicates another row, or matches an existing employee/company assignment. No rows are imported unless every row passes validation.
+          Imports assignments for existing employees. Rows that match an existing employee/company assignment override that assignment with the uploaded values. The whole file is rejected if a row is invalid or duplicates another row. No rows are imported unless every row passes validation.
         </p>
       </div>
       <label className="block text-xs font-semibold text-slate-700">
