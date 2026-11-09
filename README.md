@@ -473,21 +473,42 @@ approval and unlock actions are audited. Apply
 New leave, overtime, official-business, attendance-correction, emergency
 schedule, schedule-upload, and invalid-attendance approvals use the manager
 of the employee's currently effective org unit. Ordinary members use their
-own-unit manager. A manager's own request uses only the immediate parent-unit
-manager. This is a single approval, not a chain up to the President.
+own-unit manager. A manager's own request skips self-approval and uses the nearest
+eligible ancestor manager. This is a single approval, not a chain up to the President.
 A manager cannot approve their own request.
 For a schedule batch uploaded by its manager, the uploader is excluded and
-only the immediate parent is considered. A missing, inactive, or non-independent
-manager holds the request unresolved; the system does not search higher ancestors.
+the nearest independent eligible ancestor is considered. Disabled approvers and
+excluded branches are skipped. Missing managers and inactive units/accounts remain
+explicit configuration errors; a request with no eligible approver is held unresolved.
+
+In the org-unit form, **Manager is an approver** defaults to checked for both
+existing and new units. **Excluded org units** is a searchable multi-selection
+containing only non-deleted descendants in the same company, with hierarchy labels.
+Each exclusion covers that descendant's entire subtree for this manager only;
+it does not disable the descendant's own approver. New units must be saved before
+exclusions can be configured. Exclusions are retained when the approver checkbox
+is unchecked, so re-enabling it restores the configured scope. Reparenting or
+deleting a unit is rejected if it would invalidate an existing exclusion; remove
+that exclusion explicitly first.
+
+Before deploying these settings, back up the database and apply Alembic revision
+`b8c0d2e4f6a8`. Manually maintained installations can apply
+[manual_org_unit_approval_settings.sql](backend/sql/manual_org_unit_approval_settings.sql)
+instead; do not apply both paths. Deploy the matching backend and frontend after
+the migration. Existing approval routes are not rewritten.
 
 Each employee must have one current company/org-unit assignment, and the
 hierarchy must contain active units in the same company without cycles. The
 selected manager needs an active employee-linked account. Being the active
-manager of an org unit grants the team approval permissions
+approval-enabled manager of an org unit grants the team approval permissions
 `leave.approve_team`, `overtime.approve_team`,
 `official_business.approve_team`, `attendance.approve_corrections_team`,
 `schedule.approve_emergency`, `schedule.approve` (schedule upload batches),
 and `attendance.read_team` (invalid attendance); no role grant is needed.
+Disabling approval does not remove existing team-read permissions. Active
+employee-linked accounts retain the specific permission needed to review their
+already-assigned, still-pending organization requests, even after manager or
+approval-setting changes; completed requests do not supply this permission.
 The `SUPERVISOR` role alone does not authorize new approvals. Existing role-based
 team read access and legacy pending-request scope are preserved.
 The optional Position ID does not grant approval authority. A configured
@@ -505,7 +526,7 @@ employee or their roles change, their current account and permissions govern
 access; sign in again after an employee-link change.
 
 Changing an org-unit manager does not reassign existing pending requests. If the
-saved approver becomes inactive or loses the required permission, restore their
+saved approver's employee profile or account becomes inactive, restore their
 access or cancel and resubmit the request where supported. There is currently
 no reassignment control for an already assigned route; plan manager transitions
 accordingly. Recovery applies only to currently unresolved, still-pending requests;
@@ -518,7 +539,8 @@ Users with `employees.manage` see unresolved requests across all seven resource
 types (up to the latest 100 per type), with **Retry routing** after correcting the
 configuration. Alternatively, HR can select an independent active org-unit manager
 and supply an audit reason. The selected manager must have an active employee-linked
-account and manage an active unit in each affected company. The requester, schedule
+account and manage an active, approval-enabled unit in each affected company,
+without excluding the affected employee's branch. The requester, schedule
 uploader, and assigning HR employee cannot be selected. This assigns one reviewer,
 not an approval; the usual approval queues remain in use. Failed recovery retains
 the alert and displays the routing error. Existing invalid-attendance HR endpoints

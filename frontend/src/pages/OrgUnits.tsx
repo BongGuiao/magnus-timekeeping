@@ -245,6 +245,8 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
       org_unit_name: values.org_unit_name,
       org_unit_type: values.org_unit_type,
       manager_employee_id: nullable(values.manager_employee_id),
+      manager_is_approver: values.manager_is_approver,
+      excluded_approval_org_unit_ids: values.excluded_approval_org_unit_ids,
       cost_center_code: nullable(values.cost_center_code),
       effective_from: values.effective_from,
       effective_to: nullable(values.effective_to),

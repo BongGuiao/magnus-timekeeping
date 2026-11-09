@@ -16,6 +16,7 @@ from app.auth.infrastructure.approval_routing import (
     save_approval_route,
 )
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
+from app.core.database import init_db_models
 
 
 TODAY = date(2026, 11, 4)
@@ -32,6 +33,8 @@ def unit(unit_id, company_id, *, manager_id=None, parent_id=None, **changes):
         "deleted_at": None,
         "effective_from": date(2026, 1, 1),
         "effective_to": None,
+        "manager_is_approver": True,
+        "excluded_approval_org_unit_ids": [],
     }
     values.update(changes)
     return SimpleNamespace(**values)
@@ -50,13 +53,12 @@ class RoutingSession:
         self.add = MagicMock()
 
     async def _execute(self, statement):
-        if self.execute.await_count == 1:
-            return SimpleNamespace(all=lambda: self.assignments)
-        return SimpleNamespace(scalar_one_or_none=lambda: self.account)
+        return SimpleNamespace(all=lambda: self.assignments, scalar_one_or_none=lambda: self.account)
 
 
 class OrgUnitApproverTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        init_db_models()
         self.employee_id = uuid4()
         self.manager_id = uuid4()
         self.parent_manager_id = uuid4()
@@ -117,15 +119,61 @@ class OrgUnitApproverTests(unittest.IsolatedAsyncioTestCase):
             await self.resolve(session)
         self.assertEqual(session.get.await_count, 1)
 
-    async def test_missing_or_self_parent_does_not_escalate_to_grandparent(self):
-        for parent_manager in (None, self.employee_id):
-            session = self.session(child_manager=self.employee_id, parent_manager=parent_manager)
-            grandparent_id = uuid4()
-            session.units[self.parent_id].parent_org_unit_id = grandparent_id
-            session.units[grandparent_id] = unit(grandparent_id, self.company_id, manager_id=self.parent_manager_id)
-            with self.assertRaises(ApprovalRoutingError):
-                await self.resolve(session)
-            self.assertEqual(session.get.await_count, 2)
+    async def test_missing_parent_manager_remains_an_explicit_configuration_error(self):
+        session = self.session(child_manager=self.employee_id)
+        grandparent_id = uuid4()
+        session.units[self.parent_id].parent_org_unit_id = grandparent_id
+        session.units[grandparent_id] = unit(grandparent_id, self.company_id, manager_id=self.parent_manager_id)
+        with self.assertRaisesRegex(ApprovalRoutingError, "no manager"):
+            await self.resolve(session)
+        self.assertEqual(session.get.await_count, 2)
+
+    async def test_self_managers_are_skipped_until_an_independent_ancestor(self):
+        session = self.session(child_manager=self.employee_id, parent_manager=self.employee_id)
+        grandparent_id = uuid4()
+        session.units[self.parent_id].parent_org_unit_id = grandparent_id
+        session.units[grandparent_id] = unit(grandparent_id, self.company_id, manager_id=self.parent_manager_id)
+        result = await self.resolve(session)
+        self.assertEqual(result.approver_org_unit_id, grandparent_id)
+
+    async def test_disabled_manager_escalates_for_every_workflow(self):
+        for permission in ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS:
+            session = self.session(child_manager=self.manager_id, parent_manager=self.parent_manager_id)
+            session.units[self.unit_id].manager_is_approver = False
+            result = await self.resolve(session, permission_code=permission)
+            self.assertEqual(result.employee_id, self.parent_manager_id)
+
+    async def test_disabled_manager_without_parent_is_unresolved(self):
+        session = self.session(child_manager=self.manager_id)
+        session.units[self.unit_id].manager_is_approver = False
+        session.units[self.parent_id].manager_is_approver = False
+        with self.assertRaisesRegex(ApprovalRoutingError, "No eligible"):
+            await self.resolve(session)
+
+    async def test_exclusion_covers_subtree_but_not_childs_own_manager(self):
+        session = self.session(child_manager=self.manager_id, parent_manager=self.parent_manager_id)
+        session.units[self.parent_id].excluded_approval_org_unit_ids = [self.unit_id]
+        result = await self.resolve(session)
+        self.assertEqual(result.employee_id, self.manager_id)
+        session.units[self.unit_id].manager_is_approver = False
+        with self.assertRaisesRegex(ApprovalRoutingError, "No eligible"):
+            await self.resolve(session)
+
+    async def test_excluded_ancestor_is_skipped_and_unrelated_exclusion_does_not_block(self):
+        session = self.session(child_manager=self.employee_id, parent_manager=self.parent_manager_id)
+        grandparent_id, root_id, root_manager_id = uuid4(), uuid4(), uuid4()
+        session.units[self.parent_id].manager_is_approver = False
+        session.units[self.parent_id].parent_org_unit_id = grandparent_id
+        session.units[grandparent_id] = unit(
+            grandparent_id, self.company_id, manager_id=self.manager_id, parent_id=root_id,
+            excluded_approval_org_unit_ids=[self.parent_id],
+        )
+        session.units[root_id] = unit(root_id, self.company_id, manager_id=root_manager_id)
+        result = await self.resolve(session)
+        self.assertEqual(result.employee_id, root_manager_id)
+        session.units[grandparent_id].excluded_approval_org_unit_ids = [uuid4()]
+        result = await self.resolve(session)
+        self.assertEqual(result.employee_id, self.manager_id)
 
     async def test_holding_unresolved_requests_logs_and_saves_without_approving(self):
         from app.auth.infrastructure.approval_routing import assign_org_approval

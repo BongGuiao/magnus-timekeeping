@@ -3,13 +3,16 @@ from datetime import datetime
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import distinct, or_, select
+from sqlalchemy import distinct, literal, or_, select, union_all
 
 from app.auth.domain.entities.user import AccountStatus
 from app.auth.infrastructure.approval_routing import (
-    ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS,
+    ORG_UNIT_MANAGER_READ_PERMISSIONS,
+    ORG_UNIT_APPROVER_PERMISSIONS,
     active_org_unit_manager_condition,
 )
+from app.auth.infrastructure.approval_resources import RESOURCE_MODELS
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
 from app.auth.infrastructure.db_model import RoleModel
 from app.auth.infrastructure.db_model import UserModel
 from app.core.generics.uc_base import BaseUseCase
@@ -89,7 +92,37 @@ class GetCurrentAuthorizationUseCase(BaseUseCase[CurrentAuthorization]):
             if is_active_employee and await uow.session.scalar(
                 select(active_org_unit_manager_condition(employee.id, today))
             ):
-                effective_permission_codes |= ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS
+                effective_permission_codes |= ORG_UNIT_MANAGER_READ_PERMISSIONS
+                if await uow.session.scalar(
+                    select(active_org_unit_manager_condition(employee.id, today, approval_only=True))
+                ):
+                    effective_permission_codes |= ORG_UNIT_APPROVER_PERMISSIONS
+            if is_active_employee:
+                # Saved pending assignments retain access even after approval settings change.
+                pending_permissions = []
+                for resource_type, (model, state_field, pending_state, permission) in RESOURCE_MODELS.items():
+                    if permission in effective_permission_codes:
+                        continue
+                    statement = (
+                        select(literal(permission).label("permission_code"))
+                        .select_from(ApprovalRouteModel)
+                        .join(model, model.id == ApprovalRouteModel.resource_id)
+                        .where(
+                            ApprovalRouteModel.resource_type == resource_type,
+                            ApprovalRouteModel.routing_mode == "ORG_UNIT",
+                            ApprovalRouteModel.is_current.is_(True),
+                            ApprovalRouteModel.approver_employee_id == employee.id,
+                            getattr(model, state_field) == pending_state,
+                        )
+                    )
+                    if hasattr(model, "is_active"):
+                        statement = statement.where(model.is_active.is_(True))
+                    pending_permissions.append(statement)
+                if pending_permissions:
+                    pending = union_all(*pending_permissions).subquery()
+                    effective_permission_codes.update(await uow.session.scalars(
+                        select(pending.c.permission_code).distinct()
+                    ))
             return CurrentAuthorization(
                 role_codes=list(role_codes),
                 permission_codes=sorted(effective_permission_codes),

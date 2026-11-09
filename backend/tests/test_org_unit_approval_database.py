@@ -29,6 +29,10 @@ from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
 from app.auth.application.authorization import CurrentAuthorization, GetCurrentAuthorizationUseCase
 from app.auth.infrastructure.db_model import RoleModel, UserModel
 from app.core.database import init_db_models
+from app.core.generics.repo_base import BaseRepository
+from app.filemaintenance.org_unit.application.use_case import (
+    CreateOrgUnitUseCase, UpdateOrgUnitUseCase, DeleteOrgUnitUseCase,
+)
 from app.filemaintenance.companies.infrastructure.db_model import CompanyModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.leaves.application import leave_records_use_case
@@ -60,6 +64,9 @@ class SessionUnitOfWork:
 
     async def __aexit__(self, *_args):
         return False
+
+    def get_repo(self, entity_class, model_class):
+        return BaseRepository(self.session, model_class, entity_class)
 
 
 @unittest.skipUnless(TEST_DATABASE_URL, "Requires a migrated, disposable approval-routing database.")
@@ -150,6 +157,131 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.transaction.rollback()
         await self.connection.close()
         await self.engine.dispose()
+
+    def org_unit_payload(self, unit):
+        return {
+            "company_id": unit.company_id,
+            "org_unit_code": unit.org_unit_code,
+            "org_unit_name": unit.org_unit_name,
+            "org_unit_type": unit.org_unit_type,
+            "effective_from": unit.effective_from,
+            "parent_org_unit_id": unit.parent_org_unit_id,
+            "manager_employee_id": unit.manager_employee_id,
+        }
+
+    async def test_settings_default_enabled_persist_and_preserve_omitted_update_fields(self):
+        self.assertTrue(self.child.manager_is_approver)
+        self.assertEqual(self.child.excluded_approval_org_unit_ids, [])
+        use_case = UpdateOrgUnitUseCase(SessionUnitOfWork(self.session))
+        payload = {
+            **self.org_unit_payload(self.parent),
+            "manager_is_approver": False,
+            "excluded_approval_org_unit_ids": [str(self.child.id)],
+        }
+        updated = await use_case.execute(self.parent.id, payload)
+        self.assertFalse(updated.manager_is_approver)
+        self.assertEqual(updated.excluded_approval_org_unit_ids, [self.child.id])
+        saved = await use_case.execute(self.parent.id, self.org_unit_payload(self.parent))
+        self.assertFalse(saved.manager_is_approver)
+        self.assertEqual(saved.excluded_approval_org_unit_ids, [self.child.id])
+        await self.session.refresh(self.parent)
+        self.assertEqual(self.parent.excluded_approval_org_unit_ids, [self.child.id])
+
+    async def test_creation_defaults_and_rejects_unsaved_descendant_exclusions(self):
+        use_case = CreateOrgUnitUseCase(SessionUnitOfWork(self.session))
+        payload = {
+            **self.org_unit_payload(self.child),
+            "org_unit_code": f"IT-{uuid4().hex[:8]}",
+        }
+        created = await use_case.execute(payload)
+        self.assertTrue(created.manager_is_approver)
+        self.assertEqual(created.excluded_approval_org_unit_ids, [])
+        with self.assertRaisesRegex(ValueError, "Create the org unit"):
+            await use_case.execute({
+                **payload, "excluded_approval_org_unit_ids": [str(self.child.id)],
+            })
+
+    async def test_api_use_cases_reject_invalid_exclusions_moves_and_deletions(self):
+        uow = SessionUnitOfWork(self.session)
+        update = UpdateOrgUnitUseCase(uow)
+        for excluded_id in (self.child.id, self.parent.id, uuid4()):
+            with self.subTest(excluded_id=excluded_id):
+                with self.assertRaisesRegex(ValueError, "descendant"):
+                    await update.execute(self.child.id, {
+                        **self.org_unit_payload(self.child),
+                        "excluded_approval_org_unit_ids": [excluded_id],
+                    })
+        await update.execute(self.parent.id, {
+            **self.org_unit_payload(self.parent),
+            "excluded_approval_org_unit_ids": [self.child.id],
+        })
+        with self.assertRaisesRegex(ValueError, "Remove invalid exclusions"):
+            await update.execute(self.child.id, {
+                **self.org_unit_payload(self.child), "parent_org_unit_id": None,
+            })
+        with self.assertRaisesRegex(ValueError, "Remove invalid exclusions"):
+            await DeleteOrgUnitUseCase(uow).execute(self.child.id, self.users["parent"].id)
+        await self.session.refresh(self.child)
+        self.assertIsNone(self.child.deleted_at)
+        self.assertEqual(self.child.parent_org_unit_id, self.parent.id)
+
+    async def test_disabled_approver_keeps_pending_assignment_permission_until_reviewed(self):
+        start = datetime(2026, 11, 4, 1, tzinfo=timezone.utc)
+        request = AttendanceCorrectionModel(
+            id=uuid4(), employee_id=self.employees["worker"].id, user_id=self.users["worker"].id,
+            work_date=start.date(), requested_clock_in_at=start,
+            requested_clock_out_at=start + timedelta(hours=8), reason="Synthetic request",
+        )
+        self.session.add(request)
+        await self.session.flush()
+        await assign_org_approval(
+            self.session, resource_type="attendance_correction", resource_id=request.id,
+            employee_id=self.employees["worker"].id, assigned_by=self.users["worker"].id,
+            on_date=TODAY, permission_code="attendance.approve_corrections_team",
+        )
+        self.child.manager_is_approver = False
+        await self.session.flush()
+        authorization = GetCurrentAuthorizationUseCase(SessionUnitOfWork(self.session))
+        current = await authorization.execute(self.users["manager"].id)
+        self.assertIn("attendance.read_team", current.permission_codes)
+        self.assertIn("attendance.approve_corrections_team", current.permission_codes)
+        self.assertNotIn("leave.approve_team", current.permission_codes)
+        next_approver = await resolve_org_unit_approver(
+            self.session, self.employees["worker"].id, TODAY, "attendance.approve_corrections_team",
+        )
+        self.assertEqual(next_approver.employee_id, self.employees["parent"].id)
+        route = await self.session.scalar(select(ApprovalRouteModel).where(
+            ApprovalRouteModel.resource_id == request.id, ApprovalRouteModel.is_current.is_(True),
+        ))
+        self.assertEqual(route.approver_employee_id, self.employees["manager"].id)
+        request.status = "APPROVED"
+        await self.session.flush()
+        completed = await authorization.execute(self.users["manager"].id)
+        self.assertNotIn("attendance.approve_corrections_team", completed.permission_codes)
+
+    async def test_excluded_parent_is_skipped_and_manual_recovery_cannot_bypass_exclusion(self):
+        self.parent.excluded_approval_org_unit_ids = [self.child.id]
+        result = await resolve_org_unit_approver(
+            self.session, self.employees["worker"].id, TODAY, "leave.approve_team",
+        )
+        self.assertEqual(result.employee_id, self.employees["manager"].id)
+        self.child.manager_is_approver = False
+        await self.session.flush()
+        with self.assertRaisesRegex(ApprovalRoutingError, "No eligible"):
+            await resolve_org_unit_approver(
+                self.session, self.employees["worker"].id, TODAY, "leave.approve_team",
+            )
+        with self.assertRaisesRegex(ApprovalRoutingError, "without excluding"):
+            await approval_routing_router._manual_approver(
+                self.session, {self.employees["worker"].id}, self.employees["parent"].id, set(), TODAY,
+            )
+        self.parent.excluded_approval_org_unit_ids = []
+        self.parent.manager_is_approver = False
+        await self.session.flush()
+        with self.assertRaisesRegex(ApprovalRoutingError, "approval-enabled"):
+            await approval_routing_router._manual_approver(
+                self.session, {self.employees["worker"].id}, self.employees["parent"].id, set(), TODAY,
+            )
 
     async def test_resolver_checks_permissions_and_skips_uploader_and_self(self):
         result = await resolve_org_unit_approver(
@@ -348,14 +480,14 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         current = next(route for route in routes if route.is_current)
         self.assertEqual(current.approver_employee_id, self.employees["manager"].id)
 
-    async def test_manager_request_uses_only_immediate_parent(self):
+    async def test_manager_request_uses_nearest_independent_ancestor(self):
         approver = await resolve_org_unit_approver(
             self.session, self.employees["manager"].id, TODAY, "leave.approve_team",
         )
         self.assertEqual(approver.employee_id, self.employees["parent"].id)
         self.parent.manager_employee_id = self.employees["manager"].id
         await self.session.flush()
-        with self.assertRaisesRegex(ApprovalRoutingError, "parent manager"):
+        with self.assertRaisesRegex(ApprovalRoutingError, "No eligible"):
             await resolve_org_unit_approver(
                 self.session, self.employees["manager"].id, TODAY, "leave.approve_team",
             )
@@ -471,6 +603,10 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 assert route is not None
                 self.child.manager_employee_id = self.employees["other"].id
                 await self.session.flush()
+                saved_authorization = await GetCurrentAuthorizationUseCase(
+                    SessionUnitOfWork(self.session)
+                ).execute(self.users["manager"].id)
+                self.assertIn(permission, saved_authorization.permission_codes)
                 self.assertIn(cutoff.id, await visible_cutoffs("manager", permission))
                 self.assertNotIn(cutoff.id, await visible_cutoffs("other", permission))
                 self.assertIn(cutoff.id, await visible_cutoffs("legacy", permission))
@@ -482,6 +618,11 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     request.reviewed_by = self.users["manager"].id
                     request.reviewed_at = start
                 await self.session.flush()
+                if permission != "attendance.read_team":
+                    completed_authorization = await GetCurrentAuthorizationUseCase(
+                        SessionUnitOfWork(self.session)
+                    ).execute(self.users["manager"].id)
+                    self.assertNotIn(permission, completed_authorization.permission_codes)
                 self.assertNotIn(cutoff.id, await visible_cutoffs("manager", permission))
                 setattr(request, status_field, original_status)
                 if resource_type == "emergency_schedule_request":
@@ -489,6 +630,32 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     request.reviewed_at = None
                 route.is_current = False
                 await self.session.flush()
+
+    async def test_schedule_batch_retains_only_pending_reviewer_permission(self):
+        batch = ScheduleUploadBatchModel(
+            id=uuid4(), batch_no=f"IT-{uuid4().hex[:8]}",
+            supervisor_employee_id=self.employees["manager"].id,
+            uploaded_by=self.users["worker"].id, file_name="test.csv", row_count=1,
+        )
+        self.session.add(batch)
+        await self.session.flush()
+        await assign_org_approval(
+            self.session, resource_type="schedule_upload_batch", resource_id=batch.id,
+            employee_id=self.employees["worker"].id, assigned_by=self.users["worker"].id,
+            on_date=TODAY, permission_code="schedule.approve",
+        )
+        self.child.manager_is_approver = False
+        await self.session.flush()
+        authorization = GetCurrentAuthorizationUseCase(SessionUnitOfWork(self.session))
+        pending = await authorization.execute(self.users["manager"].id)
+        self.assertIn("schedule.approve", pending.permission_codes)
+        self.assertNotIn("leave.approve_team", pending.permission_codes)
+        batch.status = "REJECTED"
+        batch.reviewed_by = self.users["manager"].id
+        batch.reviewed_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        completed = await authorization.execute(self.users["manager"].id)
+        self.assertNotIn("schedule.approve", completed.permission_codes)
 
     async def test_team_upload_is_assigned_to_parent_and_keeps_snapshot_after_changes(self):
         repository = SqlAlchemyScheduleUploadRepository(self.session)

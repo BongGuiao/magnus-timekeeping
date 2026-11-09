@@ -1,7 +1,7 @@
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,8 @@ from app.filemaintenance.org_unit.domain.entities.org_unit import OrgUnitEntity
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
 from app.filemaintenance.org_unit.domain.entities.org_unit_type import OrgUnitTypeEntity
 from app.filemaintenance.org_unit.infrastructure.org_unit_type_db_model import OrgUnitType
+from app.filemaintenance.companies.infrastructure.db_model import CompanyModel
+from app.filemaintenance.org_unit.domain.approval_settings import validate_org_unit_approval_settings
 
 
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -34,7 +36,51 @@ def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, str):
             normalized_payload[field] = UUID(value)
 
+    if "manager_is_approver" in normalized_payload and not isinstance(normalized_payload["manager_is_approver"], bool):
+        raise ValueError("Manager is an approver must be a boolean.")
+    if "excluded_approval_org_unit_ids" in normalized_payload:
+        values = normalized_payload["excluded_approval_org_unit_ids"]
+        if not isinstance(values, list):
+            raise ValueError("Excluded org units must be a list of UUIDs.")
+        try:
+            ids = [value if isinstance(value, UUID) else UUID(str(value)) for value in values]
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError("Excluded org units must contain valid UUIDs.") from error
+        if len(ids) != len(set(ids)):
+            raise ValueError("Excluded org units must not contain duplicates.")
+        normalized_payload["excluded_approval_org_unit_ids"] = ids
     return normalized_payload
+
+
+async def _lock_org_unit_companies(uow: GenUnitOfWork, company_ids: set[UUID]) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    await uow.session.execute(
+        select(CompanyModel.id).where(CompanyModel.id.in_(company_ids))
+        .order_by(CompanyModel.id).with_for_update()
+    )
+
+
+async def _validate_org_unit_change(
+    uow: GenUnitOfWork, proposed: OrgUnitEntity, company_ids: set[UUID],
+) -> None:
+    if uow.session is None:
+        raise RuntimeError("UnitOfWork session is not active.")
+    models = (await uow.session.scalars(
+        select(OrgUnit).where(
+            OrgUnit.company_id.in_(company_ids), OrgUnit.deleted_at.is_(None),
+        ).execution_options(populate_existing=True)
+    )).all()
+    units = []
+    for model in models:
+        entity = GenericMapper.to_entity(model, OrgUnitEntity)
+        if entity is None:
+            raise RuntimeError("Organization unit could not be mapped.")
+        units.append(entity)
+    units = [unit for unit in units if unit.id != proposed.id]
+    if proposed.deleted_at is None:
+        units.append(proposed)
+    validate_org_unit_approval_settings(units)
 
 
 class CreateOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
@@ -51,6 +97,14 @@ class CreateOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
             await _ensure_org_unit_type_is_active(
                 uow, normalized["company_id"], normalized["org_unit_type"]
             )
+            if normalized.get("excluded_approval_org_unit_ids"):
+                raise ValueError("Create the org unit before configuring descendant approval exclusions.")
+            normalized.setdefault("id", uuid4())
+            proposed = GenericMapper.to_entity(normalized, OrgUnitEntity)
+            if proposed is None:
+                raise ValueError("Organization unit details are required.")
+            await _lock_org_unit_companies(uow, {proposed.company_id})
+            await _validate_org_unit_change(uow, proposed, {proposed.company_id})
             repo = uow.get_repo(OrgUnitEntity, OrgUnit)
             return await repo.add(normalized)
 
@@ -256,14 +310,25 @@ class UpdateOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
 
     async def _execute(self, org_unit_id: UUID, payload: dict[str, Any]) -> OrgUnitEntity:
         async with self.uow as uow:
+            if uow.session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            normalized = _normalize_payload(payload)
+            old_company_id = await uow.session.scalar(select(OrgUnit.company_id).where(OrgUnit.id == org_unit_id))
+            if old_company_id is None:
+                raise ValueError("Org unit not found.")
+            company_ids = {old_company_id, normalized["company_id"]}
+            await _lock_org_unit_companies(uow, company_ids)
             repo = uow.get_repo(OrgUnitEntity, OrgUnit)
             existing = await repo.find_one(OrgUnit.id == org_unit_id)
             if existing is None:
                 raise ValueError("Org unit not found.")
             if existing.deleted_at is not None:
                 raise ValueError("Deleted organization units cannot be edited.")
+            if existing.company_id != old_company_id:
+                raise ValueError("This org unit changed companies while saving. Reload it and try again.")
 
-            normalized = _normalize_payload(payload)
+            normalized.setdefault("manager_is_approver", existing.manager_is_approver)
+            normalized.setdefault("excluded_approval_org_unit_ids", existing.excluded_approval_org_unit_ids)
             normalized.pop("deleted_at", None)
             normalized.pop("deleted_by", None)
             if normalized.get("status") == "DELETED":
@@ -295,6 +360,7 @@ class UpdateOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
                 updated_by=entity_data.updated_by or existing.updated_by,
                 row_version=(existing.row_version or 0) + 1,
             )
+            await _validate_org_unit_change(uow, updated, company_ids)
             return await repo.update(updated)
 
 
@@ -332,6 +398,10 @@ class DeleteOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
         async with self.uow as uow:
             if uow.session is None:
                 raise RuntimeError("UnitOfWork session is not active.")
+            company_id = await uow.session.scalar(select(OrgUnit.company_id).where(OrgUnit.id == org_unit_id))
+            if company_id is None:
+                raise ValueError("Org unit not found.")
+            await _lock_org_unit_companies(uow, {company_id})
             org_unit = (
                 await uow.session.execute(
                     select(OrgUnit).where(OrgUnit.id == org_unit_id).with_for_update()
@@ -341,6 +411,8 @@ class DeleteOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
                 raise ValueError("Org unit not found.")
             if org_unit.deleted_at is not None:
                 raise ValueError("This organization unit is already deleted.")
+            if org_unit.company_id != company_id:
+                raise ValueError("This org unit changed companies while deleting. Reload it and try again.")
 
             active_children = (
                 await uow.session.execute(
@@ -358,6 +430,12 @@ class DeleteOrgUnitUseCase(BaseUseCase[OrgUnitEntity]):
                 )
 
             now = datetime.now(timezone.utc)
+            proposed = GenericMapper.to_entity(org_unit, OrgUnitEntity)
+            if proposed is None:
+                raise RuntimeError("Organization unit could not be loaded.")
+            await _validate_org_unit_change(
+                uow, replace(proposed, deleted_at=now), {org_unit.company_id},
+            )
             org_unit.status = "DELETED"
             org_unit.is_active = False
             org_unit.deleted_at = now

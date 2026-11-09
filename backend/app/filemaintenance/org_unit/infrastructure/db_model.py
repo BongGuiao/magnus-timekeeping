@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -42,6 +42,10 @@ class OrgUnit(Base):
     org_unit_type: Mapped[str] = mapped_column(String(30), nullable=False)
     
     manager_employee_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    manager_is_approver: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    excluded_approval_org_unit_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, server_default="{}", default=list,
+    )
     cost_center_code: Mapped[str | None] = mapped_column(String(30), nullable=True)
     
     effective_from: Mapped[date] = mapped_column(Date, nullable=False)

@@ -26,6 +26,8 @@ ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS = frozenset({
     "attendance.read_team",
     "schedule.approve",
 })
+ORG_UNIT_MANAGER_READ_PERMISSIONS = frozenset({"attendance.read_team"})
+ORG_UNIT_APPROVER_PERMISSIONS = ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS - ORG_UNIT_MANAGER_READ_PERMISSIONS
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +71,8 @@ def legacy_supervisor_scope(
 def active_org_unit_manager_condition(
     manager_employee_id: UUID | ColumnElement[UUID],
     on_date: date | ColumnElement[date],
+    *,
+    approval_only: bool = False,
 ) -> ColumnElement[bool]:
     return exists(
         select(OrgUnit.id).where(
@@ -78,6 +82,7 @@ def active_org_unit_manager_condition(
             OrgUnit.status == "ACTIVE",
             OrgUnit.effective_from <= on_date,
             or_(OrgUnit.effective_to.is_(None), OrgUnit.effective_to >= on_date),
+            OrgUnit.manager_is_approver.is_(True) if approval_only else True,
         )
     )
 
@@ -111,7 +116,6 @@ async def resolve_org_unit_approver(
     excluded = excluded_employee_ids | {employee_id}
     visited: set[UUID] = set()
     unit_id: UUID | None = source_unit_id
-    parent_requested = False
     while unit_id is not None:
         if unit_id in visited:
             raise ApprovalRoutingError("The organization hierarchy contains a cycle. Contact HR.")
@@ -129,12 +133,12 @@ async def resolve_org_unit_approver(
             raise ApprovalRoutingError("An organization unit in the approval hierarchy is not active. Contact HR.")
 
         manager_id = unit.manager_employee_id
+        if not unit.manager_is_approver or visited.intersection(unit.excluded_approval_org_unit_ids):
+            unit_id = unit.parent_org_unit_id
+            continue
         if manager_id is None:
             raise ApprovalRoutingError("The organization unit has no manager. HR must assign an independent approver.")
         if manager_id in excluded:
-            if parent_requested:
-                raise ApprovalRoutingError("The parent manager is not an independent approver. Contact HR.")
-            parent_requested = True
             unit_id = unit.parent_org_unit_id
             continue
         if manager_id is not None and manager_id not in excluded:

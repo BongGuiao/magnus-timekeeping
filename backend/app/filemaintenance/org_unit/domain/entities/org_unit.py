@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
@@ -25,3 +25,5 @@ class OrgUnitEntity:
     row_version: int | None = None
     deleted_at: datetime | None = None
     deleted_by: UUID | None = None
+    manager_is_approver: bool = True
+    excluded_approval_org_unit_ids: list[UUID] = field(default_factory=list)

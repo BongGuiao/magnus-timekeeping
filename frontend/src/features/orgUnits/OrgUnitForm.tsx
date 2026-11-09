@@ -5,6 +5,7 @@ import type { Employee } from '../../types/employee'
 import type { OrgUnit } from '../../types/orgUnit'
 import type { OrgUnitFormValues } from './orgUnitSchema'
 import type { OrgUnitType } from '../../lib/orgUnitApi'
+import { descendantOrgUnitOptions } from './orgUnitHierarchy'
 
 interface Props {
   form: UseFormReturn<OrgUnitFormValues>
@@ -39,10 +40,16 @@ export default function OrgUnitForm({
   selectedCompanyId,
   editingId,
 }: Props) {
-  const { control, register, watch, formState: { errors } } = form
+  const { control, register, setValue, watch, formState: { errors } } = form
   const companyId = watch('company_id')
   const selectedOrgUnitType = watch('org_unit_type')
-  const parentOptions = orgUnits.filter((unit) => unit.company_id === companyId && unit.id !== editingId)
+  const exclusionOptions = descendantOrgUnitOptions(orgUnits, companyId, editingId)
+  const descendantIds = new Set(exclusionOptions.map((option) => option.value))
+  const parentOptions = orgUnits.filter((unit) => (
+    unit.company_id === companyId && unit.id !== editingId && !descendantIds.has(unit.id)
+  ))
+  const managerIsApprover = watch('manager_is_approver')
+  const excludedOrgUnitIds = watch('excluded_approval_org_unit_ids')
   const selectedTypeIsAvailable = orgUnitTypes.some((type) => type.org_unit_type === selectedOrgUnitType)
 
   return (
@@ -130,6 +137,62 @@ export default function OrgUnitForm({
             <FieldError message={errors.manager_employee_id?.message} />
           </label>
         </div>
+      </section>
+
+      <section>
+        <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Approval settings</h3>
+        <label className={`${labelClassName} mt-2 flex items-center gap-3`}>
+          <input type="checkbox" {...register('manager_is_approver')} className="h-4 w-4 accent-indigo-600" />
+          Manager is an approver
+        </label>
+        <p className="mt-1 text-[11px] text-slate-500">
+          Enabled by default. When disabled, new requests use the next eligible ancestor manager.
+          Existing pending approvals keep their assigned reviewer.
+        </p>
+        <label className={`${labelClassName} mt-3 block`}>
+          Excluded org units
+          <SearchableSelect
+            label="Excluded org units"
+            value=""
+            onChange={(id) => {
+              if (id && !excludedOrgUnitIds.includes(id)) {
+                setValue('excluded_approval_org_unit_ids', [...excludedOrgUnitIds, id], {
+                  shouldDirty: true, shouldValidate: true,
+                })
+              }
+            }}
+            disabled={!editingId || !managerIsApprover || !exclusionOptions.length}
+            placeholder="Search descendant org units to exclude"
+            className={inputClassName}
+            options={exclusionOptions.filter((option) => !excludedOrgUnitIds.includes(option.value))}
+          />
+        </label>
+        {excludedOrgUnitIds.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {excludedOrgUnitIds.map((id) => {
+              const option = exclusionOptions.find((item) => item.value === id)
+              return (
+                <li key={id} className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-xs ${option ? 'border-slate-200 text-slate-700' : 'border-amber-200 text-amber-800'}`}>
+                  <span>{option?.label ?? `Unavailable or no longer a descendant (${id})`}</span>
+                  <button type="button" aria-label={`Remove exclusion ${option?.label ?? id}`}
+                    onClick={() => setValue('excluded_approval_org_unit_ids', excludedOrgUnitIds.filter((value) => value !== id), {
+                      shouldDirty: true, shouldValidate: true,
+                    })}
+                    className="shrink-0 rounded px-2 py-1 font-semibold hover:bg-slate-100">
+                    Remove
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+        <FieldError message={errors.excluded_approval_org_unit_ids?.message} />
+        <p className="mt-1 text-[11px] text-slate-500">
+          {!editingId ? 'Create this org unit first to configure descendant exclusions.' : (
+            'Only descendant units in this company can be selected. Each exclusion covers its entire subtree '
+            + "for this manager only; those units' own eligible managers are unaffected."
+          )}
+        </p>
       </section>
 
       <section>

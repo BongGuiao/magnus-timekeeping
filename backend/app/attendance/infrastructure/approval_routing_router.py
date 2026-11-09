@@ -12,14 +12,13 @@ from elasticsearch import AsyncElasticsearch
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
-from app.attendance.infrastructure.db_model import AttendanceModel, OfficialBusinessRequestModel, OvertimeApplicationModel
 from app.auth.application.authorization import CurrentAuthorization
 from app.auth.infrastructure.approval_routing import (
     ApprovalRoutingError, OrgUnitApprover, active_assignment_conditions,
     active_org_unit_manager_condition, assign_org_approval, save_approval_route,
 )
 from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
+from app.auth.infrastructure.approval_resources import RESOURCE_MODELS, ResourceType
 from app.auth.infrastructure.db_model import UserModel
 from app.auth.infrastructure.dependencies import (
     get_current_authorization_use_case, get_current_user_claims, require_permission,
@@ -28,31 +27,12 @@ from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
-from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
-from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model import EmergencyScheduleRequestModel
 from app.filemaintenance.schedule.infrastructure.schedule_upload_db_model import ScheduleUploadBatchModel, ScheduleUploadBatchRowModel
 from app.filemaintenance.schedule.infrastructure.schedule_upload_repository import SqlAlchemyScheduleUploadRepository
 from app.filemaintenance.schedule.domain.schedule_upload_exceptions import ScheduleUploadStateError
 
 
-ResourceType = Literal[
-    "overtime_application", "leave_application", "official_business_request",
-    "attendance_correction", "invalid_attendance", "emergency_schedule_request", "schedule_upload_batch",
-]
-ResourceModel = (
-    OvertimeApplicationModel | LeaveApplicationModel | OfficialBusinessRequestModel |
-    AttendanceCorrectionModel | AttendanceModel | EmergencyScheduleRequestModel | ScheduleUploadBatchModel
-)
-RESOURCE_MODELS: dict[ResourceType, tuple[type[ResourceModel], str, str, str]] = {
-    "overtime_application": (OvertimeApplicationModel, "status", "PENDING", "overtime.approve_team"),
-    "leave_application": (LeaveApplicationModel, "status", "PENDING", "leave.approve_team"),
-    "official_business_request": (OfficialBusinessRequestModel, "status", "PENDING", "official_business.approve_team"),
-    "attendance_correction": (AttendanceCorrectionModel, "status", "PENDING", "attendance.approve_corrections_team"),
-    "invalid_attendance": (AttendanceModel, "record_status", "INVALID", "attendance.read_team"),
-    "emergency_schedule_request": (EmergencyScheduleRequestModel, "status", "PENDING_APPROVAL", "schedule.approve_emergency"),
-    "schedule_upload_batch": (ScheduleUploadBatchModel, "status", "PENDING_APPROVAL", "schedule.approve"),
-}
 router = APIRouter(prefix="/approval-routing", tags=["Approval routing"])
 MANILA = ZoneInfo("Asia/Manila")
 logger = logging.getLogger(__name__)
@@ -156,7 +136,7 @@ async def list_unresolved_approvals(
                 .where(
                     EmployeeModel.is_active.is_(True), EmployeeModel.record_status == "ACTIVE",
                     UserModel.is_active.is_(True), UserModel.account_status == "ACTIVE",
-                    active_org_unit_manager_condition(EmployeeModel.id, datetime.now(MANILA).date()),
+                    active_org_unit_manager_condition(EmployeeModel.id, datetime.now(MANILA).date(), approval_only=True),
                 ).distinct().order_by(EmployeeModel.employee_no)
             )).scalars().all()
             approvers = [
@@ -201,16 +181,31 @@ async def _manual_approver(
             or (source.effective_to is not None and source.effective_to < today)
         ):
             raise ApprovalRoutingError("Correct the employee's inactive or invalid source org unit before assigning an approver.")
+        ancestor_ids = {source_id}
+        parent_id = source.parent_org_unit_id
+        while parent_id is not None:
+            if parent_id in ancestor_ids:
+                raise ApprovalRoutingError("The organization hierarchy contains a cycle. Contact HR.")
+            parent = await session.get(OrgUnit, parent_id)
+            if parent is None or parent.company_id != company_id or parent.deleted_at is not None:
+                raise ApprovalRoutingError("The organization hierarchy has an invalid company or parent. Contact HR.")
+            ancestor_ids.add(parent_id)
+            parent_id = parent.parent_org_unit_id
         manager_unit = await session.scalar(
             select(OrgUnit.id).where(
                 OrgUnit.company_id == company_id, OrgUnit.manager_employee_id == approver_id,
+                OrgUnit.manager_is_approver.is_(True),
+                OrgUnit.excluded_approval_org_unit_ids.overlap(list(ancestor_ids)).is_(False),
                 OrgUnit.deleted_at.is_(None), OrgUnit.is_active.is_(True), OrgUnit.status == "ACTIVE",
                 OrgUnit.effective_from <= today,
                 (OrgUnit.effective_to.is_(None) | (OrgUnit.effective_to >= today)),
             ).order_by(OrgUnit.id).limit(1)
         )
         if manager_unit is None:
-            raise ApprovalRoutingError("The selected approver must manage an active org unit in every affected company.")
+            raise ApprovalRoutingError(
+                "The selected approver must manage an active, approval-enabled org unit in every affected company "
+                "without excluding the employee's org unit or its ancestors."
+            )
         if first_approver is None:
             first_approver = OrgUnitApprover(approver_id, source_id, manager_unit)
     if first_approver is None:

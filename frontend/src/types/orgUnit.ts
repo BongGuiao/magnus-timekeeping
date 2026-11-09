@@ -8,6 +8,8 @@ export interface OrgUnit {
   org_unit_name: string
   org_unit_type: string
   manager_employee_id: string | null
+  manager_is_approver: boolean
+  excluded_approval_org_unit_ids: string[]
   cost_center_code: string | null
   effective_from: string
   effective_to: string | null

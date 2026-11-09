@@ -117,6 +117,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         source = SimpleNamespace(
             company_id=company_id, deleted_at=None, is_active=False, status="ACTIVE",
             effective_from=datetime(2020, 1, 1).date(), effective_to=None,
+            parent_org_unit_id=None,
         )
         self.session.get.return_value = source
         self.session.scalar.side_effect = [uuid4()]
