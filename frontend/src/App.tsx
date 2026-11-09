@@ -72,7 +72,7 @@ const navViews: NavView[] = [
   'emergency-schedule-approvals',
 ]
 
-// Every open tab stays mounted (and keeps polling), so cap them to bound memory use.
+// Keep the workspace tab list bounded; inactive pages are unmounted below.
 const MAX_OPEN_TABS = 8
 
 function limitOpenTabs(tabs: NavView[], activeView: NavView): NavView[] {
@@ -588,13 +588,13 @@ function App() {
         onClose: closeTab,
       }}
     >
-      {openViews.map((openView) => (
-        <div key={openView} hidden={openView !== view}>
-          <ErrorBoundary label={openView}>
-            {renderView(openView)}
+      {openViews.includes(view) && (
+        <div key={view}>
+          <ErrorBoundary label={view}>
+            {renderView(view)}
           </ErrorBoundary>
         </div>
-      ))}
+      )}
     </WorkspaceTabsProvider>
   )
 }

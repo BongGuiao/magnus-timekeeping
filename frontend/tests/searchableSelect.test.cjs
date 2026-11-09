@@ -30,6 +30,12 @@ function find(node, predicate) {
   return predicate(node) ? node : find(node.props.children, predicate)
 }
 
+function count(node, predicate) {
+  if (Array.isArray(node)) return node.reduce((total, child) => total + count(child, predicate), 0)
+  if (!React.isValidElement(node)) return 0
+  return Number(predicate(node)) + count(node.props.children, predicate)
+}
+
 function harness(overrides = {}) {
   const cells = []
   let index = 0
@@ -139,11 +145,14 @@ test('disabled controls and disabled parent fieldsets cannot change selection', 
   assert.deepEqual(app.changes, [])
 })
 
-test('no matches and unavailable previous selections are explicit; all large-list entries remain searchable', () => {
+test('large lists render a bounded set while later entries remain searchable', () => {
   const options = Array.from({ length: 1000 }, (_, index) => ({ value: String(index), label: `Employee ${index}` }))
   const app = harness({ options, value: 'missing' })
   assert.equal(app.input().props.value, 'Previously selected option unavailable')
   app.input().props.onFocus()
+  const list = find(app.render(), (node) => node.props.role === 'listbox')
+  assert.equal(count(list, (node) => node.props.role === 'option'), 100)
+  assert.ok(find(app.render(), (node) => node.props.role === 'status' && String(node.props.children).includes('Refine your search')))
   app.input().props.onChange({ target: { value: 'Employee 999' } })
   assert.ok(find(app.render(), (node) => node.props.role === 'option' && node.props.children === 'Employee 999'))
   app.input().props.onChange({ target: { value: 'no such employee' } })

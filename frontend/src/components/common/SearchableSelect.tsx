@@ -7,6 +7,8 @@ export interface SelectOption {
   label: string
 }
 
+const MAX_VISIBLE_OPTIONS = 100
+
 interface Props {
   options: SelectOption[]
   value: string
@@ -35,8 +37,9 @@ export default function SearchableSelect({
   const [position, setPosition] = useState({ left: 0, top: 0, width: 0, maxHeight: 240 })
   const selected = options.find((option) => option.value === value)
   const matches = options.filter((option) => !option.value || option.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const visibleMatches = matches.slice(0, MAX_VISIBLE_OPTIONS)
   const expanded = open && !disabled
-  const activeIndex = Math.min(active, Math.max(0, matches.length - 1))
+  const activeIndex = Math.min(active, Math.max(0, visibleMatches.length - 1))
 
   useLayoutEffect(() => {
     if (!expanded) return
@@ -141,7 +144,7 @@ export default function SearchableSelect({
           className="overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 text-xs font-normal shadow-lg"
           onMouseDown={(event) => event.preventDefault()}
         >
-          {matches.map((option, index) => (
+          {visibleMatches.map((option, index) => (
             <div
               key={option.value}
               id={`${id}-option-${index}`}
@@ -155,6 +158,11 @@ export default function SearchableSelect({
             </div>
           ))}
           {!matches.length && <p role="status" className="px-3 py-2 text-slate-500">No matching options.</p>}
+          {matches.length > MAX_VISIBLE_OPTIONS && (
+            <p role="status" className="border-t border-slate-100 px-3 py-2 text-slate-500">
+              Showing the first {MAX_VISIBLE_OPTIONS} results. Refine your search to see more.
+            </p>
+          )}
         </div>,
         document.body,
       )}

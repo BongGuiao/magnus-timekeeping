@@ -6,6 +6,7 @@ import type { DataTableColumn } from '../components/common/DataTable'
 import FormModal from '../components/common/FormModal'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
+import { useWorkspaceTabs } from '../components/dashboard/WorkspaceTabsContext'
 import OrgUnitForm from '../features/orgUnits/OrgUnitForm'
 import OrgChart from '../features/orgUnits/OrgChart'
 import { emptyOrgUnit, orgUnitSchema, toOrgUnitFormValues } from '../features/orgUnits/orgUnitSchema'
@@ -46,6 +47,8 @@ function formatDate(value: string | null) {
 
 export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Props) {
   const { logout } = useLogout({ onLoggedOut })
+  const workspaceTabs = useWorkspaceTabs()
+  const isWorkspaceActive = !workspaceTabs || workspaceTabs.activeView === 'org-units'
   const { companyId } = useCompanySetupSelection()
   const [companies, setCompanies] = useState<Company[]>([])
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -131,7 +134,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
   }, [companyId, showDeleted, refreshKey])
 
   useEffect(() => {
-    if (displayMode !== 'chart' || !companyId) return
+    if (!isWorkspaceActive || displayMode !== 'chart' || !companyId) return
     let requestId = 0
     let isCurrent = true
     function loadMembers() {
@@ -158,7 +161,7 @@ export default function OrgUnits({ employeeName, onNavigate, onLoggedOut }: Prop
       isCurrent = false
       window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, loadMembers)
     }
-  }, [companyId, displayMode, refreshKey])
+  }, [companyId, displayMode, refreshKey, isWorkspaceActive])
 
   useEffect(() => {
     if (!successMessage) return

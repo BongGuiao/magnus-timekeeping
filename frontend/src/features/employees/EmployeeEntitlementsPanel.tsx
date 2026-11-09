@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
 import SearchableSelect from '../../components/common/SearchableSelect'
 import EntitlementUpload from './EntitlementUpload'
@@ -25,6 +25,7 @@ import type { EmploymentAssignment } from '../../types/employeeRelated'
 
 interface Props {
   employee: Employee | null
+  isActive: boolean
 }
 
 const emptyEntitlement = (employeeId: string): EmployeeEntitlementPayload => ({
@@ -55,7 +56,7 @@ function amountStep(unit: LeaveUnitType) {
   return unit === 'MINUTES' ? 1 : 0.001
 }
 
-export default function EmployeeEntitlementsPanel({ employee }: Props) {
+export default function EmployeeEntitlementsPanel({ employee, isActive }: Props) {
   const employeeId = employee?.id ?? ''
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
   const [entitlements, setEntitlements] = useState<EmployeeEntitlement[]>([])
@@ -66,6 +67,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
   const [isSaving, setIsSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const refreshInFlight = useRef(false)
 
   useEffect(() => {
     if (!employeeId) {
@@ -76,16 +78,12 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
       setIsLoading(false)
       return
     }
+    if (!isActive) return
+
     let isCurrent = true
-    setIsLoading(true)
-    setEditing(null)
-    setAssignment(null)
-    setLeaveTypes([])
-    setEntitlements([])
-    setForm(emptyEntitlement(employeeId))
-    setErrorMessage('')
-    setSuccessMessage('')
     const refreshPanel = async () => {
+      if (refreshInFlight.current) return
+      refreshInFlight.current = true
       setIsLoading(true)
       setErrorMessage('')
       try {
@@ -111,6 +109,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
       } catch (error) {
         if (isCurrent) setErrorMessage(errorText(error))
       } finally {
+        refreshInFlight.current = false
         if (isCurrent) setIsLoading(false)
       }
     }
@@ -124,7 +123,7 @@ export default function EmployeeEntitlementsPanel({ employee }: Props) {
       window.removeEventListener('focus', refreshPanel)
       window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     }
-  }, [employeeId])
+  }, [employeeId, isActive])
 
   if (!employee) {
     return (

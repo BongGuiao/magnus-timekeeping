@@ -35,6 +35,7 @@ import { ScheduleUploadPanel } from './ScheduleUploads'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
 import EmployeeWfhPanel from '../features/employees/EmployeeWfhPanel'
 import EmployeeRolePanel from '../features/employees/EmployeeRolePanel'
+import { useWorkspaceTabs } from '../components/dashboard/WorkspaceTabsContext'
 import { hasPermission } from '../types/role'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
@@ -163,11 +164,14 @@ function EmployeePhoto({ photoReference, employeeName, size = 'h-10 w-10', shape
 
 export default function Employees({ employeeName, onNavigate, onLoggedOut }: Props) {
   const { logout } = useLogout({ onLoggedOut })
+  const workspaceTabs = useWorkspaceTabs()
+  const isWorkspaceActive = !workspaceTabs || workspaceTabs.activeView === 'employees'
   const tabId = useId()
   const [employees, setEmployees] = useState<Employee[]>([])
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<EmployeeTab>('details')
+  const [visitedEmployeeTabs, setVisitedEmployeeTabs] = useState<Set<EmployeeTab>>(() => new Set(['details']))
   const [isLoading, setIsLoading] = useState(true)
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
@@ -284,6 +288,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     setSuccessMessage('')
     setEditingEmployee(null)
     setActiveTab('details')
+    setVisitedEmployeeTabs(new Set(['details']))
     setIsFormOpen(true)
   }
 
@@ -298,7 +303,9 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         return
       }
       setEditingEmployee(fullEmployee)
-      setActiveTab(!canManageEmployees && canUploadSchedules ? 'schedule' : 'details')
+      const initialTab = !canManageEmployees && canUploadSchedules ? 'schedule' : 'details'
+      setActiveTab(initialTab)
+      setVisitedEmployeeTabs(new Set(['details', initialTab]))
       setIsFormOpen(true)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Could not load this employee.')
@@ -311,7 +318,13 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     setIsFormOpen(false)
     setEditingEmployee(null)
     setActiveTab('details')
+    setVisitedEmployeeTabs(new Set(['details']))
     setErrorMessage('')
+  }
+
+  function selectEmployeeTab(tab: EmployeeTab) {
+    setActiveTab(tab)
+    setVisitedEmployeeTabs((current) => new Set(current).add(tab))
   }
 
   async function saveEmployee(values: EmployeeFormValues) {
@@ -1049,7 +1062,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                   aria-controls={`${tabId}-${tab.id}-panel`}
                   aria-selected={activeTab === tab.id}
                   tabIndex={activeTab === tab.id ? 0 : -1}
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => selectEmployeeTab(tab.id)}
                   onKeyDown={(event) => {
                     const index = visibleEmployeeTabs.findIndex((item) => item.id === tab.id)
                     const nextIndex = event.key === 'ArrowRight'
@@ -1060,7 +1073,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                     if (nextIndex === -1) return
                     event.preventDefault()
                     const nextTab = visibleEmployeeTabs[nextIndex].id
-                    setActiveTab(nextTab)
+                    selectEmployeeTab(nextTab)
                     document.getElementById(`${tabId}-${nextTab}-tab`)?.focus()
                   }}
                   className={`min-w-[7rem] flex-1 whitespace-nowrap py-2 pl-7 pr-8 text-xs font-semibold transition first:pl-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
@@ -1106,12 +1119,16 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             </div>
             {visibleEmployeeTabs.slice(1).map((tab) => (
               <div key={tab.id} role="tabpanel" id={`${tabId}-${tab.id}-panel`} aria-labelledby={`${tabId}-${tab.id}-tab`} tabIndex={activeTab === tab.id ? 0 : -1} className={`[grid-area:1/1] ${activeTab === tab.id ? '' : 'invisible'}`}>
-                {tab.id === 'assignments'
+                {visitedEmployeeTabs.has(tab.id) && (tab.id === 'assignments'
                   ? <EmploymentAssignmentsPanel employee={editingEmployee} employees={employees} companies={companies} orgUnits={orgUnits} importActions={assignmentImportActions} importPanel={assignmentImportPanel} refreshVersion={assignmentRefreshVersion} />
                   : tab.id === 'skills'
                     ? <EmployeeSkillsPanel employee={editingEmployee} employees={employees} />
                     : tab.id === 'entitlements'
-                      ? <EmployeeEntitlementsPanel employee={editingEmployee} />
+                      ? <EmployeeEntitlementsPanel
+                        key={editingEmployee?.id ?? 'new'}
+                        employee={editingEmployee}
+                        isActive={isWorkspaceActive && isFormOpen && activeTab === 'entitlements'}
+                      />
                       : tab.id === 'schedule'
                         ? (
                           <div className="space-y-4">
@@ -1146,7 +1163,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                             ? <EmployeeRolePanel key={editingEmployee?.id} employee={editingEmployee} companies={companies} orgUnits={orgUnits} />
                             : <EmployeeFaceEnrollmentPanel
                       employee={editingEmployee}
-                      isActive={activeTab === 'face'}
+                      isActive={isWorkspaceActive && isFormOpen && activeTab === 'face'}
                       onPhotoReferenceSaved={(photoReference) => {
                         if (!editingEmployee) return
                         setValue('photo_reference', photoReference)
@@ -1157,7 +1174,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                           ? { ...employee, photo_reference: photoReference }
                           : employee))
                       }}
-                    />}
+                    />)}
               </div>
             ))}
             </div>
