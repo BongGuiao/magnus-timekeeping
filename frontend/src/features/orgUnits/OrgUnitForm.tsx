@@ -1,4 +1,5 @@
-import type { UseFormReturn } from 'react-hook-form'
+import { Controller, type UseFormReturn } from 'react-hook-form'
+import SearchableSelect from '../../components/common/SearchableSelect'
 import type { Company } from '../../types/company'
 import type { Employee } from '../../types/employee'
 import type { OrgUnit } from '../../types/orgUnit'
@@ -38,7 +39,7 @@ export default function OrgUnitForm({
   selectedCompanyId,
   editingId,
 }: Props) {
-  const { register, watch, formState: { errors } } = form
+  const { control, register, watch, formState: { errors } } = form
   const companyId = watch('company_id')
   const selectedOrgUnitType = watch('org_unit_type')
   const parentOptions = orgUnits.filter((unit) => unit.company_id === companyId && unit.id !== editingId)
@@ -59,10 +60,23 @@ export default function OrgUnitForm({
           </label>
           <label className={labelClassName}>
             Parent org unit
-            <select {...register('parent_org_unit_id')} className={inputClassName} disabled={!companyId}>
-              <option value="">No parent</option>
-              {parentOptions.map((unit) => <option key={unit.id} value={unit.id}>{unit.org_unit_code} — {unit.org_unit_name}</option>)}
-            </select>
+            <Controller name="parent_org_unit_id" control={control} render={({ field }) => (
+              <SearchableSelect
+                {...field}
+                inputRef={field.ref}
+                label="Parent org unit"
+                placeholder="Search parent org units"
+                className={inputClassName}
+                disabled={!companyId}
+                options={[
+                  { value: '', label: 'No parent' },
+                  ...parentOptions.map((unit) => ({
+                    value: unit.id,
+                    label: `${unit.org_unit_code} — ${unit.org_unit_name}`,
+                  })),
+                ]}
+              />
+            )} />
             <FieldError message={errors.parent_org_unit_id?.message} />
           </label>
           <label className={labelClassName}>
@@ -97,12 +111,22 @@ export default function OrgUnitForm({
           </label>
           <label className={`${labelClassName} sm:col-span-2 lg:col-span-3`}>
             Manager employee
-            <select {...register('manager_employee_id')} className={inputClassName}>
-              <option value="">No manager</option>
-              {employees.map((employee) => (
-                <option key={employee.id} value={employee.id}>{employeeName(employee)}</option>
-              ))}
-            </select>
+            <Controller name="manager_employee_id" control={control} render={({ field }) => (
+              <SearchableSelect
+                {...field}
+                inputRef={field.ref}
+                label="Manager employee"
+                placeholder="Search employees by number or name"
+                className={inputClassName}
+                options={[
+                  { value: '', label: 'No manager' },
+                  ...employees.map((employee) => ({
+                    value: employee.id,
+                    label: employeeName(employee),
+                  })),
+                ]}
+              />
+            )} />
             <FieldError message={errors.manager_employee_id?.message} />
           </label>
         </div>
