@@ -468,6 +468,98 @@ approval and unlock actions are audited. Apply
 `backend/sql/20261023_add_payroll_cutoff_approval_permission.sql` to add
 `payroll.approve` and grant it to HR and system administrator roles.
 
+## Shared attendance kiosk
+
+The `/kiosk` frontend entry opens the existing Attendance workflow without an
+employee/admin session. It uses separate shared-device authorization, not the
+employee-specific browser registrations or the legacy IP/role kiosk policy.
+Opening the URL does not record a punch or authorize a new browser.
+
+Deployment requires Alembic revision `c9d0e1f2a3b4`, followed by the matching
+backend and frontend release. Follow the migration/backup procedure above.
+For an existing, manually maintained database without Alembic tracking, review
+[manual_shared_attendance_kiosks.sql](backend/sql/manual_shared_attendance_kiosks.sql)
+against its actual schema and apply it with `psql`'s `ON_ERROR_STOP=1` after a
+backup. It adds only the two kiosk tables and refuses tracked or partially
+installed databases. Use either this script or Alembic, never both. Do not run
+the fresh-install baseline or blindly stamp an existing untracked database.
+
+To register a station:
+
+1. Open `https://mbsione.com/kiosk` (or your deployed HTTPS origin). Localhost
+   also works for development; an HTTP LAN address does not support device keys
+   and camera capture.
+2. Enter a recognizable station name and request registration.
+3. On a separate trusted browser, sign in as a **system administrator**, open
+   **Settings > Kiosk Devices**, and enter the station's 16-character pairing
+   code. Verify the station with IT, then select its active location.
+   The company is read-only and comes from the signed-in administrator's current
+   active employment assignment. Exactly one distinct active company is required;
+   missing or ambiguous assignments show an explicit error. The backend derives
+   the company independently and limits device listing/revocation to it.
+   Pairing codes expire after 15 minutes; the station can renew a pending code.
+4. Select **Check approval** on the station, or wait for its periodic check.
+   Allow camera access. Employees use their employee number, explicit Time In /
+   Time Out, and the existing blink/camera and server-side face-match flow.
+   Existing scheduled break actions remain available.
+
+Only active employees with active accounts and a currently effective employment
+assignment to that company and location (primary or additional location) can
+use the station. The employee's **Enabled for use** checkbox must be checked
+(`is_active=true`) and their record status must be `ACTIVE`, not archived.
+The linked user account must also be enabled with `account_status=ACTIVE`,
+and the effective employment assignment must be enabled with `status=ACTIVE`.
+These checks run during identification and again for every clock/break request;
+disabling an employee after identification blocks their next punch.
+Existing schedule, early-punch, break, locked-attendance and
+face-match rules still apply. The selected action is checked under the existing
+employee lock; a repeated Time In never silently becomes Time Out.
+
+Kiosk proofs are single-use, expire after 90 seconds, and bind the operation,
+employee, selected action and image hash. Revocation is checked server-side on
+every operation. Kiosk requests do not inherit an administrator bearer token.
+The browser stores a non-exportable signing key in IndexedDB; copying the URL
+or using another browser/private window does not copy authorization. This is
+browser-profile authorization, not hardware attestation, and does not protect
+against malware or a compromised operating-system administrator.
+
+New kiosk clock-ins set attendance `created_by` and `updated_by` to the
+face-verified employee's user ID. Kiosk clock-outs and breaks update only
+`updated_by`, preserving the original creator. Each punch retains
+`performed_by`, `kiosk_device_id`, and the station-name snapshot
+`kiosk_device_name` in its metadata. Audit events identify the employee as the
+actor and include the kiosk ID/name separately, never the administrator who
+approved the station. These changes apply prospectively; historical punches
+are not backfilled. No additional database migration is required.
+
+Successful attendance/break confirmations clear after five seconds; an
+identified employee's inactive screen clears after 60 seconds when no capture
+or submission is running. Camera capture stops between attempts. Authorization
+or network-check failure hides the attendance workflow; server validation is
+still required for each request. Failed submissions never show success. If a
+response is lost, check attendance before retrying.
+
+Test in an ordinary browser without changing Windows settings, using a test
+database/employees to avoid changing actual attendance. For deployment, IT can
+configure Windows Assigned Access/Edge to open `/kiosk` at startup. Preserve
+browser-profile storage across restarts; clearing it requires new registration.
+Revoked browser identities cannot be reapproved; revoke the old identity and
+clear that station's kiosk storage/profile before registering a replacement.
+Existing mobile/desktop attendance remains unchanged.
+
+Targeted validation:
+
+```powershell
+docker exec -w /app/backend app_backend python -m unittest tests.test_kiosk tests.test_punch_use_cases -q
+Set-Location frontend
+node --test tests/kiosk.test.cjs
+npm.cmd run build
+```
+
+The database integration case additionally requires `KIOSK_TEST_DATABASE_URL`
+pointing to a migrated, **disposable** database named `kiosk_test_*`. It writes
+synthetic fixtures; never point it at the application database.
+
 ## Organization-based employee approvals
 
 New leave, overtime, official-business, attendance-correction, emergency

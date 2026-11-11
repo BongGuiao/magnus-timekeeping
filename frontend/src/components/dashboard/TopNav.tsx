@@ -19,6 +19,7 @@ import {
   MapPinned,
   Megaphone,
   MoreVertical,
+  Monitor,
   RefreshCw,
   Settings2,
   SlidersHorizontal,
@@ -90,6 +91,7 @@ export type NavView =
   | 'change-password'
   | 'reset-password'
   | 'database-backup'
+  | 'kiosk-devices'
 
 const companySetupTabViews: NavView[] = [
   'companies',
@@ -152,6 +154,7 @@ interface NavLink {
 }
 
 const viewIcons: Partial<Record<NavView, LucideIcon>> = {
+  'kiosk-devices': Monitor,
   dashboard: LayoutDashboard,
   attendance: ClipboardCheck,
   'attendance-merge-management': GitMerge,
@@ -328,6 +331,7 @@ const navLinks: NavLink[] = [
           { label: 'Company Parameters', view: 'payroll-system-parameters', permission: 'payroll.company_parameters.manage' },
         ],
       },
+      { label: 'Kiosk Devices', view: 'kiosk-devices', requiredRoleCode: 'SYSTEM_ADMIN' },
     ],
   },
   {

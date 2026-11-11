@@ -564,6 +564,7 @@ class ClockAttendanceInputDTO:
     allow_wfh: bool = False
     captured_at: datetime | None = None
     requested_action: str | None = None
+    actor_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -1366,7 +1367,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             if input_dto.requested_action is not None:
                 resolved_action = "clock_out" if existing else "clock_in"
                 if input_dto.requested_action != resolved_action:
-                    raise ValueError("Offline punch conflicts with the current shift. HR review is required.")
+                    raise ValueError("Requested punch conflicts with the current shift. Refresh attendance and select the correct action.")
             # 3. Simplify to Clock In vs Clock Out logic
             if not existing:
                 closed_during_request = await attendance_repo.find_all(
@@ -1458,6 +1459,8 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     AttendanceEntity(
                         user_id=input_dto.user_id,
                         work_date=today,
+                        created_by=input_dto.actor_id,
+                        updated_by=input_dto.actor_id,
                         expected_clock_in_at=schedule.expected_clock_in_at,
                         expected_clock_out_at=schedule.expected_clock_out_at,
                         schedule_template_id=schedule.schedule_template_id,
@@ -1653,6 +1656,8 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     current_meta["clock_out"] = clock_out_meta
                 existing.punch_metadata = current_meta
 
+                if input_dto.actor_id is not None:
+                    existing.updated_by = input_dto.actor_id
                 updated = await attendance_repo.update(existing)
                 if updated.record_status == "INVALID" and not was_invalid:
                     if updated.id is None:
@@ -1698,6 +1703,7 @@ class RecordBreakInputDTO:
     device_proof: Optional[Dict[str, str]] = None
     punch_metadata: dict[str, Any] | None = None
     captured_at: datetime | None = None
+    actor_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -1868,6 +1874,8 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
                 existing.punch_metadata = punch_metadata
             
             # Save update
+            if input_dto.actor_id is not None:
+                existing.updated_by = input_dto.actor_id
             updated = await attendance_repo.update(existing)
             recorded_timestamp = getattr(updated, target_field)
 

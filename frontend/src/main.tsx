@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import Kiosk from './pages/Kiosk'
 import ErrorBoundary, { reloadForStaleBuild } from './components/common/ErrorBoundary'
 
 // Fired by Vite when a lazily loaded chunk no longer exists (e.g. after a redeploy).
@@ -16,7 +17,7 @@ window.addEventListener('unhandledrejection', (event) => {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary label="app">
-      <App />
+      {window.location.pathname.replace(/\/+$/, '') === '/kiosk' ? <Kiosk /> : <App />}
     </ErrorBoundary>
   </StrictMode>,
 )

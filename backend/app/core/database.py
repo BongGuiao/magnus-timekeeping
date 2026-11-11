@@ -7,6 +7,7 @@ from sqlalchemy.orm import DeclarativeBase
 class Base(DeclarativeBase):
     pass
 def init_db_models():
+    from app.attendance.infrastructure.kiosk_models import KioskDeviceModel, KioskChallengeModel  # noqa: F401
     from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel  # noqa: F401
     from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel  # noqa: F401
     from app.auth.infrastructure.db_model import RoleModel, UserModel, UserRoleModel  # noqa: F401

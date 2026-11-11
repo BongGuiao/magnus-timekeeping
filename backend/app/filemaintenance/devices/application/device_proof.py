@@ -48,6 +48,17 @@ def _jwk_public_key(jwk: dict) -> ec.EllipticCurvePublicKey:
     return ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1()).public_key()
 
 
+def verify_device_signature(jwk: dict, message: bytes, signature: str) -> None:
+    raw_signature = _decode_base64url(signature)
+    if len(raw_signature) != 64:
+        raise ValueError("Invalid ECDSA signature length.")
+    der_signature = encode_dss_signature(
+        int.from_bytes(raw_signature[:32], "big"),
+        int.from_bytes(raw_signature[32:], "big"),
+    )
+    _jwk_public_key(jwk).verify(der_signature, message, ec.ECDSA(hashes.SHA256()))
+
+
 async def register_attendance_device(
     uow: GenUnitOfWork,
     user_id: UUID,
@@ -295,18 +306,7 @@ async def consume_device_challenge(
             challenge.expires_at,
         ).encode("utf-8")
         try:
-            raw_signature = _decode_base64url(signature)
-            if len(raw_signature) != 64:
-                raise ValueError("Invalid ECDSA signature length.")
-            der_signature = encode_dss_signature(
-                int.from_bytes(raw_signature[:32], "big"),
-                int.from_bytes(raw_signature[32:], "big"),
-            )
-            _jwk_public_key(credential.public_key_jwk).verify(
-                der_signature,
-                message,
-                ec.ECDSA(hashes.SHA256()),
-            )
+            verify_device_signature(credential.public_key_jwk, message, signature)
         except (InvalidKey, InvalidSignature, KeyError, TypeError, ValueError):
             challenge.consumed_at = now
             invalid_signature = True

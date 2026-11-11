@@ -45,6 +45,7 @@ import RestDayPatterns from './pages/RestDayPatterns'
 import ChangePassword from './pages/ChangePassword'
 import ResetPassword from './pages/ResetPassword'
 import DatabaseBackup from './pages/DatabaseBackup'
+import KioskDevices from './pages/KioskDevices'
 import type { NavView } from './components/dashboard/TopNav'
 import { WorkspaceTabsProvider } from './components/dashboard/WorkspaceTabsContext'
 import ErrorBoundary from './components/common/ErrorBoundary'
@@ -62,6 +63,7 @@ const payrollUseCases = new PayrollUseCases(new HttpPayrollRepository())
 const offCyclePayrollUseCases = new OffCyclePayrollUseCases(new HttpOffCyclePayrollRepository())
 
 const navViews: NavView[] = [
+  'kiosk-devices',
   'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-org-unit-summary', 'attendance-recalculation', 'companies', 'org-units', 'org-unit-types', 'locations', 'location-types',
   'attendance-merge-management',
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
@@ -318,6 +320,12 @@ function App() {
     if (view === 'database-backup') {
       return isSystemAdmin()
         ? <DatabaseBackup employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'kiosk-devices') {
+      return isSystemAdmin()
+        ? <KioskDevices employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
         : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 

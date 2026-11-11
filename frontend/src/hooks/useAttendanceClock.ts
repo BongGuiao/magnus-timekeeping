@@ -5,7 +5,13 @@ import { searchUserByEmployeeCode } from '../lib/authApi'
 import type { UserSummary } from '../types/auth'
 import type { BreakResult, BreakType, ClockResult, LastAttendance } from '../types/attendance'
 
-export function useAttendanceClock() {
+export interface AttendanceClockTransport {
+  identify: (code: string) => Promise<{ user: UserSummary; last_attendance: LastAttendance | null }>
+  clock: (file: File, userId: string, clockOut: boolean) => Promise<ClockResult>
+  break: (file: File, userId: string, action: BreakType) => Promise<BreakResult>
+}
+
+export function useAttendanceClock(transport?: AttendanceClockTransport) {
   const [employeeCode, setEmployeeCode] = useState('')
   const [verifiedUser, setVerifiedUser] = useState<UserSummary | null>(null)
   const [lastAttendance, setLastAttendance] = useState<LastAttendance | null>(null)
@@ -37,16 +43,21 @@ export function useAttendanceClock() {
     setIsVerifying(true)
 
     try {
-      const user = await searchUserByEmployeeCode(code)
+      const kioskEmployee = transport ? await transport.identify(code) : null
+      const user = kioskEmployee ? kioskEmployee.user : await searchUserByEmployeeCode(code)
       if (!user.is_active) {
         setVerifiedUser(null)
         setError('This employee account is inactive.')
         return
       }
-      try {
-        setLastAttendance(await fetchLastAttendance(user.id))
-      } catch {
-        setLastAttendance(null)
+      if (kioskEmployee) {
+        setLastAttendance(kioskEmployee.last_attendance)
+      } else {
+        try {
+          setLastAttendance(await fetchLastAttendance(user.id))
+        } catch {
+          setLastAttendance(null)
+        }
       }
       setVerifiedUser(user)
     } catch (err) {
@@ -75,7 +86,9 @@ export function useAttendanceClock() {
     setIsSubmitting(true)
 
     try {
-      const clockResult = await clockAttendance(
+      const clockResult = transport
+        ? await transport.clock(file, verifiedUser.id, clockOutConfirmed)
+        : await clockAttendance(
         file,
         verifiedUser.id,
         clockOutConfirmed,
@@ -83,10 +96,12 @@ export function useAttendanceClock() {
         browserApproved,
       )
       setResult(clockResult)
-      try {
-        setLastAttendance(await fetchLastAttendance(verifiedUser.id))
-      } catch {
-        setLastAttendance(null)
+      if (!transport) {
+        try {
+          setLastAttendance(await fetchLastAttendance(verifiedUser.id))
+        } catch {
+          setLastAttendance(null)
+        }
       }
       return clockResult
     } catch (err) {
@@ -108,12 +123,16 @@ export function useAttendanceClock() {
     setIsBreakSubmitting(true)
 
     try {
-      const recordedBreak = await clockBreak(file, breakType, verifiedUser.id, location)
+      const recordedBreak = transport
+        ? await transport.break(file, verifiedUser.id, breakType)
+        : await clockBreak(file, breakType, verifiedUser.id, location)
       setBreakResult(recordedBreak)
-      try {
-        setLastAttendance(await fetchLastAttendance(verifiedUser.id))
-      } catch {
-        setLastAttendance(null)
+      if (!transport) {
+        try {
+          setLastAttendance(await fetchLastAttendance(verifiedUser.id))
+        } catch {
+          setLastAttendance(null)
+        }
       }
       return true
     } catch (err) {

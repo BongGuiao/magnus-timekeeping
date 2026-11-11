@@ -206,7 +206,7 @@ async function writeStoredKey(deviceUuid: string, key: StoredDeviceKey): Promise
   }
 }
 
-async function getOrCreateDeviceKey(userId: string): Promise<{
+export async function getOrCreateDeviceKey(userId: string): Promise<{
   identity: LocalDeviceIdentity
   key: StoredDeviceKey
 }> {

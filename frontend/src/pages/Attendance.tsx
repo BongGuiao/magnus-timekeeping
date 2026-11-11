@@ -12,7 +12,7 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import Stepper from '../components/common/Stepper'
 import { useWebcamCapture } from '../hooks/useWebcamCapture'
-import { useAttendanceClock } from '../hooks/useAttendanceClock'
+import { useAttendanceClock, type AttendanceClockTransport } from '../hooks/useAttendanceClock'
 import { useLogout } from '../hooks/useLogout'
 import type { BreakType, ClockResult, LastAttendance } from '../types/attendance'
 
@@ -20,6 +20,7 @@ interface Props {
   employeeName: string
   onNavigate?: (view: NavView) => void
   onLoggedOut?: () => void
+  kioskTransport?: AttendanceClockTransport
 }
 
 type PendingConfirmation =
@@ -173,7 +174,8 @@ function getCurrentLocation(): Promise<AttendanceLocation> {
   })
 }
 
-export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Props) {
+export default function Attendance({ employeeName, onNavigate, onLoggedOut, kioskTransport }: Props) {
+  const kiosk = Boolean(kioskTransport)
   const { logout } = useLogout({ onLoggedOut })
   const webcam = useWebcamCapture()
   const [employeePhotoUrl, setEmployeePhotoUrl] = useState<string | null>(null)
@@ -189,7 +191,8 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   const [isCheckingDeviceRegistration, setIsCheckingDeviceRegistration] = useState(false)
   const [deviceRegistrationCheckError, setDeviceRegistrationCheckError] = useState(false)
   const [hasBrowserRegistration, setHasBrowserRegistration] = useState(false)
-  const [isBrowserApproved, setIsBrowserApproved] = useState(false)
+  const [isEmployeeBrowserApproved, setIsBrowserApproved] = useState(false)
+  const isBrowserApproved = kiosk || isEmployeeBrowserApproved
   const [deviceRegistrationMessage, setDeviceRegistrationMessage] = useState<string | null>(null)
   const {
     employeeCode,
@@ -208,7 +211,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     reset,
     clearError: clearAttendanceError,
     reportError,
-  } = useAttendanceClock()
+  } = useAttendanceClock(kioskTransport)
 
   const dismissErrors = useEffectEvent(() => {
     clearAttendanceError()
@@ -236,6 +239,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   }
 
   useEffect(() => {
+    if (kiosk) return
     const photoReference = verifiedUser?.photo_reference
     if (!photoReference) {
       setEmployeePhotoUrl(null)
@@ -259,9 +263,10 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
       isCurrent = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [verifiedUser?.photo_reference])
+  }, [kiosk, verifiedUser?.photo_reference])
 
   useEffect(() => {
+    if (kiosk) return
     if (!verifiedUser) {
       setDeviceRegistrationMessage(null)
       setDeviceRegistrationCheckError(false)
@@ -301,14 +306,14 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     return () => {
       isCurrent = false
     }
-  }, [verifiedUser?.employee_id, verifiedUser?.id])
+  }, [kiosk, verifiedUser?.employee_id, verifiedUser?.id])
 
   async function runAutoCapture(pending: PendingConfirmation) {
     setIsAutoCapturePending(true)
     setLocationWarning(null)
     try {
       let location: AttendanceLocation | undefined
-      const policy = await fetchClockPolicy()
+      const policy = kiosk ? { channel: 'kiosk', geofence_required: false } : await fetchClockPolicy()
       if (policy.channel !== 'kiosk') {
         const locationRequired = pending.kind === 'attendance'
           && !pending.clockOutConfirmed && policy.geofence_required
@@ -374,8 +379,17 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
     setAttendanceSuccess(null)
     setDeviceRegistrationMessage(null)
     setDeviceName('')
+    setPendingConfirmation(null)
+    setLocationWarning(null)
     changeEmployeeCode('')
   }
+
+  const resetKioskEmployee = useEffectEvent(startOver)
+  useEffect(() => {
+    if (!kiosk || !verifiedUser || isAutoCapturePending || isSubmitting || isBreakSubmitting) return
+    const timer = window.setTimeout(resetKioskEmployee, result || breakResult ? 5_000 : 60_000)
+    return () => window.clearTimeout(timer)
+  }, [kiosk, verifiedUser, result, breakResult, isAutoCapturePending, isSubmitting, isBreakSubmitting])
 
   function confirmPendingAction() {
     if (!pendingConfirmation) return
@@ -402,13 +416,13 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   const expectedClockOut = lastAttendance?.expected_clock_out_at
     ? parseAttendanceTime(lastAttendance.expected_clock_out_at)
     : Number.NaN
-  function requestClockConfirmation() {
+  function requestClockConfirmation(clockOut = showBreakActions) {
     const now = Date.now()
     setPendingConfirmation({
       kind: 'attendance',
-      clockOutConfirmed: showBreakActions,
-      earlyClockOut: showBreakActions && expectedClockOut > now,
-      totalWorked: showBreakActions && lastAttendance ? formatWorkedTime(lastAttendance, now) : undefined,
+      clockOutConfirmed: clockOut,
+      earlyClockOut: clockOut && expectedClockOut > now,
+      totalWorked: clockOut && lastAttendance ? formatWorkedTime(lastAttendance, now) : undefined,
     })
   }
 
@@ -469,7 +483,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
   })()
   return (
     <div className="scrollbar-hidden flex min-h-svh flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-slate-100">
-      <TopNav employeeName={employeeName} activeView="attendance" onNavigate={onNavigate} onSignOut={logout} />
+      {!kiosk && <TopNav employeeName={employeeName} activeView="attendance" onNavigate={onNavigate} onSignOut={logout} />}
 
       <main className="flex min-h-max w-full flex-none flex-col px-4 py-4 sm:px-6 lg:px-8">
         <header className="mb-3 shrink-0">
@@ -492,7 +506,9 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                 Enter the employee number to pull up the matching record.
               </p>
               <p className="mt-2 text-xs font-medium text-indigo-700">
-                Clock-in requires location permission and being inside the employee’s assigned geofence.
+                {kiosk
+                  ? 'Registered kiosk: verify your face to record attendance at this location.'
+                  : 'Clock-in requires location permission and being inside the employee’s assigned geofence.'}
               </p>
 
               {locationWarning && <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{locationWarning}</p>}
@@ -575,14 +591,14 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                 <button
                   type="button"
                   onClick={startOver}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || isAutoCapturePending || isBreakSubmitting}
                   className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Change employee
                 </button>
               </div>
 
-              {!isBrowserApproved && (
+              {!kiosk && !isBrowserApproved && (
                 <div className="mt-3 flex flex-col gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-xs text-indigo-800">
                     You can still record attendance, but punches from this browser will be marked invalid and require approval.
@@ -661,10 +677,24 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                   )}
 
                   <div className="flex w-full shrink-0 flex-wrap justify-center gap-3">
-                    {webcam.isActive ? (
+                    {kiosk ? (
+                      <>
+                        <button type="button" onClick={() => requestClockConfirmation(false)}
+                          disabled={isSubmitting || isAutoCapturePending || !webcam.isCameraApiAvailable}
+                          className="flex-1 rounded-xl bg-emerald-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-50">
+                          Time In
+                        </button>
+                        <button type="button" onClick={() => requestClockConfirmation(true)}
+                          disabled={isSubmitting || isAutoCapturePending || !webcam.isCameraApiAvailable}
+                          className="flex-1 rounded-xl bg-indigo-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-50">
+                          Time Out
+                        </button>
+                        {isAutoCapturePending && <p role="status" className="w-full text-center text-sm text-indigo-700">{captureButtonLabel}</p>}
+                      </>
+                    ) : webcam.isActive ? (
                       <button
                         type="button"
-                        onClick={requestClockConfirmation}
+                        onClick={() => requestClockConfirmation()}
                         disabled={isSubmitting || isAutoCapturePending}
                         className="flex-1 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
                       >
@@ -673,7 +703,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut }: Pr
                     ) : (
                       <button
                         type="button"
-                        onClick={requestClockConfirmation}
+                        onClick={() => requestClockConfirmation()}
                         disabled={
                           isSubmitting
                           || isAutoCapturePending
