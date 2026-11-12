@@ -20,6 +20,73 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 Use the same pair of `-f` options with `docker compose down` to stop that
 environment.
 
+### Employee personal and government information
+
+The Add/Edit Employee form includes optional bank account, SSS, Pag-IBIG,
+PhilHealth and TIN numbers, a structured complete address, and civil status.
+These are stored separately in `hr.employee_personal_details`, not in the
+existing employee record. Only users with `employees.manage` can read or
+write them; general employee list/detail responses do not include these fields.
+Numbers are text, preserving leading zeroes. Form edits can intentionally
+replace or clear these values. Employee creation/update and personal-details
+saving run in the same transaction.
+
+The employee address form uses the same PSGC Region, Province, City/Municipality
+and Barangay dropdowns as Locations. Existing free-text addresses remain
+visible and unchanged until a new region or other address value is selected.
+Changing a parent selection clears its dependent selections. The dropdowns
+require the PSGC reference service; errors are shown without removing saved text.
+CSV address imports remain text-only and do not assign PSGC codes.
+
+Apply `backend/sql/20261112_create_employee_personal_details.sql` to an existing
+database before using the feature. It is additive and safe to rerun: it does
+not update existing employee rows. For Alembic-managed databases, revision
+`d0e1f2a3b4c5` provides the same table; use the normal migration procedure above.
+Do not run the fresh-install Alembic baseline on an existing unversioned database.
+After that table exists, apply `backend/sql/20261112_add_employee_psgc_address.sql`.
+This additive migration preserves existing addresses and can be rerun. The
+corresponding Alembic revision is `e1f2a3b4c5d6`.
+
+For the local development containers, run from the project root in PowerShell:
+
+```powershell
+Get-Content .\backend\sql\20261112_create_employee_personal_details.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1'
+if ($LASTEXITCODE -eq 0) {
+    Get-Content .\backend\sql\20261112_add_employee_psgc_address.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1'
+    if ($LASTEXITCODE -eq 0) {
+        docker compose -f docker-compose.yml -f docker-compose.dev.yml restart web
+    }
+}
+```
+
+On the Employees page, **Import personal information** provides a CSV template,
+preview and confirmation. The template includes the earliest saved personal-details
+record (ordered by creation time and employee ID); it contains employee information
+and should be handled securely. If no record exists, it uses an example row instead;
+replace every `EXAMPLE_` value or remove the row before uploading. Values that could
+be interpreted as spreadsheet formulas cause the download to fail with an error.
+The uploader matches existing `employee_no` values and fills
+only empty personal-details fields. Blank cells do nothing; conflicting fields
+are reported and preserved, while other empty fields in the row may be filled.
+Existing employee profiles are never changed by this uploader. Unknown or
+duplicate employee numbers reject the entire upload. Maximum: 5 MB / 500 rows.
+All columns except `employee_no` are optional; civil status accepts `SINGLE`,
+`MARRIED`, `WIDOWED`, `SEPARATED`, `DIVORCED`, or `OTHER`. Format identifier cells
+as text in spreadsheet software. Imports recheck saved values at confirmation
+and serialize with concurrent imports/form saves before filling fields.
+
+Focused checks:
+
+```powershell
+docker exec -w /app/backend app_backend python -m unittest tests.test_employee_personal_details -q
+docker exec app_frontend node --test tests/employeePersonalDetails.test.cjs
+```
+
+Database-backed tests additionally require `EMPLOYEE_DETAILS_TEST_DATABASE_NAME`
+to name an existing, disposable `employee_details_test_*` database accessible with
+the configured database credentials. They create the employee/details tables,
+verify the SQL migration can be rerun, and roll back all fixture employee data.
+
 ### Celery dependency compatibility
 
 Keep the Celery, Kombu, and Redis Python client pins in `requirements.txt`

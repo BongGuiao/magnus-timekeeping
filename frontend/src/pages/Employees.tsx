@@ -5,11 +5,12 @@ import { z } from 'zod'
 import DataTable from '../components/common/DataTable'
 import type { DataTableColumn } from '../components/common/DataTable'
 import FormModal from '../components/common/FormModal'
+import PsgcAddressFields from '../components/common/PsgcAddressFields'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { apiClient } from '../lib/apiClient'
-import { createEmployee, EMPLOYEE_CREATED_EVENT, fetchEmployee, fetchEmployees, updateEmployee } from '../lib/employeeApi'
+import { createEmployee, EMPLOYEE_CREATED_EVENT, fetchEmployee, fetchEmployeePersonalDetails, fetchEmployees, updateEmployee } from '../lib/employeeApi'
 import type { EmployeeWritePayload } from '../lib/employeeApi'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchOrgUnits } from '../lib/orgUnitApi'
@@ -35,6 +36,12 @@ import { ScheduleUploadPanel } from './ScheduleUploads'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
 import EmployeeWfhPanel from '../features/employees/EmployeeWfhPanel'
 import EmployeeRolePanel from '../features/employees/EmployeeRolePanel'
+import EmployeePersonalDetailsImport from '../features/employees/EmployeePersonalDetailsImport'
+import {
+  CIVIL_STATUSES, EMPTY_PERSONAL_DETAILS, PERSONAL_DETAILS_FIELDS,
+  personalDetailsFormValues, personalDetailsPayload, personalDetailsSchema,
+} from '../lib/employeePersonalDetails'
+import type { PersonalDetailsValues } from '../lib/employeePersonalDetails'
 import { useWorkspaceTabs } from '../components/dashboard/WorkspaceTabsContext'
 import { hasPermission } from '../types/role'
 import type { Company } from '../types/company'
@@ -74,6 +81,7 @@ const employeeSchema = z.object({
   photo_reference: z.string().trim(),
   record_status: z.enum(['ACTIVE', 'ARCHIVED']),
   is_active: z.boolean(),
+  personal_details: personalDetailsSchema,
 })
 
 type EmployeeFormValues = z.infer<typeof employeeSchema>
@@ -113,6 +121,7 @@ const emptyEmployee: EmployeeFormValues = {
   photo_reference: '',
   record_status: 'ACTIVE',
   is_active: true,
+  personal_details: EMPTY_PERSONAL_DETAILS,
 }
 
 function nullable(value: string) {
@@ -169,6 +178,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const tabId = useId()
   const [employees, setEmployees] = useState<Employee[]>([])
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null)
+  const [editingPersonalDetails, setEditingPersonalDetails] = useState<PersonalDetailsValues>(EMPTY_PERSONAL_DETAILS)
   const [isFormOpen, setIsFormOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<EmployeeTab>('details')
   const [visitedEmployeeTabs, setVisitedEmployeeTabs] = useState<Set<EmployeeTab>>(() => new Set(['details']))
@@ -280,6 +290,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         photo_reference: editingEmployee.photo_reference ?? '',
         record_status: editingEmployee.record_status,
         is_active: editingEmployee.is_active,
+        personal_details: editingPersonalDetails,
       }
     : emptyEmployee
 
@@ -287,6 +298,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     setErrorMessage('')
     setSuccessMessage('')
     setEditingEmployee(null)
+    setEditingPersonalDetails(EMPTY_PERSONAL_DETAILS)
     setActiveTab('details')
     setVisitedEmployeeTabs(new Set(['details']))
     setIsFormOpen(true)
@@ -297,12 +309,16 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     setSuccessMessage('')
     setLoadingEditId(employee.id)
     try {
-      const fullEmployee = await fetchEmployee(employee.id)
+      const [fullEmployee, personalDetails] = await Promise.all([
+        fetchEmployee(employee.id),
+        canManageEmployees ? fetchEmployeePersonalDetails(employee.id) : Promise.resolve(null),
+      ])
       if (!fullEmployee) {
         setErrorMessage('This employee could not be found.')
         return
       }
       setEditingEmployee(fullEmployee)
+      setEditingPersonalDetails(personalDetailsFormValues(personalDetails))
       const initialTab = !canManageEmployees && canUploadSchedules ? 'schedule' : 'details'
       setActiveTab(initialTab)
       setVisitedEmployeeTabs(new Set(['details', initialTab]))
@@ -348,6 +364,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       photo_reference: nullable(values.photo_reference),
       record_status: values.record_status,
       is_active: values.is_active,
+      personal_details: personalDetailsPayload(values.personal_details),
     }
     try {
       const isUpdating = Boolean(editingEmployee)
@@ -427,6 +444,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
           photo_reference: payload.photo_reference ?? '',
           record_status: payload.record_status,
           is_active: payload.is_active,
+          personal_details: EMPTY_PERSONAL_DETAILS,
         }
         const validation = employeeSchema.safeParse(formValues)
         if (!validation.success) {
@@ -917,6 +935,8 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         {errorMessage && !isFormOpen && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
         {successMessage && <p role="status" className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
 
+        {canManageEmployees && <EmployeePersonalDetailsImport />}
+
         {isCsvImportOpen && (
           <section aria-label="Import employees from CSV" className="mb-5 space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
@@ -1042,7 +1062,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         onClose={closeForm}
         onSubmit={saveEmployee}
       >
-        {({ register, setValue, formState: { errors } }) => (
+        {({ register, setValue, watch, formState: { errors } }) => (
           <div className="space-y-4">
             {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
             <div role="tablist" aria-label="Employee information" className="flex flex-wrap border-b-2 border-indigo-200 pb-1">
@@ -1104,6 +1124,13 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                 <label className={labelClassName}>Preferred name<input {...register('preferred_name')} className={inputClassName} /><FieldError message={errors.preferred_name?.message} /></label>
                 <label className={labelClassName}>Birth date<input type="date" {...register('birth_date')} className={inputClassName} /><FieldError message={errors.birth_date?.message} /></label>
                 <label className={labelClassName}>Gender code<select {...register('gender_code')} className={inputClassName}><option value="MALE">Male</option><option value="FEMALE">Female</option><option value="OTHER">Other</option></select><FieldError message={errors.gender_code?.message} /></label>
+                {canManageEmployees && <label className={labelClassName}>Civil status
+                  <select {...register('personal_details.civil_status')} className={inputClassName}>
+                    <option value="">Not specified</option>
+                    {CIVIL_STATUSES.map((status) => <option key={status} value={status}>{status.charAt(0) + status.slice(1).toLowerCase()}</option>)}
+                  </select>
+                  <FieldError message={errors.personal_details?.civil_status?.message} />
+                </label>}
               </div>
               </section>
               <section>
@@ -1115,6 +1142,58 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                 <label className="flex items-center gap-3 self-end rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-700"><input type="checkbox" {...register('is_active')} className="h-4 w-4 accent-indigo-600" />Enabled for use</label>
               </div>
               </section>
+              {canManageEmployees && (
+                <>
+                <section>
+                  <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Government &amp; bank information</h3>
+                  <p className="mt-1 text-xs text-slate-500">Optional and restricted to employee managers. Form edits can replace values; CSV imports only fill empty fields.</p>
+                  <div className="mt-2 grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {PERSONAL_DETAILS_FIELDS.filter((field) => ['bank_account_no', 'sss_no', 'pagibig_no', 'philhealth_no', 'tin_no'].includes(field.key)).map((field) => (
+                      <label key={field.key} className={labelClassName}>
+                        {field.label}
+                        <input type="text" maxLength={field.maxLength} {...register(`personal_details.${field.key}`)} className={inputClassName} />
+                        <FieldError message={errors.personal_details?.[field.key]?.message} />
+                      </label>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Complete address</h3>
+                  <div className="mt-2 grid gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {PERSONAL_DETAILS_FIELDS.filter((field) => ['address_line_1', 'address_line_2'].includes(field.key)).map((field) => (
+                      <label key={field.key} className={labelClassName}>
+                        {field.label}
+                        <input type="text" maxLength={field.maxLength} {...register(`personal_details.${field.key}`)} className={inputClassName} />
+                        <FieldError message={errors.personal_details?.[field.key]?.message} />
+                      </label>
+                    ))}
+                    <PsgcAddressFields
+                      region={watch('personal_details.region')}
+                      province={watch('personal_details.province')}
+                      city={watch('personal_details.city_municipality')}
+                      barangay={watch('personal_details.barangay')}
+                      psgcRegionCode={watch('personal_details.psgc_region_code') || null}
+                      psgcProvinceCode={watch('personal_details.psgc_province_code') || null}
+                      psgcCityCode={watch('personal_details.psgc_city_code') || null}
+                      psgcBarangayCode={watch('personal_details.psgc_barangay_code') || null}
+                      errors={{
+                        province: errors.personal_details?.province?.message,
+                        city: errors.personal_details?.city_municipality?.message,
+                        barangay: errors.personal_details?.barangay?.message,
+                      }}
+                      onChange={(field, value) => {
+                        const name = field === 'city' ? 'city_municipality' : field
+                        setValue(`personal_details.${name}`, value, { shouldDirty: true, shouldValidate: true })
+                      }}
+                    />
+                    <label className={labelClassName}>Postal code
+                      <input type="text" maxLength={20} {...register('personal_details.postal_code')} className={inputClassName} />
+                      <FieldError message={errors.personal_details?.postal_code?.message} />
+                    </label>
+                  </div>
+                </section>
+                </>
+              )}
               </fieldset>
             </div>
             {visibleEmployeeTabs.slice(1).map((tab) => (

@@ -19,6 +19,10 @@ from app.core.generics.mapper import GenericMapper
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
+from app.filemaintenance.employees.application.personal_details import (
+    save_personal_details,
+    validate_personal_details,
+)
 from app.filemaintenance.employees.infrastructure.db_model import (
     EmployeeModel,
     EmploymentAssignmentModel,
@@ -60,6 +64,11 @@ class CreateEmployeeUseCase(BaseUseCase[EmployeeEntity]):
     async def _execute(self, payload: dict[str, Any]) -> EmployeeEntity:
         async with self.uow as uow:
             normalized_payload = _normalize_payload(payload)
+            personal_details = normalized_payload.pop("personal_details", None)
+            details_input = (
+                validate_personal_details(personal_details)
+                if personal_details is not None else None
+            )
             employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
             existing = await employee_repo.find_one(
                 EmployeeModel.employee_no == normalized_payload.get("employee_no")
@@ -90,6 +99,10 @@ class CreateEmployeeUseCase(BaseUseCase[EmployeeEntity]):
                 actor_id=employee.created_by,
                 password_set_by_user=False,
             )
+            if details_input is not None:
+                if uow.session is None:
+                    raise RuntimeError("UnitOfWork session is not active.")
+                await save_personal_details(uow.session, employee.id, details_input, employee.created_by)
             return employee
 
 
@@ -168,7 +181,13 @@ class UpdateEmployeeUseCase(BaseUseCase[EmployeeEntity]):
             if existing is None:
                 raise ValueError("Employee not found.")
 
-            entity_data = GenericMapper.to_entity(_normalize_payload(payload), EmployeeEntity)
+            normalized_payload = _normalize_payload(payload)
+            personal_details = normalized_payload.pop("personal_details", None)
+            details_input = (
+                validate_personal_details(personal_details)
+                if personal_details is not None else None
+            )
+            entity_data = GenericMapper.to_entity(normalized_payload, EmployeeEntity)
             entity_data.id = employee_id
             changes = {
                 key: value for key, value in entity_data.__dict__.items()
@@ -191,4 +210,8 @@ class UpdateEmployeeUseCase(BaseUseCase[EmployeeEntity]):
                 default_password_hash=get_password_hash(DEFAULT_EMPLOYEE_PASSWORD),
                 default_role_code=DEFAULT_EMPLOYEE_ROLE_CODE,
             )
+            if details_input is not None:
+                if uow.session is None:
+                    raise RuntimeError("UnitOfWork session is not active.")
+                await save_personal_details(uow.session, employee_id, details_input, entity_data.updated_by)
             return saved

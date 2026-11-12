@@ -40,8 +40,10 @@ from app.filemaintenance.employees.infrastructure.dependencies import (
     get_list_employees_use_case,
     get_update_employee_use_case,
 )
+from app.filemaintenance.employees.infrastructure.personal_details_router import router as personal_details_router
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
+router.include_router(personal_details_router)
 
 
 def _require_email(claims: dict[str, Any]) -> None:

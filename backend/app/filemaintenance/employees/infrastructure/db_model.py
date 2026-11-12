@@ -72,6 +72,49 @@ class EmployeeModel(Base):
 
 
 
+class EmployeePersonalDetailsModel(Base):
+    __tablename__ = "employee_personal_details"
+    __table_args__ = (
+        CheckConstraint(
+            "civil_status IN ('SINGLE', 'MARRIED', 'WIDOWED', 'SEPARATED', 'DIVORCED', 'OTHER')",
+            name="ck_employee_personal_details_civil_status",
+        ),
+        CheckConstraint(
+            "(psgc_region_code IS NULL OR psgc_region_code ~ '^[0-9]{9}$') AND "
+            "(psgc_province_code IS NULL OR psgc_province_code ~ '^[0-9]{9}$') AND "
+            "(psgc_city_code IS NULL OR psgc_city_code ~ '^[0-9]{9}$') AND "
+            "(psgc_barangay_code IS NULL OR psgc_barangay_code ~ '^[0-9]{9}$')",
+            name="ck_employee_personal_details_psgc_codes",
+        ),
+        {"schema": "hr"},
+    )
+
+    employee_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("hr.employees.id", ondelete="CASCADE"), primary_key=True
+    )
+    bank_account_no: Mapped[str | None] = mapped_column(String(100))
+    sss_no: Mapped[str | None] = mapped_column(String(30))
+    pagibig_no: Mapped[str | None] = mapped_column(String(30))
+    philhealth_no: Mapped[str | None] = mapped_column(String(30))
+    tin_no: Mapped[str | None] = mapped_column(String(30))
+    address_line_1: Mapped[str | None] = mapped_column(String(255))
+    address_line_2: Mapped[str | None] = mapped_column(String(255))
+    region: Mapped[str | None] = mapped_column(String(100))
+    psgc_region_code: Mapped[str | None] = mapped_column(String(9))
+    psgc_province_code: Mapped[str | None] = mapped_column(String(9))
+    psgc_city_code: Mapped[str | None] = mapped_column(String(9))
+    psgc_barangay_code: Mapped[str | None] = mapped_column(String(9))
+    barangay: Mapped[str | None] = mapped_column(String(100))
+    city_municipality: Mapped[str | None] = mapped_column(String(100))
+    province: Mapped[str | None] = mapped_column(String(100))
+    postal_code: Mapped[str | None] = mapped_column(String(20))
+    civil_status: Mapped[str | None] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+
 class EmployeeWfhLocationModel(Base):
     __tablename__ = "employee_wfh_locations"
     __table_args__ = (
