@@ -543,7 +543,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const dashboardLeaveBalances = role === 'employee' ? leaveBalances : data.leaveBalances
 
   useEffect(() => {
-    if (!isAdmin || !canReadOrgAttendance || !canReviewTeamLeave) return
+    if (!isAdmin) return
 
     let isCurrent = true
     const refreshPendingDevices = async (showLoading: boolean) => {
@@ -572,7 +572,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       isCurrent = false
       window.clearInterval(refreshTimer)
     }
-  }, [canReadOrgAttendance, canReviewTeamLeave, isAdmin])
+  }, [isAdmin])
 
   useEffect(() => {
     if (!isAdmin) return

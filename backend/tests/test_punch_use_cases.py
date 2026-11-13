@@ -1,5 +1,6 @@
 import threading
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -77,18 +78,21 @@ class ClockPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
         return self.clock.execute.await_args.args[0]
 
     async def test_only_a_proven_native_android_or_ios_device_can_enable_wfh(self):
-        for native, platform, approved, expected in (
-            (True, "ANDROID", True, True),
-            (True, "IOS", True, True),
-            (True, "WEB", True, False),
-            (False, "ANDROID", True, False),
-            (True, "ANDROID", False, False),
+        for native, platform, expected in (
+            (True, "ANDROID", True),
+            (True, "IOS", True),
+            (False, "ANDROID", False),
         ):
-            with self.subTest(native=native, platform=platform, approved=approved):
-                proofs = FakeProofs(proof(platform)) if approved else FakeProofs(error=ValueError("unapproved"))
+            with self.subTest(native=native, platform=platform):
+                proofs = FakeProofs(proof(platform))
                 dto = await self.dto(proofs, is_native=native)
                 self.assertEqual(dto.allow_wfh, expected)
                 self.assertTrue(dto.enforce_geofence)
+
+    async def test_native_attendance_rejects_a_web_device_proof(self):
+        with self.assertRaisesRegex(PermissionDeniedError, "Android or iOS"):
+            await self.use_case(FakeProofs(proof("WEB"))).execute(self.punch(is_native=True))
+        self.clock.execute.assert_not_awaited()
 
     async def test_an_approved_device_is_recorded_on_the_punch(self):
         device = proof()
@@ -99,21 +103,17 @@ class ClockPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
             "channel": "mobile", "device_id": device["device_id"], "device_uuid": device["device_uuid"],
         })
 
-    async def test_unapproved_or_missing_proof_flags_the_punch_instead_of_rejecting_it(self):
+    async def test_unapproved_or_missing_proof_rejects_the_punch(self):
         cases = (
             (FakeProofs(error=ValueError("device revoked")), {}),
             (FakeProofs(proof()), {"device_challenge_id": None}),
             (FakeProofs(proof()), {"device_signature": None}),
         )
         for proofs, changes in cases:
-            with self.subTest(changes=changes), self.assertLogs(
-                "app.attendance.application.punch_use_cases", "WARNING",
-            ):
-                dto = await self.dto(proofs, **changes)
-                self.assertFalse(dto.device_approved)
-                self.assertIsNone(dto.punch_metadata)
-                self.assertEqual(dto.clock_channel, {"channel": "mobile"})
-        self.assertEqual(proofs.consume_calls, [])
+            with self.subTest(changes=changes):
+                with self.assertRaises(PermissionDeniedError):
+                    await self.use_case(proofs).execute(self.punch(**changes))
+                self.clock.execute.assert_not_awaited()
 
     async def test_the_callers_channel_metadata_is_never_mutated(self):
         channel = {"channel": "mobile"}
@@ -158,12 +158,13 @@ class BreakPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_proven_device_and_metadata_are_passed_to_the_break_use_case(self):
         device = proof()
         proofs = FakeProofs(device)
+        data = replace(self.data, is_native=True)
         event_loop_thread = threading.get_ident()
         self.refresher.request_refresh.side_effect = lambda user_id: self.assertNotEqual(
             threading.get_ident(), event_loop_thread,
         )
-        await self.use_case(proofs).execute(self.data)
-        self.assertEqual(proofs.consume_calls, [(self.data.user_id, self.data.device_challenge_id, "BREAK", "sig")])
+        await self.use_case(proofs).execute(data)
+        self.assertEqual(proofs.consume_calls, [(data.user_id, data.device_challenge_id, "BREAK", "sig")])
         dto = self.record_break.execute.await_args.args[0]
         self.assertEqual((dto.break_type, dto.device_proof, dto.punch_metadata),
                          ("meal_break_out_at", device, {"client_source": "native"}))
@@ -176,6 +177,12 @@ class BreakPunchUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.record_break.execute.assert_not_awaited()
         self.refresher.request_refresh.assert_not_called()
         self.audit.record.assert_not_awaited()
+
+    async def test_native_break_rejects_a_web_device_proof(self):
+        data = replace(self.data, is_native=True)
+        with self.assertRaisesRegex(PermissionDeniedError, "Android or iOS"):
+            await self.use_case(FakeProofs(proof("WEB"))).execute(data)
+        self.record_break.execute.assert_not_awaited()
 
 
 class DeviceChallengeTests(unittest.IsolatedAsyncioTestCase):
@@ -276,6 +283,7 @@ class ClockRouterTests(unittest.IsolatedAsyncioTestCase):
         )
         metadata = use_case.execute.await_args.args[0].punch_metadata
         self.assertEqual((metadata["client_source"], metadata["location_report"]["latitude"]), ("native", 14.5))
+        self.assertTrue(use_case.execute.await_args.args[0].is_native)
         self.assertEqual(response.data.action_recorded, "meal_break_out_at")
 
     async def test_rejected_punches_are_still_recorded_by_the_route_decorator(self):
@@ -287,3 +295,33 @@ class ClockRouterTests(unittest.IsolatedAsyncioTestCase):
             await self.call_clock(use_case, self.upload(b"face"))
         self.record_rejected.assert_awaited_once()
         self.assertEqual(self.record_rejected.await_args.kwargs["punch_action"], "CLOCK")
+
+    async def test_unapproved_device_is_translated_to_403_and_logged_as_rejected(self):
+        use_case = MagicMock(execute=AsyncMock(side_effect=PermissionDeniedError("approval required")))
+        with self.assertRaises(HTTPException) as error:
+            await self.call_clock(use_case, self.upload(b"face"))
+        self.assertEqual((error.exception.status_code, error.exception.detail), (403, "approval required"))
+        self.record_rejected.assert_awaited_once()
+
+    async def test_browser_clock_route_requires_the_kiosk(self):
+        policy = AttendanceClockPolicy("kiosk", False, "10.0.0.1")
+        use_case = MagicMock(execute=AsyncMock())
+        with self.assertRaises(HTTPException) as error:
+            await self.call_clock(use_case, self.upload(b"face"), policy)
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertIn("attendance kiosk", error.exception.detail)
+        use_case.execute.assert_not_awaited()
+        self.record_rejected.assert_awaited_once()
+
+    async def test_browser_break_route_requires_the_kiosk(self):
+        policy = AttendanceClockPolicy("kiosk", False, "10.0.0.1")
+        use_case = MagicMock(execute=AsyncMock())
+        with self.assertRaises(HTTPException) as error:
+            await clock_break_attendance(
+                break_type="meal_break_out_at", user_id=uuid4(), file=self.upload(b"face"),
+                device_challenge_id=uuid4(), device_signature="s" * 86, policy=policy, use_case=use_case,
+            )
+        self.assertEqual(error.exception.status_code, 403)
+        self.assertIn("attendance kiosk", error.exception.detail)
+        use_case.execute.assert_not_awaited()
+        self.record_rejected.assert_awaited_once()

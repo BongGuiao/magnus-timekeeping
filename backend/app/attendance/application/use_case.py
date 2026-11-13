@@ -4,7 +4,7 @@ from decimal import Decimal
 import logging
 from math import isfinite
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from anyio import CapacityLimiter, to_thread
@@ -142,6 +142,47 @@ def to_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def open_attendance_conditions(user_id: UUID) -> tuple[ColumnElement[bool], ...]:
+    return (
+        AttendanceModel.user_id == user_id,
+        not_merged_source(),
+        func.coalesce(
+            AttendanceModel.corrected_clock_in_at,
+            AttendanceModel.clock_in_at,
+        ).is_not(None),
+        AttendanceModel.corrected_clock_out_at.is_(None),
+        AttendanceModel.clock_out_at.is_(None),
+    )
+
+
+def attendance_allows_clock_out(record: AttendanceEntity, now_utc: datetime) -> bool:
+    """Whether an open record belongs to today's active shift or a qualifying overnight shift."""
+    clock_in_at = record.corrected_clock_in_at or record.clock_in_at
+    if clock_in_at is None or record.corrected_clock_out_at or record.clock_out_at:
+        return False
+
+    now_utc = to_utc(now_utc)
+    if now_utc - to_utc(clock_in_at) >= MAX_OPEN_ATTENDANCE_AGE:
+        return False
+
+    today = now_utc.astimezone(PH_TIMEZONE).date()
+    if record.work_date == today:
+        return True
+
+    clock_in_date = to_utc(clock_in_at).astimezone(PH_TIMEZONE).date()
+    if record.work_date > today and clock_in_date == today:
+        return True
+
+    expected_clock_in = record.expected_clock_in_at
+    expected_clock_out = record.expected_clock_out_at
+    if record.work_date < today and expected_clock_in and expected_clock_out:
+        expected_start_date = to_utc(expected_clock_in).astimezone(PH_TIMEZONE).date()
+        expected_end_date = to_utc(expected_clock_out).astimezone(PH_TIMEZONE).date()
+        return expected_end_date > expected_start_date and expected_end_date >= today
+
+    return False
 
 
 def validate_early_clock_in(
@@ -564,6 +605,7 @@ class ClockAttendanceInputDTO:
     allow_wfh: bool = False
     captured_at: datetime | None = None
     requested_action: str | None = None
+    kiosk_action: bool = False
     actor_id: UUID | None = None
 
 
@@ -590,6 +632,7 @@ class ClockAttendanceOutputDTO:
 @dataclass(frozen=True)
 class GetLastAttendanceInputDTO:
     user_id: UUID
+    for_kiosk: bool = False
 
 
 @dataclass(frozen=True)
@@ -609,6 +652,7 @@ class LastAttendanceOutputDTO:
     expected_clock_in_at: Optional[str]
     expected_clock_out_at: Optional[str]
     break_rules: list[dict[str, Any]] = field(default_factory=list)
+    next_action: Optional[Literal["clock_in", "clock_out"]] = None
 
 
 class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
@@ -625,10 +669,25 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
                 limit=1,
             )
 
-            if not records:
+            active_open = None
+            if input_dto.for_kiosk:
+                open_records = await repo.find_all(
+                    *open_attendance_conditions(input_dto.user_id),
+                    order_by=func.coalesce(
+                        AttendanceModel.corrected_clock_in_at,
+                        AttendanceModel.clock_in_at,
+                    ).desc(),
+                    limit=1,
+                )
+                if open_records and attendance_allows_clock_out(
+                    open_records[0], datetime.now(timezone.utc),
+                ):
+                    active_open = open_records[0]
+
+            last = active_open or (records[0] if records else None)
+            if last is None:
                 return None
 
-            last = records[0]
             break_rules = await resolve_record_break_rules(uow, last)
             return LastAttendanceOutputDTO(
                 work_date=last.work_date.isoformat(),
@@ -646,6 +705,9 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
                 expected_clock_in_at=to_ph_iso(last.expected_clock_in_at),
                 expected_clock_out_at=to_ph_iso(last.expected_clock_out_at),
                 break_rules=break_rules,
+                next_action=(
+                    "clock_out" if active_open else "clock_in"
+                ) if input_dto.for_kiosk else None,
             )
 
 
@@ -1337,14 +1399,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             # This bypasses midnight-crossover issues for night shifts.
             attendance_repo = uow.get_repo(AttendanceEntity, AttendanceModel)
             records = await attendance_repo.find_all(
-                AttendanceModel.user_id == input_dto.user_id,
-                not_merged_source(),
-                func.coalesce(
-                    AttendanceModel.corrected_clock_in_at,
-                    AttendanceModel.clock_in_at,
-                ).is_not(None),
-                AttendanceModel.corrected_clock_out_at.is_(None),
-                AttendanceModel.clock_out_at.is_(None),
+                *open_attendance_conditions(input_dto.user_id),
                 order_by=func.coalesce(
                     AttendanceModel.corrected_clock_in_at,
                     AttendanceModel.clock_in_at,
@@ -1352,16 +1407,22 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 limit=1,
             )
  
-            existing = records[0] if records else None
-            if existing is not None:
-                existing_clock_in = existing.corrected_clock_in_at or existing.clock_in_at
-                if (
-                    existing_clock_in is not None
-                    and now_utc - to_utc(existing_clock_in) >= MAX_OPEN_ATTENDANCE_AGE
-                ):
-                    # Keep the unclosed record for no-logout reporting, but don't
-                    # let it block a new attendance record after 24 hours.
-                    existing = None
+            candidate = records[0] if records else None
+            if input_dto.kiosk_action:
+                existing = (
+                    candidate
+                    if candidate is not None and attendance_allows_clock_out(candidate, now_utc)
+                    else None
+                )
+            else:
+                existing = candidate
+                if existing is not None:
+                    existing_clock_in = existing.corrected_clock_in_at or existing.clock_in_at
+                    if (
+                        existing_clock_in is not None
+                        and now_utc - to_utc(existing_clock_in) >= MAX_OPEN_ATTENDANCE_AGE
+                    ):
+                        existing = None
             approval_required = False
             schedule_template_id: UUID | None = None
             if input_dto.requested_action is not None:

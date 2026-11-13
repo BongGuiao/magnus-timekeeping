@@ -61,7 +61,7 @@ class SubmitClockPunchInput:
 
 
 class SubmitClockPunchUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
-    """Clock in/out. A missing or unapproved device proof does not block the punch; it flags it for review."""
+    """Clock in/out only from an approved employee device."""
 
     def __init__(
         self,
@@ -75,46 +75,47 @@ class SubmitClockPunchUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
         self._refresher = refresher
         self._audit = audit
 
-    async def _prove_device(self, data: SubmitClockPunchInput) -> Optional[dict[str, str]]:
+    async def _prove_device(self, data: SubmitClockPunchInput) -> dict[str, str]:
         if data.device_challenge_id is None or data.device_signature is None:
-            logger.warning(
-                "Attendance submitted without approved browser proof; supervisor review is required.",
-                extra={"user_id": str(data.user_id)},
+            raise PermissionDeniedError(
+                "Register this mobile device and get administrator approval before recording attendance."
             )
-            return None
         try:
-            return await self._proofs.consume(
+            device_proof = await self._proofs.consume(
                 data.user_id, data.device_challenge_id, "CLOCK", data.device_signature
             )
         except ValueError as error:
             logger.warning(
-                "Attendance browser proof was not approved; supervisor review is required: %s",
+                "Attendance rejected because device authorization failed: %s",
                 error,
                 extra={"user_id": str(data.user_id)},
             )
-            return None
+            raise PermissionDeniedError(f"Device authorization failed: {error}") from error
+        if data.is_native and device_proof.get("platform") not in NATIVE_PLATFORMS:
+            raise PermissionDeniedError(
+                "The mobile attendance endpoint requires an approved Android or iOS device."
+            )
+        return device_proof
 
     async def _execute(self, data: SubmitClockPunchInput) -> ClockAttendanceOutputDTO:
         device_proof = await self._prove_device(data)
         clock_channel = dict(data.clock_channel)
-        if device_proof is not None:
-            clock_channel.update(
-                {"device_id": device_proof["device_id"], "device_uuid": device_proof["device_uuid"]}
-            )
+        clock_channel.update(
+            {"device_id": device_proof["device_id"], "device_uuid": device_proof["device_uuid"]}
+        )
         result = await self._clock.execute(
             ClockAttendanceInputDTO(
                 image_bytes=data.image_bytes,
                 user_id=data.user_id,
                 clock_out_confirmed=data.clock_out_confirmed,
-                device_approved=device_proof is not None,
+                device_approved=True,
                 enforce_geofence=data.enforce_geofence,
                 allow_wfh=bool(
                     data.is_native
-                    and device_proof
                     and device_proof.get("platform") in NATIVE_PLATFORMS
                 ),
                 clock_channel=clock_channel,
-                punch_metadata={"device_proof": device_proof} if device_proof else None,
+                punch_metadata={"device_proof": device_proof},
                 latitude=data.latitude,
                 longitude=data.longitude,
                 gps_accuracy_meters=data.gps_accuracy_meters,
@@ -139,6 +140,7 @@ class SubmitBreakPunchInput:
     device_challenge_id: UUID
     device_signature: str
     punch_metadata: dict[str, Any]
+    is_native: bool = False
 
 
 class SubmitBreakPunchUseCase(BaseUseCase[RecordBreakOutputDTO]):
@@ -160,6 +162,10 @@ class SubmitBreakPunchUseCase(BaseUseCase[RecordBreakOutputDTO]):
         device_proof = await self._proofs.consume(
             data.user_id, data.device_challenge_id, "BREAK", data.device_signature
         )
+        if data.is_native and device_proof.get("platform") not in NATIVE_PLATFORMS:
+            raise PermissionDeniedError(
+                "The mobile attendance endpoint requires an approved Android or iOS device."
+            )
         result = await self._record_break.execute(
             RecordBreakInputDTO(
                 break_type=data.break_type,

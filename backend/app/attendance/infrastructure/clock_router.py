@@ -21,6 +21,7 @@ from app.attendance.infrastructure.dependencies import (
     get_submit_break_punch_use_case,
     get_submit_clock_punch_use_case,
 )
+from app.attendance.infrastructure.http_errors import http_errors
 from app.attendance.infrastructure.punch_exceptions import build_punch_metadata, log_rejected_punches
 from app.core.generics.mapper import ResponseEnvelope
 
@@ -86,6 +87,14 @@ async def _read_face_image(file: UploadFile) -> bytes:
     return image_bytes
 
 
+def _require_native_attendance_client(policy: AttendanceClockPolicy) -> None:
+    if not policy.is_native:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Browser punches must be recorded using an administrator-approved attendance kiosk.",
+        )
+
+
 @router.get("/clock-policy", response_model=ResponseEnvelope[ClockPolicySchema])
 async def get_clock_policy(policy: AttendanceClockPolicy = Depends(resolve_attendance_clock_policy)):
     """Tells the client whether GPS is required for clock-in from this device/network."""
@@ -117,21 +126,23 @@ async def clock_attendance(
     use_case: SubmitClockPunchUseCase = Depends(get_submit_clock_punch_use_case),
 ):
     """Records attendance after matching the captured face to the selected employee."""
-    result = await use_case.execute(
-        SubmitClockPunchInput(
-            user_id=user_id,
-            image_bytes=await _read_face_image(file),
-            clock_channel=policy.as_metadata(),
-            enforce_geofence=policy.geofence_required,
-            is_native=policy.is_native,
-            clock_out_confirmed=clock_out_confirmed,
-            device_challenge_id=device_challenge_id,
-            device_signature=device_signature,
-            latitude=latitude,
-            longitude=longitude,
-            gps_accuracy_meters=gps_accuracy_meters,
+    _require_native_attendance_client(policy)
+    with http_errors():
+        result = await use_case.execute(
+            SubmitClockPunchInput(
+                user_id=user_id,
+                image_bytes=await _read_face_image(file),
+                clock_channel=policy.as_metadata(),
+                enforce_geofence=policy.geofence_required,
+                is_native=policy.is_native,
+                clock_out_confirmed=clock_out_confirmed,
+                device_challenge_id=device_challenge_id,
+                device_signature=device_signature,
+                latitude=latitude,
+                longitude=longitude,
+                gps_accuracy_meters=gps_accuracy_meters,
+            )
         )
-    )
     return ResponseEnvelope[ClockResponseSchema](
         data=ClockResponseSchema(
             employee_name=result.employee_name,
@@ -172,18 +183,21 @@ async def clock_break_attendance(
     use_case: SubmitBreakPunchUseCase = Depends(get_submit_break_punch_use_case),
 ):
     """Records a break after matching the captured face to the selected employee."""
-    result = await use_case.execute(
-        SubmitBreakPunchInput(
-            user_id=user_id,
-            break_type=break_type,
-            image_bytes=await _read_face_image(file),
-            device_challenge_id=device_challenge_id,
-            device_signature=device_signature,
-            punch_metadata=build_punch_metadata(
-                latitude, longitude, gps_accuracy_meters, policy, datetime.now(timezone.utc),
-            ),
+    _require_native_attendance_client(policy)
+    with http_errors():
+        result = await use_case.execute(
+            SubmitBreakPunchInput(
+                user_id=user_id,
+                break_type=break_type,
+                image_bytes=await _read_face_image(file),
+                device_challenge_id=device_challenge_id,
+                device_signature=device_signature,
+                punch_metadata=build_punch_metadata(
+                    latitude, longitude, gps_accuracy_meters, policy, datetime.now(timezone.utc),
+                ),
+                is_native=policy.is_native,
+            )
         )
-    )
     return ResponseEnvelope[BreakResponseSchema](
         data=BreakResponseSchema(
             employee_name=result.employee_name,

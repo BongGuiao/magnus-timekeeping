@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 from app.attendance.application.use_case import (
     ClockAttendanceInputDTO,
     ClockAttendanceUseCase,
+    GetLastAttendanceInputDTO,
+    GetLastAttendanceUseCase,
     ScheduleDayConfiguration,
+    attendance_allows_clock_out,
     calculate_attendance_metrics,
     calculate_overtime_breakdown,
     validate_early_clock_in,
@@ -18,6 +21,151 @@ from app.auth.domain.entities.user import UserEntity
 from app.auth.infrastructure.approval_routing import ApprovalRoutingError
 from app.enrollment.domain.entities.enrollment import FaceEnrollmentEntity
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
+
+
+class AttendanceActionResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self.today = date(2026, 10, 13)
+
+    def attendance(self, work_date, clock_in_at, expected_in=None, expected_out=None):
+        return AttendanceEntity(
+            user_id=uuid4(),
+            work_date=work_date,
+            clock_in_at=clock_in_at,
+            expected_clock_in_at=expected_in,
+            expected_clock_out_at=expected_out,
+        )
+
+    def test_open_attendance_from_today_allows_clock_out(self):
+        now = datetime(2026, 10, 13, 10, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(
+            self.today, now - timedelta(hours=1),
+            now - timedelta(hours=1), now + timedelta(hours=8),
+        )
+        self.assertTrue(attendance_allows_clock_out(record, now))
+
+    def test_previous_work_date_is_active_for_an_overnight_shift(self):
+        now = datetime(2026, 10, 13, 2, tzinfo=ZoneInfo("Asia/Manila"))
+        expected_in = datetime(2026, 10, 12, 22, tzinfo=ZoneInfo("Asia/Manila"))
+        expected_out = datetime(2026, 10, 13, 6, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(
+            self.today - timedelta(days=1), expected_in, expected_in, expected_out,
+        )
+        self.assertTrue(attendance_allows_clock_out(record, now))
+
+    def test_previous_date_day_shift_does_not_block_a_new_clock_in(self):
+        expected_in = datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(
+            self.today - timedelta(days=1),
+            expected_in,
+            expected_in,
+            expected_in + timedelta(hours=9),
+        )
+        now = datetime(2026, 10, 13, 8, tzinfo=ZoneInfo("Asia/Manila"))
+        self.assertFalse(attendance_allows_clock_out(record, now))
+
+    def test_open_attendance_at_24_hours_is_stale(self):
+        expected_in = datetime(2026, 10, 12, 22, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(
+            self.today - timedelta(days=1),
+            expected_in,
+            expected_in,
+            datetime(2026, 10, 13, 6, tzinfo=ZoneInfo("Asia/Manila")),
+        )
+        now = expected_in + timedelta(hours=24)
+        self.assertFalse(attendance_allows_clock_out(record, now))
+
+    def test_early_punch_for_tomorrow_is_still_an_open_shift(self):
+        now = datetime(2026, 10, 12, 23, 45, tzinfo=ZoneInfo("Asia/Manila"))
+        expected_in = datetime(2026, 10, 13, 0, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(
+            expected_in.date(), now, expected_in, expected_in + timedelta(hours=8),
+        )
+        self.assertTrue(attendance_allows_clock_out(record, now))
+
+
+class KioskAttendanceStateTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.now = datetime(2026, 10, 13, 2, tzinfo=ZoneInfo("Asia/Manila"))
+
+    def attendance(self, work_date, clock_in, expected_in=None, expected_out=None):
+        return AttendanceEntity(
+            user_id=uuid4(),
+            work_date=work_date,
+            clock_in_at=clock_in,
+            expected_clock_in_at=expected_in,
+            expected_clock_out_at=expected_out,
+        )
+
+    async def resolve(self, records, open_records, for_kiosk=True):
+        repo = SimpleNamespace(find_all=AsyncMock(side_effect=[records, open_records]))
+
+        class FakeUow:
+            session = SimpleNamespace()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def get_repo(self, entity, model):
+                return repo
+
+        use_case = GetLastAttendanceUseCase(FakeUow())
+        with patch(
+            "app.attendance.application.use_case.resolve_record_break_rules",
+            new=AsyncMock(return_value=[]),
+        ), patch("app.attendance.application.use_case.datetime", wraps=datetime) as clock:
+            clock.now.return_value = self.now.astimezone(timezone.utc)
+            result = await use_case.execute(GetLastAttendanceInputDTO(
+                user_id=uuid4(), for_kiosk=for_kiosk,
+            ))
+        return result, repo
+
+    async def test_same_day_open_record_resolves_to_clock_out(self):
+        record = self.attendance(
+            self.now.date(), self.now - timedelta(hours=1),
+        )
+        result, _ = await self.resolve([record], [record])
+        self.assertEqual(result.next_action, "clock_out")
+
+    async def test_qualifying_overnight_record_resolves_to_clock_out(self):
+        expected_in = self.now.replace(day=12, hour=22)
+        expected_out = self.now.replace(hour=6)
+        record = self.attendance(
+            self.now.date() - timedelta(days=1), expected_in, expected_in, expected_out,
+        )
+        result, _ = await self.resolve([record], [record])
+        self.assertEqual(result.next_action, "clock_out")
+
+    async def test_prior_day_non_overnight_open_record_resolves_to_clock_in(self):
+        expected_in = self.now.replace(day=12, hour=9)
+        record = self.attendance(
+            self.now.date() - timedelta(days=1),
+            expected_in,
+            expected_in,
+            expected_in + timedelta(hours=9),
+        )
+        result, _ = await self.resolve([record], [record])
+        self.assertEqual(result.next_action, "clock_in")
+
+    async def test_24_hour_open_record_resolves_to_clock_in(self):
+        clock_in = self.now - timedelta(hours=24)
+        record = self.attendance(
+            self.now.date() - timedelta(days=1),
+            clock_in,
+            clock_in,
+            clock_in + timedelta(hours=8),
+        )
+        result, _ = await self.resolve([record], [record])
+        self.assertEqual(result.next_action, "clock_in")
+
+    async def test_non_kiosk_last_attendance_does_not_resolve_or_change_mobile_state(self):
+        record = self.attendance(self.now.date(), self.now - timedelta(hours=1))
+        result, repo = await self.resolve([record], [], for_kiosk=False)
+        self.assertIsNone(result.next_action)
+        repo.find_all.assert_awaited_once()
 
 
 class EarlyClockInValidationTests(unittest.TestCase):
@@ -131,12 +279,13 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.use_case._resolve_schedule_day = AsyncMock(return_value=self.schedule)
         self.use_case._resolve_day_type = AsyncMock(return_value="REG")
 
-    async def clock_in(self, device_approved=True):
+    async def clock_in(self, device_approved=True, requested_action=None, kiosk_action=False):
         with patch("app.attendance.application.use_case.datetime", wraps=datetime) as clock:
             clock.now.return_value = self.now.astimezone(timezone.utc)
             return await self.use_case._execute(ClockAttendanceInputDTO(
                 user_id=self.user_id, image_bytes=b"image", enforce_geofence=False,
-                device_approved=device_approved,
+                device_approved=device_approved, requested_action=requested_action,
+                kiosk_action=kiosk_action,
             ))
 
     async def test_rejected_punch_does_not_create_attendance(self):
@@ -246,6 +395,42 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         new_attendance = self.attendance.add.call_args.args[0]
         self.assertEqual(new_attendance.work_date, self.start.date())
         self.assertIsNone(stale_attendance.clock_out_at)
+
+    async def test_previous_date_day_shift_does_not_block_a_new_clock_in(self):
+        previous_day = self.start - timedelta(days=1)
+        stale_attendance = AttendanceEntity(
+            user_id=self.user_id,
+            work_date=previous_day.date(),
+            expected_clock_in_at=previous_day,
+            expected_clock_out_at=previous_day + timedelta(hours=9),
+            clock_in_at=previous_day,
+        )
+        self.attendance.find_all.side_effect = [[stale_attendance], []]
+
+        await self.clock_in(requested_action="clock_in", kiosk_action=True)
+
+        self.attendance.add.assert_awaited_once()
+        self.assertIsNone(stale_attendance.clock_out_at)
+
+    async def test_mobile_keeps_a_recent_open_previous_day_record_as_clock_out(self):
+        previous_day = self.start - timedelta(days=1)
+        open_attendance = AttendanceEntity(
+            user_id=self.user_id,
+            work_date=previous_day.date(),
+            expected_clock_in_at=previous_day,
+            expected_clock_out_at=previous_day + timedelta(hours=9),
+            clock_in_at=previous_day,
+        )
+        self.attendance.find_all.return_value = [open_attendance]
+        self.attendance.update = AsyncMock(side_effect=lambda record: record)
+        with patch(
+            "app.attendance.application.use_case.resolve_record_break_rules",
+            new=AsyncMock(return_value=[]),
+        ):
+            result = await self.clock_in()
+
+        self.assertEqual(result.action, "clock_out")
+        self.assertEqual(open_attendance.clock_out_at, self.now.astimezone(timezone.utc))
 
     async def test_unassigned_employee_keeps_existing_behavior(self):
         self.now -= timedelta(hours=2)

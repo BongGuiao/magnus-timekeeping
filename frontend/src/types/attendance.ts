@@ -17,6 +17,7 @@ export interface ClockResult {
 
 export interface LastAttendance {
   work_date: string
+  next_action?: 'clock_in' | 'clock_out' | null
   clock_in_at: string | null
   clock_out_at: string | null
   first_break_out_at: string | null

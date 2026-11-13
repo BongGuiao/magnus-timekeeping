@@ -1,12 +1,7 @@
 import { useEffect, useEffectEvent, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { apiClient } from '../lib/apiClient'
-import {
-  checkAttendanceBrowserRegistration,
-  fetchClockPolicy,
-  registerAttendanceBrowser,
-} from '../lib/attendanceApi'
-import type { AttendanceBrowserRegistrationStatus } from '../lib/attendanceDevice'
+import { fetchClockPolicy } from '../lib/attendanceApi'
 import type { AttendanceLocation } from '../lib/attendanceApi'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -54,25 +49,6 @@ const breakTypesByLabel: Record<string, BreakType> = {
 const CAMERA_SETTLE_DELAY_MS = 700
 const ERROR_DISMISS_DELAY_MS = 5000
 const ATTENDANCE_TIME_ZONE = 'Asia/Manila'
-
-function getBrowserRegistrationMessage(status: AttendanceBrowserRegistrationStatus): string {
-  switch (status) {
-    case 'APPROVED':
-      return 'This browser is registered and approved for attendance.'
-    case 'PENDING':
-      return 'This browser is registered and waiting for administrator approval.'
-    case 'REJECTED':
-      return 'This browser registration was rejected. Contact an administrator.'
-    case 'REVOKED':
-      return 'This browser registration was revoked. Contact an administrator.'
-    case 'INACTIVE':
-      return 'This browser registration is inactive. Contact an administrator.'
-    case 'NOT_REGISTERED':
-      return 'This browser is not registered for this employee. Register it below to request approval.'
-    case 'UNKNOWN':
-      return 'This browser has a registration with an unrecognized status. Contact an administrator.'
-  }
-}
 
 const steps = [
   { label: 'Identify', description: 'Enter employee number' },
@@ -186,14 +162,6 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null)
   const [attendanceSuccess, setAttendanceSuccess] = useState<ClockResult | null>(null)
   const [locationWarning, setLocationWarning] = useState<string | null>(null)
-  const [isRegisteringDevice, setIsRegisteringDevice] = useState(false)
-  const [deviceName, setDeviceName] = useState('')
-  const [isCheckingDeviceRegistration, setIsCheckingDeviceRegistration] = useState(false)
-  const [deviceRegistrationCheckError, setDeviceRegistrationCheckError] = useState(false)
-  const [hasBrowserRegistration, setHasBrowserRegistration] = useState(false)
-  const [isEmployeeBrowserApproved, setIsBrowserApproved] = useState(false)
-  const isBrowserApproved = kiosk || isEmployeeBrowserApproved
-  const [deviceRegistrationMessage, setDeviceRegistrationMessage] = useState<string | null>(null)
   const {
     employeeCode,
     changeEmployeeCode,
@@ -217,26 +185,6 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
     clearAttendanceError()
     webcam.clearError()
   })
-
-  async function registerCurrentBrowser() {
-    if (!verifiedUser) return
-    setIsRegisteringDevice(true)
-    clearAttendanceError()
-    setDeviceRegistrationCheckError(false)
-    setIsBrowserApproved(false)
-    try {
-      setDeviceRegistrationMessage(await registerAttendanceBrowser(verifiedUser.id, deviceName))
-      setHasBrowserRegistration(true)
-    } catch (registrationError) {
-      reportError(
-        registrationError instanceof Error
-          ? registrationError.message
-          : 'Could not register this browser.',
-      )
-    } finally {
-      setIsRegisteringDevice(false)
-    }
-  }
 
   useEffect(() => {
     if (kiosk) return
@@ -264,49 +212,6 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [kiosk, verifiedUser?.photo_reference])
-
-  useEffect(() => {
-    if (kiosk) return
-    if (!verifiedUser) {
-      setDeviceRegistrationMessage(null)
-      setDeviceRegistrationCheckError(false)
-      setHasBrowserRegistration(false)
-      setIsBrowserApproved(false)
-      setIsCheckingDeviceRegistration(false)
-      return
-    }
-
-    let isCurrent = true
-    setIsCheckingDeviceRegistration(true)
-    setDeviceRegistrationCheckError(false)
-    setHasBrowserRegistration(false)
-    setIsBrowserApproved(false)
-    setDeviceRegistrationMessage('Checking this browser registration…')
-
-    checkAttendanceBrowserRegistration(verifiedUser.id, verifiedUser.employee_id)
-      .then((status) => {
-        if (!isCurrent) return
-        setHasBrowserRegistration(status !== 'NOT_REGISTERED')
-        setIsBrowserApproved(status === 'APPROVED')
-        setDeviceRegistrationMessage(getBrowserRegistrationMessage(status))
-      })
-      .catch((checkError: unknown) => {
-        if (!isCurrent) return
-        setDeviceRegistrationCheckError(true)
-        setDeviceRegistrationMessage(
-          checkError instanceof Error
-            ? `Could not check browser registration: ${checkError.message}`
-            : 'Could not check browser registration.',
-        )
-      })
-      .finally(() => {
-        if (isCurrent) setIsCheckingDeviceRegistration(false)
-      })
-
-    return () => {
-      isCurrent = false
-    }
-  }, [kiosk, verifiedUser?.employee_id, verifiedUser?.id])
 
   async function runAutoCapture(pending: PendingConfirmation) {
     setIsAutoCapturePending(true)
@@ -345,7 +250,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
           image,
           pending.clockOutConfirmed,
           location,
-          isBrowserApproved,
+          kiosk,
         )
         if (recordedAttendance) setAttendanceSuccess(recordedAttendance)
       } else {
@@ -377,8 +282,6 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
     webcam.stop()
     webcam.clearError()
     setAttendanceSuccess(null)
-    setDeviceRegistrationMessage(null)
-    setDeviceName('')
     setPendingConfirmation(null)
     setLocationWarning(null)
     changeEmployeeCode('')
@@ -403,7 +306,8 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
   const completedResult = result ?? breakResult
   const completedAction = result?.action ?? breakResult?.action_recorded
   const currentStep = completedResult ? 2 : verifiedUser ? 1 : 0
-  const showBreakActions = Boolean(lastAttendance?.clock_in_at && !lastAttendance.clock_out_at)
+  const kioskClockOut = lastAttendance?.next_action === 'clock_out'
+  const showBreakActions = kioskClockOut
   const captureButtonLabel = isSubmitting
     ? 'Matching face…'
     : isWaitingForBlink
@@ -413,6 +317,9 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
         : showBreakActions
           ? 'Clock Out'
           : 'Clock In'
+  const isClockActionDisabled = isSubmitting
+    || isAutoCapturePending
+    || !kiosk
   const expectedClockOut = lastAttendance?.expected_clock_out_at
     ? parseAttendanceTime(lastAttendance.expected_clock_out_at)
     : Number.NaN
@@ -481,6 +388,30 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
       return false
     }).map((rule) => labels[rule.break_slot])
   })()
+  if (!kiosk) {
+    return (
+      <div className="flex min-h-svh flex-col bg-gradient-to-b from-slate-50 to-slate-100">
+        <TopNav employeeName={employeeName} activeView="attendance" onNavigate={onNavigate} onSignOut={logout} />
+        <main className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6">
+          <section className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-indigo-600">Attendance</p>
+            <h1 className="mt-2 text-2xl font-extrabold tracking-tight text-slate-900">Use an approved kiosk</h1>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600">
+              Browser punches are available only from an administrator-approved attendance kiosk at its assigned location.
+              Mobile attendance is unchanged.
+            </p>
+            <a
+              href="/kiosk"
+              className="mt-6 inline-flex rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
+            >
+              Open Attendance Kiosk
+            </a>
+          </section>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="scrollbar-hidden flex min-h-svh flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-slate-100">
       {!kiosk && <TopNav employeeName={employeeName} activeView="attendance" onNavigate={onNavigate} onSignOut={logout} />}
@@ -598,49 +529,6 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
                 </button>
               </div>
 
-              {!kiosk && !isBrowserApproved && (
-                <div className="mt-3 flex flex-col gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-indigo-800">
-                    You can still record attendance, but punches from this browser will be marked invalid and require approval.
-                  </p>
-                  {!hasBrowserRegistration && (
-                    <div className="flex w-full flex-col gap-2 sm:max-w-sm">
-                      <label
-                        className="text-xs font-semibold text-indigo-900"
-                        htmlFor="attendance-device-name"
-                      >
-                        Device name for administrator review
-                      </label>
-                      <input
-                        id="attendance-device-name"
-                        value={deviceName}
-                        onChange={(event) => setDeviceName(event.target.value)}
-                        maxLength={100}
-                        placeholder="e.g. Office laptop or Warehouse tablet"
-                        className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void registerCurrentBrowser()}
-                        disabled={
-                          isRegisteringDevice
-                          || isCheckingDeviceRegistration
-                          || !deviceName.trim()
-                        }
-                        className="w-fit shrink-0 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isRegisteringDevice ? 'Registering…' : 'Register this browser'}
-                      </button>
-                    </div>
-                  )}
-                  {(isCheckingDeviceRegistration || deviceRegistrationMessage) && (
-                    <p className={`text-xs font-medium sm:basis-full ${deviceRegistrationCheckError ? 'text-rose-700' : 'text-indigo-700'}`}>
-                      {deviceRegistrationMessage}
-                    </p>
-                  )}
-                </div>
-              )}
-
               <div className="mt-4 flex min-h-0 flex-1 flex-col items-center justify-center gap-3 sm:flex-row sm:items-stretch">
                 <div className="flex min-h-0 w-full max-w-2xl flex-1 flex-col gap-3">
                   <div className="relative min-h-48 w-full flex-1 overflow-hidden rounded-2xl border border-slate-200 bg-slate-900 lg:min-h-64">
@@ -679,23 +567,27 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
                   <div className="flex w-full shrink-0 flex-wrap justify-center gap-3">
                     {kiosk ? (
                       <>
-                        <button type="button" onClick={() => requestClockConfirmation(false)}
+                        <button
+                          type="button"
+                          onClick={() => requestClockConfirmation(kioskClockOut)}
                           disabled={isSubmitting || isAutoCapturePending || !webcam.isCameraApiAvailable}
-                          className="flex-1 rounded-xl bg-emerald-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-50">
-                          Time In
+                          className={`flex-1 rounded-xl px-5 py-4 text-lg font-bold text-white disabled:opacity-50 ${
+                            kioskClockOut ? 'bg-indigo-600' : 'bg-emerald-600'
+                          }`}
+                        >
+                          {kioskClockOut ? 'Time Out' : 'Time In'}
                         </button>
-                        <button type="button" onClick={() => requestClockConfirmation(true)}
-                          disabled={isSubmitting || isAutoCapturePending || !webcam.isCameraApiAvailable}
-                          className="flex-1 rounded-xl bg-indigo-600 px-5 py-4 text-lg font-bold text-white disabled:opacity-50">
-                          Time Out
-                        </button>
-                        {isAutoCapturePending && <p role="status" className="w-full text-center text-sm text-indigo-700">{captureButtonLabel}</p>}
+                        {isAutoCapturePending && (
+                          <p role="status" className="w-full text-center text-sm text-indigo-700">
+                            {captureButtonLabel}
+                          </p>
+                        )}
                       </>
                     ) : webcam.isActive ? (
                       <button
                         type="button"
                         onClick={() => requestClockConfirmation()}
-                        disabled={isSubmitting || isAutoCapturePending}
+                        disabled={isClockActionDisabled}
                         className="flex-1 rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
                       >
                         {captureButtonLabel}
@@ -705,9 +597,7 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
                         type="button"
                         onClick={() => requestClockConfirmation()}
                         disabled={
-                          isSubmitting
-                          || isAutoCapturePending
-                          || isCheckingDeviceRegistration
+                          isClockActionDisabled
                           || !webcam.isCameraApiAvailable
                         }
                         className="w-full rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300 disabled:shadow-none"
@@ -723,15 +613,12 @@ export default function Attendance({ employeeName, onNavigate, onLoggedOut, kios
                 {breakActionLabels.length > 0 && (
                   <aside className="flex w-full shrink-0 flex-col justify-center gap-2 sm:w-36">
                     <p className="text-center text-[10px] font-bold tracking-[0.2em] text-slate-400">BREAK · FACE MATCH REQUIRED</p>
-                    {!isBrowserApproved && (
-                      <p className="text-center text-xs text-amber-700">Break punches require an approved browser.</p>
-                    )}
                     {breakActionLabels.map((label) => (
                       <button
                         key={label}
                         type="button"
                         onClick={() => setPendingConfirmation({ kind: 'break', label })}
-                        disabled={isBreakSubmitting || isAutoCapturePending || !isBrowserApproved}
+                        disabled={isBreakSubmitting || isAutoCapturePending || !kiosk}
                         className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm font-semibold text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {isBreakSubmitting ? 'RECORDING…' : label}

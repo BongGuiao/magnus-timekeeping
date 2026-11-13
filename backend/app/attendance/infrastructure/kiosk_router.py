@@ -93,7 +93,7 @@ async def identify(
     code = payload.employee_code.strip()
     device = await service.authorize(payload.challenge_id, payload.signature, "IDENTIFY", code)
     user, employee = await service.employee(device, code=code)
-    attendance = await last.execute(GetLastAttendanceInputDTO(user_id=user.id))
+    attendance = await last.execute(GetLastAttendanceInputDTO(user_id=user.id, for_kiosk=True))
     return ResponseEnvelope(data={
         "user": {
             "id": user.id, "employee_id": employee.id, "employee_code": employee.employee_no,
@@ -121,7 +121,7 @@ async def clock(
     await service.employee(device, user_id=user_id)
     result = await use_case.execute(ClockAttendanceInputDTO(
         user_id=user_id, image_bytes=image, requested_action=action,
-        actor_id=user_id,
+        kiosk_action=True, actor_id=user_id,
         clock_out_confirmed=action == "clock_out", device_approved=True, enforce_geofence=False,
         clock_channel={
             "channel": "kiosk", "kiosk_device_id": str(device.id), "client_ip": get_client_ip(request),

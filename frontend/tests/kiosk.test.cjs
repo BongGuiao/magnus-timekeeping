@@ -43,17 +43,19 @@ function renderAttendance(kiosk) {
   }))
 }
 
-test('kiosk reuses Attendance with explicit actions and without admin navigation or employee-device enrollment', () => {
+test('kiosk reuses Attendance with one appropriate action and without admin navigation or employee-device enrollment', () => {
   const kiosk = renderAttendance(true)
   assert.ok(kiosk.includes('Time In'))
-  assert.ok(kiosk.includes('Time Out'))
+  assert.ok(!kiosk.includes('Time Out'))
   assert.ok(!kiosk.includes('ADMIN NAVIGATION'))
   assert.ok(!kiosk.includes('Register this browser'))
   assert.ok(!kiosk.includes('marked invalid'))
   const normal = renderAttendance(false)
   assert.ok(normal.includes('ADMIN NAVIGATION'))
-  assert.ok(normal.includes('Register this browser'))
-  assert.ok(normal.includes('Clock In'))
+  assert.ok(normal.includes('Use an approved kiosk'))
+  assert.ok(normal.includes('href="/kiosk"'))
+  assert.ok(!normal.includes('Register this browser'))
+  assert.ok(!normal.includes('Clock In'))
 })
 
 test('unregistered kiosk screen shows registration, never attendance controls', () => {
@@ -147,4 +149,37 @@ test('kiosk API uses an isolated client and signs employee, action and image fin
   const imageHash = createHash('sha256').update('synthetic-image').digest('hex')
   assert.equal(challengeRequest.payload_hash, createHash('sha256').update(`synthetic-user\nclock_out\n${imageHash}`).digest('hex'))
   assert.deepEqual(requests, ['/challenge', '/clock'])
+})
+
+test('kiosk identification rejects an attendance response without the server-resolved action', async () => {
+  const pair = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify'])
+  const client = {
+    async post(path) {
+      if (path === '/challenge') {
+        return { data: { data: { challenge_id: 'challenge', message: 'signed kiosk challenge' } } }
+      }
+      assert.equal(path, '/identify')
+      return { data: { data: { user: { id: 'synthetic-user' }, last_attendance: { work_date: '2026-10-12' } } } }
+    },
+  }
+  const exports = {}
+  runInNewContext(compile('lib/kioskApi.ts'), {
+    exports, crypto: webcrypto, TextEncoder, btoa,
+    require(name) {
+      if (name === 'axios') return { __esModule: true, default: { create: () => client } }
+      if (name === './attendanceDevice') return {
+        getOrCreateDeviceKey: async () => ({
+          identity: { deviceUuid: 'station' }, key: { privateKey: pair.privateKey },
+        }),
+      }
+      if (name === './attendanceApi') return { getAttendanceErrorMessage: (error) => error.message }
+      if (name === './apiClient') return { apiClient: {} }
+      return require(name)
+    },
+  })
+
+  await assert.rejects(
+    exports.identifyKioskEmployee('EMP001'),
+    /server did not return the kiosk punch action/,
+  )
 })

@@ -12,18 +12,25 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText
 
-function renderAttendance(lastAttendance, cameraActive = false) {
+function renderAttendance(lastAttendance, cameraActive = false, kiosk = true) {
   const componentExports = {}
+  const transport = { identify() {}, clock() {}, break() {} }
   runInNewContext(compiled, {
     exports: componentExports,
     require(name) {
-      if (name === 'react') return { ...React, useEffectEvent: (callback) => callback }
+      if (name === 'react') return {
+        ...React,
+        useEffectEvent: (callback) => callback,
+      }
       if (name === '../hooks/useAttendanceClock') return {
-        useAttendanceClock: () => ({
+        useAttendanceClock: (received) => {
+          assert.equal(received, kiosk ? transport : undefined)
+          return {
           employeeCode: 'EMP001',
           verifiedUser: { id: 'user', employee_name: 'Test Employee', employee_code: 'EMP001' },
           lastAttendance,
-        }),
+          }
+        },
       }
       if (name === '../hooks/useWebcamCapture') return {
         useWebcamCapture: () => ({ isActive: cameraActive, isCameraApiAvailable: true }),
@@ -36,55 +43,15 @@ function renderAttendance(lastAttendance, cameraActive = false) {
       return require(name)
     },
   })
-  return renderToStaticMarkup(React.createElement(componentExports.default, { employeeName: 'Test Employee' }))
+  return renderToStaticMarkup(React.createElement(componentExports.default, {
+    employeeName: 'Test Employee',
+    kioskTransport: kiosk ? transport : undefined,
+  }))
 }
 
-test('flagged punch confirmation does not claim an approver was already assigned', () => {
-  const componentExports = {}
-  let stateIndex = 0
-  runInNewContext(compiled, {
-    exports: componentExports,
-    document: { body: {} },
-    require(name) {
-      if (name === 'react') return {
-        ...React,
-        useEffect() {},
-        useEffectEvent: (callback) => callback,
-        useState(initial) {
-          const value = stateIndex++ === 6
-            ? {
-                action: 'clock_in', employee_name: 'Test Employee', employee_code: 'EMP001',
-                timestamp: '2026-10-12T08:00:00+08:00', approval_required: true,
-              }
-            : typeof initial === 'function' ? initial() : initial
-          return [value, () => {}]
-        },
-      }
-      if (name === 'react-dom') return { createPortal: (element) => element }
-      if (name === '../hooks/useAttendanceClock') return {
-        useAttendanceClock: () => ({
-          employeeCode: 'EMP001',
-          verifiedUser: { id: 'user', employee_name: 'Test Employee', employee_code: 'EMP001' },
-          lastAttendance: null,
-        }),
-      }
-      if (name === '../hooks/useWebcamCapture') return {
-        useWebcamCapture: () => ({ isActive: false, isCameraApiAvailable: true }),
-      }
-      if (name === '../hooks/useLogout') return { useLogout: () => ({ logout() {} }) }
-      if (name === '../components/dashboard/TopNav' || name === '../components/common/Stepper') {
-        return { __esModule: true, default: () => null }
-      }
-      if (name === '../lib/apiClient' || name === '../lib/attendanceApi') return {}
-      return require(name)
-    },
-  })
-  const html = renderToStaticMarkup(componentExports.default({ employeeName: 'Test Employee' }))
-  assert.ok(html.includes('An approver must review it; contact HR if it remains unresolved.'))
-  assert.ok(!html.includes('Your assigned approver must review it'))
-})
-
 const afterMeal = {
+  work_date: '2026-10-12',
+  next_action: 'clock_out',
   clock_in_at: '2026-10-12T08:00:00+08:00',
   clock_out_at: null,
   first_break_out_at: '2026-10-12T10:00:00+08:00',
@@ -103,7 +70,7 @@ test('after ending the meal break, only second-break and clock-out actions remai
   for (const cameraActive of [false, true]) {
     const html = renderAttendance(afterMeal, cameraActive)
     assert.ok(html.includes('START SECOND BREAK'))
-    assert.ok(html.includes('Clock Out'))
+    assert.ok(html.includes('Time Out'))
     for (const label of ['BREAKS TAKEN', 'START FIRST BREAK', 'END FIRST BREAK', 'START MEAL BREAK', 'END MEAL BREAK', 'Match enrolled face']) {
       assert.ok(!html.includes(label), `Unexpected label: ${label}`)
     }
@@ -115,8 +82,12 @@ test('an active second break offers its end action, and a completed one is hidde
   const active = renderAttendance(started)
   assert.ok(active.includes('END SECOND BREAK'))
   assert.ok(!active.includes('START SECOND BREAK'))
-  const completed = renderAttendance({ ...started, second_break_in_at: '2026-10-12T15:15:00+08:00' })
-  assert.ok(completed.includes('Clock Out'))
+  const completed = renderAttendance({
+    ...started, second_break_in_at: '2026-10-12T15:15:00+08:00', clock_out_at: '2026-10-12T17:00:00+08:00',
+    next_action: 'clock_in',
+  })
+  assert.ok(completed.includes('Time In'))
+  assert.ok(!completed.includes('Time Out'))
   assert.ok(!completed.includes('END SECOND BREAK'))
   assert.ok(!completed.includes('START SECOND BREAK'))
 })
@@ -133,7 +104,7 @@ test('if meal break ends before first break was taken, first break is offered an
     const html = renderAttendance(attendance, cameraActive)
     assert.ok(html.includes('START FIRST BREAK'))
     assert.ok(!html.includes('START SECOND BREAK'))
-    assert.ok(html.includes('Clock Out'))
+    assert.ok(html.includes('Time Out'))
   }
 
   // Once first break is filled (completed), START SECOND BREAK appears
@@ -145,7 +116,7 @@ test('if meal break ends before first break was taken, first break is offered an
   const filledHtml = renderAttendance(filledAttendance)
   assert.ok(filledHtml.includes('START SECOND BREAK'))
   assert.ok(!filledHtml.includes('START FIRST BREAK'))
-  assert.ok(filledHtml.includes('Clock Out'))
+  assert.ok(filledHtml.includes('Time Out'))
 
   const outsideWindow = renderAttendance({
     ...attendance,
@@ -153,7 +124,7 @@ test('if meal break ends before first break was taken, first break is offered an
   })
   assert.ok(!outsideWindow.includes('START SECOND BREAK'))
   assert.ok(!outsideWindow.includes('START FIRST BREAK'))
-  assert.ok(outsideWindow.includes('Clock Out'))
+  assert.ok(outsideWindow.includes('Time Out'))
 })
 
 test('before meal break occurs, only the two initial buttons (first and meal break) are visible', () => {
@@ -206,7 +177,7 @@ test('a configured first break remains available before the meal break ends', ()
   assert.ok(html.includes('START FIRST BREAK'))
 })
 
-test('no paid/unpaid schedule segments hides all break controls but preserves Clock Out', () => {
+test('no paid/unpaid schedule segments hides all break controls but preserves Time Out', () => {
   for (const cameraActive of [false, true]) {
     for (const break_rules of [undefined, [], [{ segment_type: 'WORK' }]]) {
       for (const expected_clock_out_at of ['2000-01-01T00:00:00+08:00', '2100-01-01T00:00:00+08:00']) {
@@ -214,7 +185,7 @@ test('no paid/unpaid schedule segments hides all break controls but preserves Cl
           const html = renderAttendance({
             ...afterMeal, break_rules, expected_clock_out_at, ...activeBreak,
           }, cameraActive)
-          assert.ok(html.includes('Clock Out'))
+          assert.ok(html.includes('Time Out'))
           for (const label of [
             'START FIRST BREAK', 'END FIRST BREAK', 'START MEAL BREAK', 'END MEAL BREAK',
             'START SECOND BREAK', 'END SECOND BREAK', 'START OT BREAK', 'END OT BREAK',
@@ -229,7 +200,10 @@ test('only defined paid/unpaid slots are shown and configured overtime remains a
   for (const segment_type of ['PAID_BREAK', 'UNPAID_BREAK']) {
     const last = {
       ...afterMeal, meal_break_out_at: null, meal_break_in_at: null,
-      break_rules: [{ ...afterMeal.break_rules[0], break_slot: 'MEAL_BREAK', segment_type }],
+      break_rules: [
+        { ...afterMeal.break_rules[0], break_slot: 'MEAL_BREAK', segment_type },
+        { ...afterMeal.break_rules[0], break_slot: 'OT_BREAK', segment_type: 'PAID_BREAK' },
+      ],
     }
     const html = renderAttendance(last)
     assert.ok(html.includes('START MEAL BREAK'))
@@ -241,14 +215,43 @@ test('only defined paid/unpaid slots are shown and configured overtime remains a
   }
 })
 
-test('before clock-in and after clock-out, both camera states offer Clock In', () => {
+test('kiosk shows the server-resolved clock action only', () => {
+  const noAttendance = renderAttendance(null)
+  assert.ok(noAttendance.includes('Time In'))
+  assert.ok(!noAttendance.includes('Time Out'))
+
+  const openShift = renderAttendance(afterMeal)
+  assert.ok(openShift.includes('Time Out'))
+  assert.ok(!openShift.includes('Time In'))
+
+  const staleClockIn = new Date(Date.now() - 25 * 60 * 60 * 1000)
+  const staleOpenShift = renderAttendance({
+    ...afterMeal,
+    clock_in_at: staleClockIn.toISOString(),
+    next_action: 'clock_in',
+  })
+  assert.ok(staleOpenShift.includes('Time In'))
+  assert.ok(!staleOpenShift.includes('Time Out'))
+  assert.ok(!staleOpenShift.includes('START FIRST BREAK'))
+
   for (const cameraActive of [false, true]) {
-    for (const attendance of [null, { ...afterMeal, clock_out_at: '2026-10-12T17:00:00+08:00' }]) {
+    for (const attendance of [
+      null,
+      { ...afterMeal, clock_out_at: '2026-10-12T17:00:00+08:00', next_action: 'clock_in' },
+    ]) {
       const html = renderAttendance(attendance, cameraActive)
-      assert.ok(html.includes('Clock In'))
-      assert.ok(!html.includes('Clock Out'))
-      assert.ok(!html.includes('START SECOND BREAK'))
-      assert.ok(!html.includes('Match enrolled face'))
+      assert.ok(html.includes('Time In'))
+      assert.ok(!html.includes('Time Out'))
     }
   }
+})
+
+test('regular attendance directs browser users to the approved kiosk', () => {
+  const html = renderAttendance(null, false, false)
+  assert.ok(html.includes('Use an approved kiosk'))
+  assert.ok(html.includes('Browser punches are available only'))
+  assert.ok(html.includes('href="/kiosk"'))
+  assert.ok(html.includes('Open Attendance Kiosk'))
+  assert.ok(!html.includes('Clock In'))
+  assert.ok(!html.includes('Register this browser'))
 })

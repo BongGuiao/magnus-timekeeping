@@ -87,7 +87,16 @@ export async function identifyKioskEmployee(employeeCode: string): Promise<{
     const response = await kioskClient.post<ApiSuccessEnvelope<{
       user: UserSummary; last_attendance: LastAttendance | null
     }>>('/identify', { ...await proof('IDENTIFY', code), employee_code: code })
-    return response.data.data
+    const data = response.data.data
+    if (
+      !Object.prototype.hasOwnProperty.call(data, 'last_attendance')
+      || (data.last_attendance !== null
+        && data.last_attendance.next_action !== 'clock_in'
+        && data.last_attendance.next_action !== 'clock_out')
+    ) {
+      throw new Error('The attendance server did not return the kiosk punch action. Restart or update the attendance backend.')
+    }
+    return data
   } catch (error) {
     throw new Error(getAttendanceErrorMessage(error, 'Could not identify this employee at this kiosk.'))
   }
