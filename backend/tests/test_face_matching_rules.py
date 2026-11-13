@@ -11,7 +11,7 @@ from PIL import Image
 from app.attendance.application.use_case import ClockAttendanceInputDTO, ClockAttendanceUseCase
 from app.auth.domain.entities.user import UserEntity
 from app.core import face_recognition_service
-from app.enrollment.application.use_case import EnrollFaceUseCase, SimilarityOverride
+from app.enrollment.application.use_case import EnrollFaceUseCase, FaceSimilarityConflict, SimilarityOverride
 from app.enrollment.domain.entities.enrollment import FaceEnrollmentEntity
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 
@@ -174,14 +174,56 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
         self.face = SimpleNamespace(
             match_threshold=lambda: 0.5,
             face_distances=face_recognition_service.face_distances,
+            find_best_match=face_recognition_service.find_best_match,
         )
         self.use_case = EnrollFaceUseCase(None, self.face)
         self.employee_repo = SimpleNamespace(find_one=AsyncMock(return_value=SimpleNamespace(employee_no="EMP-0009")))
         self.uow = FakeUow({EmployeeEntity: self.employee_repo})
+        self.uow.session = SimpleNamespace(scalar=AsyncMock(return_value=None))
+        margin = patch.object(face_recognition_service, "match_margin", return_value=0.05)
+        margin.start()
+        self.addCleanup(margin.stop)
 
     async def guard(self, enrolled, candidate):
         repo = SimpleNamespace(find_all=AsyncMock(return_value=enrolled))
-        await self.use_case._ensure_face_belongs_to_employee(self.uow, repo, self.employee_id, candidate)
+        return await self.use_case._ensure_face_belongs_to_employee(self.uow, repo, self.employee_id, candidate)
+
+    async def test_clear_own_match_can_continue_an_active_hr_approval(self):
+        approval = SimpleNamespace(id=uuid4(), approved_by=uuid4())
+        self.uow.session.scalar.return_value = approval
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.4)),
+        ]
+        conflicts, source = await self.guard(enrolled, vector(0.01))
+        self.assertIs(source, approval)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0].employee_id, self.other_id)
+        self.assertAlmostEqual(conflicts[0].distance, 0.39)
+
+    async def test_approval_does_not_automatically_resolve_ambiguous_or_competing_matches(self):
+        self.uow.session.scalar.return_value = SimpleNamespace(id=uuid4(), approved_by=uuid4())
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.4)),
+        ]
+        for offset in (0.18, 0.2, 0.3):
+            with self.subTest(offset=offset), self.assertRaises(FaceSimilarityConflict):
+                await self.guard(enrolled, vector(offset))
+        self.uow.session.scalar.assert_not_awaited()
+
+    async def test_continuation_obeys_the_configured_winning_margin(self):
+        approval = SimpleNamespace(id=uuid4(), approved_by=uuid4())
+        self.uow.session.scalar.return_value = approval
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.5)),
+        ]
+        with patch.object(face_recognition_service, "match_margin", return_value=0.125):
+            _, source = await self.guard(enrolled, vector(0.1875))
+            self.assertIs(source, approval)
+            with self.assertRaises(FaceSimilarityConflict):
+                await self.guard(enrolled, vector(0.1876))
 
     async def test_accepts_first_sample_and_consistent_samples(self):
         await self.guard([], vector(0))
@@ -220,14 +262,15 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.45)),
         ]
         repo = SimpleNamespace(find_all=AsyncMock(return_value=enrolled))
-        conflicts = await self.use_case._ensure_face_belongs_to_employee(
+        conflicts, source = await self.use_case._ensure_face_belongs_to_employee(
             self.uow, repo, self.employee_id, vector(0), SimilarityOverride(frozenset({"EMP-0009"}), "Verified"),
         )
+        self.assertIsNone(source)
         self.assertEqual([(item.employee_id, item.distance) for item in conflicts], [(self.other_id, 0.3)])
 
     async def test_strict_protection_remains_even_when_own_sample_is_closer(self):
         enrolled = [
-            SimpleNamespace(employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
             SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.502)),
         ]
         with self.assertRaisesRegex(ValueError, "No sample was saved"):

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.face_recognition_service import face_encoding_norm
@@ -101,7 +102,7 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 if len(existing) >= MAX_SAMPLES_PER_EMPLOYEE:
                     raise ValueError(f"This employee already has the maximum of {MAX_SAMPLES_PER_EMPLOYEE} face samples.")
 
-                conflicts = await self._ensure_face_belongs_to_employee(
+                conflicts, source_approval = await self._ensure_face_belongs_to_employee(
                     uow, repo, input_dto.employee_id, encoding, input_dto.similarity_override,
                 )
 
@@ -123,7 +124,7 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 )
 
                 if conflicts:
-                    await self._record_override(uow, saved.id, employee, conflicts, input_dto)
+                    await self._record_override(uow, saved.id, employee, conflicts, input_dto, source_approval)
 
                 employee_photo_reference = employee.photo_reference
                 if not existing:
@@ -152,10 +153,10 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
     async def _ensure_face_belongs_to_employee(
         self, uow, repo, employee_id: UUID, encoding: list[float],
         similarity_override: SimilarityOverride | None = None,
-    ) -> list[SimilarEmployee]:
+    ) -> tuple[list[SimilarEmployee], FaceEnrollmentOverrideModel | None]:
         """Rejects a sample that differs from the employee's enrolled face or resembles another employee.
 
-        Returns the similar employees when an HR Admin override approved exactly that set.
+        Returns conflicts and the original approval when a clear own-face match can continue it.
         """
         candidate_norm = face_encoding_norm(encoding)
         threshold = self.face_encoding_service.match_threshold()
@@ -163,11 +164,12 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
             limit=MAX_FACE_COMPARISON_CANDIDATES,
         )
-        own = [item.face_encoding for item in enrolled if item.employee_id == employee_id and item.face_encoding]
+        own_samples = [item for item in enrolled if item.employee_id == employee_id and item.face_encoding]
+        own = [item.face_encoding for item in own_samples]
         others = [item for item in enrolled if item.employee_id != employee_id and item.face_encoding]
 
+        own_distances = self.face_encoding_service.face_distances(encoding, own) if own else []
         if own:
-            own_distances = self.face_encoding_service.face_distances(encoding, own)
             if max(own_distances) > threshold:
                 raise ValueError(
                     "This face does not match the employee's existing enrolled samples. "
@@ -175,7 +177,7 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 )
 
         if not others:
-            return []
+            return [], None
         other_distances = self.face_encoding_service.face_distances(
             encoding, [item.face_encoding for item in others]
         )
@@ -189,7 +191,17 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             key=lambda pair: pair[1],
         )
         if not similar:
-            return []
+            return [], None
+
+        source_approval = None
+        if own_samples and similarity_override is None:
+            match = self.face_encoding_service.find_best_match(
+                encoding, [(item.employee_id, item.face_encoding) for item in own_samples + others],
+                threshold=threshold,
+            )
+            # Even with a zero configured margin, a tie is not a clear own-face match.
+            if match is not None and match[0] == employee_id and match[1] < min(other_distances):
+                source_approval = await self._find_active_hr_approval(uow, employee_id, own_samples)
 
         employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
         conflicts = []
@@ -200,14 +212,22 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 float(distance),
             )
             conflicts.append(conflict)
-            logger.warning(
-                "FACE_ENROLLMENT_CONFLICT requested_employee_id=%s matched_employee_id=%s "
-                "matched_employee_no=%s matched_sample_id=%s distance=%r threshold=%r "
-                "candidate_norm=%r matched_norm=%r override_requested=%s",
-                employee_id, conflict.employee_id, conflict.employee_no, sample.id, conflict.distance, threshold,
-                candidate_norm, face_encoding_norm(sample.face_encoding, source="Stored face"),
-                similarity_override is not None,
+            if source_approval is None:
+                logger.warning(
+                    "FACE_ENROLLMENT_CONFLICT requested_employee_id=%s matched_employee_id=%s "
+                    "matched_employee_no=%s matched_sample_id=%s distance=%r threshold=%r "
+                    "candidate_norm=%r matched_norm=%r override_requested=%s",
+                    employee_id, conflict.employee_id, conflict.employee_no, sample.id, conflict.distance, threshold,
+                    candidate_norm, face_encoding_norm(sample.face_encoding, source="Stored face"),
+                    similarity_override is not None,
+                )
+        if source_approval is not None:
+            logger.info(
+                "FACE_ENROLLMENT_CONTINUATION employee_id=%s source_override_id=%s "
+                "own_distance=%r nearest_other_distance=%r",
+                employee_id, source_approval.id, min(own_distances), min(other_distances),
             )
+            return conflicts, source_approval
         numbers = ", ".join(conflict.employee_no for conflict in conflicts)
         label = f"another employee ({numbers})" if len(conflicts) == 1 else f"other employees ({numbers})"
         detail = f"Closest distance {conflicts[0].distance:.3f}; limit {threshold:.3f}."
@@ -224,25 +244,61 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 f"{detail} Review and approve the current list.",
                 conflicts, threshold,
             )
-        return conflicts
+        return conflicts, None
+
+    async def _find_active_hr_approval(
+        self, uow: GenUnitOfWork, employee_id: UUID, own_samples: list[FaceEnrollmentEntity],
+    ) -> FaceEnrollmentOverrideModel | None:
+        if uow.session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        try:
+            # The employee lock protects these compared samples from reset until the save commits.
+            return await uow.session.scalar(
+                select(FaceEnrollmentOverrideModel).where(
+                    FaceEnrollmentOverrideModel.employee_id == employee_id,
+                    FaceEnrollmentOverrideModel.enrollment_id.in_([sample.id for sample in own_samples]),
+                    FaceEnrollmentOverrideModel.source_override_id.is_(None),
+                ).order_by(
+                    FaceEnrollmentOverrideModel.approved_at.desc(), FaceEnrollmentOverrideModel.id.asc(),
+                ).limit(1)
+            )
+        except SQLAlchemyError as error:
+            logger.exception("Could not verify an active HR face approval for employee %s.", employee_id)
+            raise EnrollmentAuditUnavailable(
+                "The saved HR approval could not be verified. No sample was saved. "
+                "Ask an administrator to apply the face enrollment approval continuation database migration."
+            ) from error
 
     async def _record_override(
         self, uow, enrollment_id: UUID, employee: EmployeeEntity,
         conflicts: list[SimilarEmployee], input_dto: EnrollFaceInputDTO,
+        source_approval: FaceEnrollmentOverrideModel | None = None,
     ) -> None:
         override = input_dto.similarity_override
-        if override is None or input_dto.acting_user_id is None:
+        if input_dto.acting_user_id is None:
+            raise ValueError("An HR Admin approval is required to save a similar face.")
+        if source_approval is not None:
+            reason = (
+                f"Automatically verified using HR approval {source_approval.id}: the capture matched existing "
+                "samples and the employee's own identity won by the required margin. No new in-person approval."
+            )
+            approved_by = source_approval.approved_by
+        elif override is not None:
+            reason = override.reason
+            approved_by = input_dto.acting_user_id
+        else:
             raise ValueError("An HR Admin approval is required to save a similar face.")
         uow.session.add(FaceEnrollmentOverrideModel(
             enrollment_id=enrollment_id,
+            source_override_id=source_approval.id if source_approval is not None else None,
             employee_id=employee.id,
             employee_no=employee.employee_no,
             conflicting_employee_ids=[conflict.employee_id for conflict in conflicts],
             conflicting_employee_nos=[conflict.employee_no for conflict in conflicts],
             closest_distance=conflicts[0].distance,
             threshold=self.face_encoding_service.match_threshold(),
-            reason=override.reason,
-            approved_by=input_dto.acting_user_id,
+            reason=reason,
+            approved_by=approved_by,
         ))
         # The approval audit commits with the sample; without it nothing is saved.
         try:
@@ -250,5 +306,5 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
         except SQLAlchemyError as error:
             raise EnrollmentAuditUnavailable(
                 "The face was not saved because the approval audit could not be recorded. "
-                "Ask an administrator to apply the face enrollment override database migration."
+                "Ask an administrator to apply the face enrollment approval database migrations."
             ) from error

@@ -76,6 +76,7 @@ class FaceEnrollmentOverrideModel(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     # Snapshot identifiers deliberately survive sample resets and employee/account deletion.
     enrollment_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    source_override_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     employee_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
     employee_no: Mapped[str] = mapped_column(String(30), nullable=False)
     conflicting_employee_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PGUUID(as_uuid=True)), nullable=False)
