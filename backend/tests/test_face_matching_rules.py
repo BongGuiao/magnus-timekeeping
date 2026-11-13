@@ -173,6 +173,7 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
         self.employee_id, self.other_id = uuid4(), uuid4()
         self.face = SimpleNamespace(
             match_threshold=lambda: 0.5,
+            enrollment_conflict_threshold=lambda: 0.4,
             face_distances=face_recognition_service.face_distances,
             find_best_match=face_recognition_service.find_best_match,
         )
@@ -244,13 +245,13 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(id=sample_id, employee_id=self.other_id, face_encoding=vector(0.3)),
         ]
         with self.assertLogs("app.enrollment.application.use_case", level="WARNING") as logs, \
-                self.assertRaisesRegex(ValueError, r"another employee \(EMP-0009\).*Closest distance 0\.300; limit 0\.500"):
+                self.assertRaisesRegex(ValueError, r"another employee \(EMP-0009\).*Closest distance 0\.300; limit 0\.400"):
             await self.guard(enrolled, vector(0))
         message = logs.records[0].getMessage()
         for field in (
             f"requested_employee_id={self.employee_id}", f"matched_employee_id={self.other_id}",
             "matched_employee_no=EMP-0009", f"matched_sample_id={sample_id}", "distance=0.3",
-            "threshold=0.5", "candidate_norm=1.0", f"matched_norm={hypot(0.3, 1.0)!r}",
+            "threshold=0.4", "candidate_norm=1.0", f"matched_norm={hypot(0.3, 1.0)!r}",
             "override_requested=False",
         ):
             self.assertIn(field, message)
@@ -271,10 +272,30 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_strict_protection_remains_even_when_own_sample_is_closer(self):
         enrolled = [
             SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
-            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.502)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.402)),
         ]
         with self.assertRaisesRegex(ValueError, "No sample was saved"):
             await self.guard(enrolled, vector(0.01))
+
+    async def test_capture_between_conflict_and_match_thresholds_saves_without_approval(self):
+        # 0.45 from another employee: inside the old shared 0.5 limit, outside the conflict limit.
+        conflicts, source = await self.guard(
+            [SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.46))], vector(0.01),
+        )
+        self.assertEqual((conflicts, source), ([], None))
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.46)),
+        ]
+        conflicts, source = await self.guard(enrolled, vector(0.01))
+        self.assertEqual((conflicts, source), ([], None))
+        self.uow.session.scalar.assert_not_awaited()
+
+    async def test_conflict_carries_the_enrollment_conflict_threshold(self):
+        enrolled = [SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.35))]
+        with self.assertRaises(FaceSimilarityConflict) as raised:
+            await self.guard(enrolled, vector(0))
+        self.assertEqual(raised.exception.threshold, 0.4)
 
     async def test_conflict_uses_nearest_other_sample_not_first_record(self):
         first_id = uuid4()

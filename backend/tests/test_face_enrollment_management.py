@@ -370,6 +370,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
         face = SimpleNamespace(
             extract_face_encoding=Mock(return_value=[0.1, 1.0] + [0.0] * 126),
             match_threshold=lambda: 0.5,
+            enrollment_conflict_threshold=lambda: 0.48,
             face_distances=face_recognition_service.face_distances,
             find_best_match=face_recognition_service.find_best_match,
         )
@@ -442,7 +443,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(FaceSimilarityConflict) as raised:
             await use_case.execute(EnrollFaceInputDTO(self.b, photo, self.actor))
         self.assertEqual([item.employee_no for item in raised.exception.conflicts], [self.number])
-        self.assertIn("Closest distance 0.450; limit 0.500", str(raised.exception))
+        self.assertIn("Closest distance 0.450; limit 0.480", str(raised.exception))
         with self.assertRaisesRegex(FaceSimilarityConflict, "similar employees changed"):
             await use_case.execute(EnrollFaceInputDTO(
                 self.b, photo, self.actor, SimilarityOverride(frozenset({"SOMEONE-ELSE"}), "Verified ID"),
@@ -460,7 +461,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(audit.conflicting_employee_ids, [self.a])
             self.assertEqual(audit.conflicting_employee_nos, [self.number])
             self.assertAlmostEqual(audit.closest_distance, 0.45)
-            self.assertEqual(audit.threshold, 0.5)
+            self.assertEqual(audit.threshold, 0.48)
             self.assertEqual(audit.approved_by, self.actor)
             self.assertEqual(audit.reason, "Verified ID in person")
             self.assertIsNone(audit.source_override_id)
@@ -666,10 +667,12 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
     def similar_face_use_case(self):
         photo = BytesIO()
         Image.new("RGB", (16, 16), "white").save(photo, format="PNG")
-        # 0.35 from employee B's own sample, 0.45 from employee A: inside the 0.5 limit for both.
+        # 0.35 from employee B's own sample, 0.45 from employee A: a conflict at the configured
+        # enrollment conflict limit (0.48) while the own-match threshold stays at 0.5.
         face = SimpleNamespace(
             extract_face_encoding=Mock(return_value=[0.45, 1.0] + [0.0] * 126),
             match_threshold=lambda: 0.5,
+            enrollment_conflict_threshold=lambda: 0.48,
             face_distances=face_recognition_service.face_distances,
             find_best_match=face_recognition_service.find_best_match,
         )

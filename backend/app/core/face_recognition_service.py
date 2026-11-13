@@ -8,6 +8,7 @@ import numpy as np
 
 DEFAULT_MATCH_THRESHOLD = 0.5
 DEFAULT_MATCH_MARGIN = 0.05
+DEFAULT_ENROLLMENT_CONFLICT_THRESHOLD = 0.4
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,18 @@ def match_margin() -> float:
     from app.core.config import settings
 
     return float(getattr(settings, "FACE_MATCH_MARGIN", DEFAULT_MATCH_MARGIN))
+
+
+def enrollment_conflict_threshold() -> float:
+    """Distance at or below which an enrollment capture is flagged as a possible duplicate identity.
+
+    This governs only the enrollment conflict check; attendance acceptance uses match_threshold().
+    """
+    from app.core.config import settings
+
+    return float(getattr(
+        settings, "FACE_ENROLLMENT_CONFLICT_THRESHOLD", DEFAULT_ENROLLMENT_CONFLICT_THRESHOLD,
+    ))
 
 
 def face_encoding_norm(encoding: list[float], *, source: str = "Captured face") -> float:

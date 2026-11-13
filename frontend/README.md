@@ -224,9 +224,12 @@ requests; templates/face encodings are never returned by the review API. A missi
 reference photo is explicitly shown and does not mean the employee is unenrolled.
 The profile picture represents only the first saved sample unless changed separately.
 
-A capture within `FACE_MATCH_THRESHOLD` of another employee is blocked even if
-its own employee's sample is closer. The message shows the similar employee
-number, the closest distance and the limit. Do not lower the threshold or reset
+A capture within `FACE_ENROLLMENT_CONFLICT_THRESHOLD` (default `0.4`) of another
+employee is blocked even if its own employee's sample is closer. The message
+shows the similar employee number, the closest distance and the limit. This
+duplicate-identity limit is separate from the attendance acceptance distance
+(`FACE_MATCH_THRESHOLD`, default `0.5`), so flagging fewer enrollments does not
+loosen punch matching. Do not raise the conflict limit or reset
 correct enrollments to bypass this protection.
 
 If HR has verified in person that they are different people, an HR Admin (with
@@ -306,9 +309,10 @@ different employee after navigating away.
 ### Diagnosing a face similarity conflict
 
 The backend uses dlib's 128-component descriptors and Euclidean distance, not
-pgvector cosine/inner-product similarity. Lower distance means closer; a conflict
-requires distance <= `FACE_MATCH_THRESHOLD`. Do not normalize existing descriptors
-or change the threshold to diagnose a failure.
+pgvector cosine/inner-product similarity. Lower distance means closer; an
+enrollment conflict requires distance <= `FACE_ENROLLMENT_CONFLICT_THRESHOLD`,
+and a punch match requires distance <= `FACE_MATCH_THRESHOLD`. Do not normalize
+existing descriptors or change the thresholds to diagnose a failure.
 
 Captured descriptors and vectors used for comparison must have exactly 128 finite
 components and a finite, non-zero norm. Invalid data fails explicitly, including

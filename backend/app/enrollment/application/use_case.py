@@ -156,10 +156,13 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
     ) -> tuple[list[SimilarEmployee], FaceEnrollmentOverrideModel | None]:
         """Rejects a sample that differs from the employee's enrolled face or resembles another employee.
 
-        Returns conflicts and the original approval when a clear own-face match can continue it.
+        Own-sample consistency uses match_threshold(); similarity to other employees is flagged at the
+        stricter enrollment_conflict_threshold(). Returns conflicts and the original approval when a
+        clear own-face match can continue it.
         """
         candidate_norm = face_encoding_norm(encoding)
         threshold = self.face_encoding_service.match_threshold()
+        conflict_threshold = self.face_encoding_service.enrollment_conflict_threshold()
         enrolled = await repo.find_all(
             FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
             limit=MAX_FACE_COMPARISON_CANDIDATES,
@@ -187,7 +190,7 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             if previous is None or distance < previous[1]:
                 nearest[item.employee_id] = (item, distance)
         similar = sorted(
-            (pair for pair in nearest.values() if pair[1] <= threshold),
+            (pair for pair in nearest.values() if pair[1] <= conflict_threshold),
             key=lambda pair: pair[1],
         )
         if not similar:
@@ -217,7 +220,8 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                     "FACE_ENROLLMENT_CONFLICT requested_employee_id=%s matched_employee_id=%s "
                     "matched_employee_no=%s matched_sample_id=%s distance=%r threshold=%r "
                     "candidate_norm=%r matched_norm=%r override_requested=%s",
-                    employee_id, conflict.employee_id, conflict.employee_no, sample.id, conflict.distance, threshold,
+                    employee_id, conflict.employee_id, conflict.employee_no, sample.id, conflict.distance,
+                    conflict_threshold,
                     candidate_norm, face_encoding_norm(sample.face_encoding, source="Stored face"),
                     similarity_override is not None,
                 )
@@ -230,19 +234,19 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             return conflicts, source_approval
         numbers = ", ".join(conflict.employee_no for conflict in conflicts)
         label = f"another employee ({numbers})" if len(conflicts) == 1 else f"other employees ({numbers})"
-        detail = f"Closest distance {conflicts[0].distance:.3f}; limit {threshold:.3f}."
+        detail = f"Closest distance {conflicts[0].distance:.3f}; limit {conflict_threshold:.3f}."
         if similarity_override is None:
             raise FaceSimilarityConflict(
                 f"This capture is too similar to an enrolled face for {label}. "
                 f"No sample was saved. {detail} An HR Admin can confirm in person that they are "
                 "different people and approve the enrollment. Similarity does not confirm that they are the same person.",
-                conflicts, threshold,
+                conflicts, conflict_threshold,
             )
         if similarity_override.conflicting_employee_nos != {conflict.employee_no for conflict in conflicts}:
             raise FaceSimilarityConflict(
                 f"The similar employees changed; this capture now resembles {label}. No sample was saved. "
                 f"{detail} Review and approve the current list.",
-                conflicts, threshold,
+                conflicts, conflict_threshold,
             )
         return conflicts, None
 
@@ -296,7 +300,7 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             conflicting_employee_ids=[conflict.employee_id for conflict in conflicts],
             conflicting_employee_nos=[conflict.employee_no for conflict in conflicts],
             closest_distance=conflicts[0].distance,
-            threshold=self.face_encoding_service.match_threshold(),
+            threshold=self.face_encoding_service.enrollment_conflict_threshold(),
             reason=reason,
             approved_by=approved_by,
         ))
