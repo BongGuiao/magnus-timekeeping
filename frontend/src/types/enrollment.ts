@@ -32,3 +32,8 @@ export interface ResetFaceEnrollmentResult {
   photo_reference: string | null
   cleanup_warning: string | null
 }
+
+export interface SimilarityOverride {
+  conflicting_employee_nos: string[]
+  reason: string
+}

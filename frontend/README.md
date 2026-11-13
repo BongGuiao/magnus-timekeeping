@@ -224,11 +224,24 @@ requests; templates/face encodings are never returned by the review API. A missi
 reference photo is explicitly shown and does not mean the employee is unenrolled.
 The profile picture represents only the first saved sample unless changed separately.
 
-Strict face matching is unchanged: a capture within `FACE_MATCH_THRESHOLD` of
-another employee is blocked even if its own employee's sample is closer. The
-message now describes a similarity conflict, not a confirmed identity. Review the
-named employee separately; do not lower the threshold or reset correct enrollments
-to bypass this protection. This workflow does not change kiosk or mobile punching.
+A capture within `FACE_MATCH_THRESHOLD` of another employee is blocked even if
+its own employee's sample is closer. The message shows the similar employee
+number, the closest distance and the limit. Do not lower the threshold or reset
+correct enrollments to bypass this protection.
+
+If HR has verified in person that they are different people, an HR Admin (with
+employee-management permission) can use **Approve and save face**: enter a reason
+and tick the confirmation. The server re-checks the similar employees; if they
+changed, a fresh approval is required. The sample and its approval are saved in
+one transaction in `biometric.face_enrollment_similarity_overrides` (employee,
+similar employee IDs/numbers, closest distance, limit, reason, approver, time).
+If that record cannot be saved, neither the sample nor its image is kept.
+
+Because approved faces can be close to another employee, every face punch
+(kiosk, clock and break) now also requires a clear winner: if the second-closest
+employee is within `FACE_MATCH_MARGIN` (default `0.05`) of the closest, the punch
+is rejected as "Face not recognized" and the employee should retry. This only
+adds rejections; it never accepts a face that was previously rejected.
 
 For confirmed incorrect enrollment, use **Remove all face samples** for that employee.
 HR must type the employee number, give a reason, and confirm the warning. The
@@ -260,6 +273,19 @@ just to apply this change. A code rollback should retain the audit table; Alembi
 refuses to drop it once audit records exist. No production Elasticsearch service
 or logging configuration change is needed.
 
+Then apply
+[`20261113_add_face_enrollment_similarity_overrides.sql`](../backend/sql/20261113_add_face_enrollment_similarity_overrides.sql)
+(Alembic `f3a4b5c6d7e8`, after `f2a3b4c5d6e7`). It is additive and rerunnable.
+Without it, approvals fail safely and nothing is saved. Inspect approvals with:
+
+```sql
+SELECT approved_at, approved_by, employee_no, conflicting_employee_nos,
+       closest_distance, threshold, reason
+FROM biometric.face_enrollment_similarity_overrides
+ORDER BY approved_at DESC
+LIMIT 50;
+```
+
 Authorized database administrators can inspect recent resets with:
 
 ```sql
@@ -276,6 +302,66 @@ and orphaned image URLs are no longer served. Unsupported legacy photo reference
 require manual storage cleanup. Neither employee is reset automatically when a
 similarity conflict occurs. Late capture/save/reset responses cannot update a
 different employee after navigating away.
+
+### Diagnosing a face similarity conflict
+
+The backend uses dlib's 128-component descriptors and Euclidean distance, not
+pgvector cosine/inner-product similarity. Lower distance means closer; a conflict
+requires distance <= `FACE_MATCH_THRESHOLD`. Do not normalize existing descriptors
+or change the threshold to diagnose a failure.
+
+Captured descriptors and vectors used for comparison must have exactly 128 finite
+components and a finite, non-zero norm. Invalid data fails explicitly, including
+when an HR override is requested; it is not silently replaced or treated as a match.
+
+On a conflict, the backend emits a `FACE_ENROLLMENT_CONFLICT` warning with the
+requested employee ID, matched employee ID/number and nearest sample ID, unrounded
+distance, effective threshold, both vector norms, and whether approval was requested.
+`FACE_ENCODING_INVALID` identifies rejected malformed vectors. These warnings work
+without Elasticsearch. They contain no photos or embedding arrays; restrict access
+to the logs because employee identifiers are present.
+
+After one failed attempt, inspect the backend container logs (`docker logs --since
+10m app_backend`). To check the affected stored records, run this read-only query
+against the application's production database, replacing the two employee numbers:
+
+```sql
+BEGIN READ ONLY;
+WITH inspected AS (
+    SELECT e.employee_no, f.id AS sample_id, f.status,
+           array_ndims(f.face_encoding) AS array_dimensions,
+           cardinality(f.face_encoding) AS components,
+           stats.invalid_components, stats.squared_norm
+    FROM hr.employees e
+    LEFT JOIN biometric.face_enrollment_data f ON f.employee_id = e.id
+    LEFT JOIN LATERAL (
+        SELECT count(*) FILTER (
+                   WHERE v IS NULL OR v::text IN ('NaN', 'Infinity', '-Infinity')
+               ) AS invalid_components,
+               sum(v::numeric * v::numeric) FILTER (
+                   WHERE v IS NOT NULL AND v::text NOT IN ('NaN', 'Infinity', '-Infinity')
+               ) AS squared_norm
+        FROM unnest(f.face_encoding) AS values_(v)
+    ) stats ON true
+    WHERE e.employee_no IN ('0128', '0201')
+)
+SELECT employee_no, sample_id, status, components, invalid_components,
+       CASE WHEN invalid_components = 0 THEN sqrt(squared_norm) END AS norm,
+       CASE WHEN sample_id IS NULL THEN 'no_sample'
+            WHEN array_dimensions IS DISTINCT FROM 1 OR components IS DISTINCT FROM 128
+                 OR invalid_components > 0 OR squared_norm = 0
+                 OR sqrt(squared_norm) > 1.7976931348623157e308::numeric THEN 'invalid_encoding'
+            ELSE 'valid_encoding' END AS encoding_check
+FROM inspected
+ORDER BY employee_no, sample_id;
+ROLLBACK;
+```
+
+The failed capture is not saved, so comparing only stored rows cannot explain its
+failure. Correlate this report with the conflict log from that same attempt. An
+exact zero distance does not by itself prove a reused photo, and a non-zero
+distance below the limit does not prove that the employees are the same person.
+The HR override is an operational exception, not evidence of the root cause.
 
 ## Dashboard worked hours
 

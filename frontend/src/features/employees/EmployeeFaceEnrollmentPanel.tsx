@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Camera, CheckCircle2 } from 'lucide-react'
 import { enrollFace } from '../../lib/enrollmentApi'
+import type { FaceSimilarityConflictError } from '../../lib/enrollmentApi'
 import type { Employee } from '../../types/employee'
-import type { EnrollmentResult } from '../../types/enrollment'
+import type { EnrollmentResult, SimilarityOverride } from '../../types/enrollment'
 import { useBlinkWebcamCapture } from '../../hooks/useBlinkWebcamCapture'
 import { getAvailableRoleCodes, hasPermission } from '../../types/role'
 import EmployeeFaceSamples from './EmployeeFaceSamples'
@@ -13,6 +14,10 @@ interface Props {
   onPhotoReferenceSaved?: (photoReference: string | null) => void
 }
 
+function isSimilarityConflict(value: unknown): value is FaceSimilarityConflictError {
+  return value instanceof Error && 'conflictingEmployeeNos' in value && Array.isArray(value.conflictingEmployeeNos)
+}
+
 export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhotoReferenceSaved }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -21,6 +26,9 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   const [isResetting, setIsResetting] = useState(false)
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [error, setError] = useState('')
+  const [conflict, setConflict] = useState<FaceSimilarityConflictError | null>(null)
+  const [overrideReason, setOverrideReason] = useState('')
+  const [overrideConfirmed, setOverrideConfirmed] = useState(false)
   const generation = useRef(0)
   const {
     videoRef, isActive: cameraActive, isCheckingBlink, blinkStatus, error: webcamError,
@@ -35,6 +43,9 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
     setPreviewUrl(null)
     setResult(null)
     setError('')
+    setConflict(null)
+    setOverrideReason('')
+    setOverrideConfirmed(false)
     setIsSubmitting(false)
     setIsResetting(false)
     return () => { generation.current += 1 }
@@ -59,6 +70,9 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
     setPreviewUrl(nextFile ? URL.createObjectURL(nextFile) : null)
     setResult(null)
     setError('')
+    setConflict(null)
+    setOverrideReason('')
+    setOverrideConfirmed(false)
   }
 
   async function capturePhoto() {
@@ -70,7 +84,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
     }
   }
 
-  async function submitEnrollment() {
+  async function submitEnrollment(override?: SimilarityOverride) {
     if (busy) return
     if (!employee || !employee.is_active || employee.record_status !== 'ACTIVE') {
       setError('An active employee profile is required for face enrollment.')
@@ -85,19 +99,30 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
     setIsSubmitting(true)
     const request = generation.current
     try {
-      const enrollmentResult = await enrollFace(file, employee.id)
+      const enrollmentResult = await enrollFace(file, employee.id, override)
       if (request !== generation.current) return
       setFile(null)
+      setConflict(null)
+      setOverrideReason('')
+      setOverrideConfirmed(false)
       setResult(enrollmentResult)
       setRefreshVersion((value) => value + 1)
       if (enrollmentResult.photo_reference) {
         onPhotoReferenceSaved?.(enrollmentResult.photo_reference)
       }
     } catch (submitError) {
-      if (request === generation.current) setError(submitError instanceof Error ? submitError.message : 'Face enrollment failed.')
+      if (request !== generation.current) return
+      setError(submitError instanceof Error ? submitError.message : 'Face enrollment failed.')
+      setConflict(isSimilarityConflict(submitError) ? submitError : null)
+      setOverrideConfirmed(false)
     } finally {
       if (request === generation.current) setIsSubmitting(false)
     }
+  }
+
+  function approveSimilarFace() {
+    if (!conflict || !overrideConfirmed || !overrideReason.trim()) return
+    void submitEnrollment({ conflicting_employee_nos: conflict.conflictingEmployeeNos, reason: overrideReason.trim() })
   }
 
   if (!employee) {
@@ -172,6 +197,45 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
 
         <div className="flex flex-col justify-center gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
           {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+          {conflict && canReview && file && !cameraActive && (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold">HR Admin: approve as a different person</p>
+              <p className="text-xs leading-5">
+                Approve only after checking in person that this capture is {employee.first_name} {employee.last_name} ({employee.employee_no})
+                {' '}and not employee {conflict.conflictingEmployeeNos.join(', ')}. Your approval and reason are logged.
+                Face punches are rejected when two employees match too closely, so either employee may need to retry.
+              </p>
+              <textarea
+                aria-label="Similarity approval reason"
+                value={overrideReason}
+                maxLength={500}
+                rows={2}
+                disabled={busy}
+                onChange={(event) => setOverrideReason(event.target.value)}
+                placeholder="Reason, e.g. verified ID in person; different employee"
+                className="rounded-md border border-amber-300 bg-white px-2 py-1.5 text-sm text-slate-800"
+              />
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  aria-label="Confirm different person"
+                  checked={overrideConfirmed}
+                  disabled={busy}
+                  onChange={(event) => setOverrideConfirmed(event.target.checked)}
+                  className="mt-0.5"
+                />
+                I verified in person that this is {employee.employee_no}, not {conflict.conflictingEmployeeNos.join(', ')}.
+              </label>
+              <button
+                type="button"
+                disabled={!overrideConfirmed || !overrideReason.trim() || busy}
+                onClick={approveSimilarFace}
+                className="rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
+              >
+                {isSubmitting ? 'Saving approved face…' : 'Approve and save face'}
+              </button>
+            </div>
+          )}
           {webcamError && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{webcamError}</p>}
           {result && isActive && (
             <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">

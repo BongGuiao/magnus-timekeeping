@@ -1,12 +1,16 @@
-from dataclasses import dataclass, replace
+import logging
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.core.face_recognition_service import face_encoding_norm
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
-from app.enrollment.infrastructure.db_model import FaceEnrollmentModel
+from app.enrollment.infrastructure.db_model import FaceEnrollmentModel, FaceEnrollmentOverrideModel
 from app.enrollment.domain.entities.enrollment import EnrollmentStatus, FaceEnrollmentEntity
 from app.enrollment.application.management import lock_enrollment_employee
 from app.enrollment.infrastructure.image_storage import (
@@ -18,12 +22,40 @@ from app.enrollment.infrastructure.image_storage import (
 MAX_SAMPLES_PER_EMPLOYEE = 5
 MAX_FACE_COMPARISON_CANDIDATES = 10000
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SimilarityOverride:
+    """HR Admin confirmation that the capture is not any of the listed similar employees."""
+    conflicting_employee_nos: frozenset[str]
+    reason: str
+
+
+@dataclass(frozen=True)
+class SimilarEmployee:
+    employee_id: UUID
+    employee_no: str
+    distance: float
+
+
+class FaceSimilarityConflict(ValueError):
+    def __init__(self, message: str, conflicts: list[SimilarEmployee], threshold: float):
+        super().__init__(message)
+        self.conflicts = conflicts
+        self.threshold = threshold
+
+
+class EnrollmentAuditUnavailable(ValueError):
+    pass
+
 
 @dataclass(frozen=True)
 class EnrollFaceInputDTO:
     employee_id: UUID
     image_bytes: bytes
     acting_user_id: UUID | None = None
+    similarity_override: SimilarityOverride | None = field(default=None)
 
 
 @dataclass(frozen=True)
@@ -69,7 +101,9 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 if len(existing) >= MAX_SAMPLES_PER_EMPLOYEE:
                     raise ValueError(f"This employee already has the maximum of {MAX_SAMPLES_PER_EMPLOYEE} face samples.")
 
-                await self._ensure_face_belongs_to_employee(uow, repo, input_dto.employee_id, encoding)
+                conflicts = await self._ensure_face_belongs_to_employee(
+                    uow, repo, input_dto.employee_id, encoding, input_dto.similarity_override,
+                )
 
                 image_path.parent.mkdir(parents=True, exist_ok=True)
                 with image_path.open("xb") as image_file:
@@ -87,6 +121,9 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                         updated_by=input_dto.acting_user_id,
                     )
                 )
+
+                if conflicts:
+                    await self._record_override(uow, saved.id, employee, conflicts, input_dto)
 
                 employee_photo_reference = employee.photo_reference
                 if not existing:
@@ -112,8 +149,15 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                 image_path.unlink(missing_ok=True)
             raise
 
-    async def _ensure_face_belongs_to_employee(self, uow, repo, employee_id: UUID, encoding: list[float]) -> None:
-        """Rejects a sample that differs from the employee's enrolled face or matches another employee."""
+    async def _ensure_face_belongs_to_employee(
+        self, uow, repo, employee_id: UUID, encoding: list[float],
+        similarity_override: SimilarityOverride | None = None,
+    ) -> list[SimilarEmployee]:
+        """Rejects a sample that differs from the employee's enrolled face or resembles another employee.
+
+        Returns the similar employees when an HR Admin override approved exactly that set.
+        """
+        candidate_norm = face_encoding_norm(encoding)
         threshold = self.face_encoding_service.match_threshold()
         enrolled = await repo.find_all(
             FaceEnrollmentModel.status == EnrollmentStatus.ENROLLED,
@@ -130,17 +174,81 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                     "Use a photo of the same person, or remove the existing samples before re-enrolling."
                 )
 
-        if others:
-            other_distances = self.face_encoding_service.face_distances(
-                encoding, [item.face_encoding for item in others]
+        if not others:
+            return []
+        other_distances = self.face_encoding_service.face_distances(
+            encoding, [item.face_encoding for item in others]
+        )
+        nearest: dict[UUID, tuple[FaceEnrollmentEntity, float]] = {}
+        for item, distance in zip(others, other_distances):
+            previous = nearest.get(item.employee_id)
+            if previous is None or distance < previous[1]:
+                nearest[item.employee_id] = (item, distance)
+        similar = sorted(
+            (pair for pair in nearest.values() if pair[1] <= threshold),
+            key=lambda pair: pair[1],
+        )
+        if not similar:
+            return []
+
+        employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
+        conflicts = []
+        for sample, distance in similar:
+            other_employee = await employee_repo.find_one(EmployeeModel.id == sample.employee_id)
+            conflict = SimilarEmployee(
+                sample.employee_id, other_employee.employee_no if other_employee else str(sample.employee_id),
+                float(distance),
             )
-            closest_index = min(range(len(other_distances)), key=other_distances.__getitem__)
-            if other_distances[closest_index] <= threshold:
-                employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
-                other_employee = await employee_repo.find_one(EmployeeModel.id == others[closest_index].employee_id)
-                label = f"another employee ({other_employee.employee_no})" if other_employee else "another employee"
-                raise ValueError(
-                    f"This capture is too similar to an enrolled face for {label}. "
-                    "No sample was saved. Ask an HR Admin to review the saved samples in Employee Records. "
-                    "Similarity does not confirm that they are the same person."
-                )
+            conflicts.append(conflict)
+            logger.warning(
+                "FACE_ENROLLMENT_CONFLICT requested_employee_id=%s matched_employee_id=%s "
+                "matched_employee_no=%s matched_sample_id=%s distance=%r threshold=%r "
+                "candidate_norm=%r matched_norm=%r override_requested=%s",
+                employee_id, conflict.employee_id, conflict.employee_no, sample.id, conflict.distance, threshold,
+                candidate_norm, face_encoding_norm(sample.face_encoding, source="Stored face"),
+                similarity_override is not None,
+            )
+        numbers = ", ".join(conflict.employee_no for conflict in conflicts)
+        label = f"another employee ({numbers})" if len(conflicts) == 1 else f"other employees ({numbers})"
+        detail = f"Closest distance {conflicts[0].distance:.3f}; limit {threshold:.3f}."
+        if similarity_override is None:
+            raise FaceSimilarityConflict(
+                f"This capture is too similar to an enrolled face for {label}. "
+                f"No sample was saved. {detail} An HR Admin can confirm in person that they are "
+                "different people and approve the enrollment. Similarity does not confirm that they are the same person.",
+                conflicts, threshold,
+            )
+        if similarity_override.conflicting_employee_nos != {conflict.employee_no for conflict in conflicts}:
+            raise FaceSimilarityConflict(
+                f"The similar employees changed; this capture now resembles {label}. No sample was saved. "
+                f"{detail} Review and approve the current list.",
+                conflicts, threshold,
+            )
+        return conflicts
+
+    async def _record_override(
+        self, uow, enrollment_id: UUID, employee: EmployeeEntity,
+        conflicts: list[SimilarEmployee], input_dto: EnrollFaceInputDTO,
+    ) -> None:
+        override = input_dto.similarity_override
+        if override is None or input_dto.acting_user_id is None:
+            raise ValueError("An HR Admin approval is required to save a similar face.")
+        uow.session.add(FaceEnrollmentOverrideModel(
+            enrollment_id=enrollment_id,
+            employee_id=employee.id,
+            employee_no=employee.employee_no,
+            conflicting_employee_ids=[conflict.employee_id for conflict in conflicts],
+            conflicting_employee_nos=[conflict.employee_no for conflict in conflicts],
+            closest_distance=conflicts[0].distance,
+            threshold=self.face_encoding_service.match_threshold(),
+            reason=override.reason,
+            approved_by=input_dto.acting_user_id,
+        ))
+        # The approval audit commits with the sample; without it nothing is saved.
+        try:
+            await uow.session.flush()
+        except SQLAlchemyError as error:
+            raise EnrollmentAuditUnavailable(
+                "The face was not saved because the approval audit could not be recorded. "
+                "Ask an administrator to apply the face enrollment override database migration."
+            ) from error

@@ -58,3 +58,30 @@ class FaceEnrollmentResetModel(Base):
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(String(500), nullable=False)
     profile_photo_cleared: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+
+
+class FaceEnrollmentOverrideModel(Base):
+    __tablename__ = "face_enrollment_similarity_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "cardinality(conflicting_employee_ids) > 0 "
+            "AND cardinality(conflicting_employee_ids) = cardinality(conflicting_employee_nos)",
+            name="ck_face_enrollment_overrides_conflicts",
+        ),
+        CheckConstraint("length(btrim(reason)) > 0", name="ck_face_enrollment_overrides_reason"),
+        Index("ix_face_enrollment_overrides_employee_time", "employee_id", "approved_at"),
+        {"schema": "biometric"},
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    # Snapshot identifiers deliberately survive sample resets and employee/account deletion.
+    enrollment_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    employee_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    employee_no: Mapped[str] = mapped_column(String(30), nullable=False)
+    conflicting_employee_ids: Mapped[list[UUID]] = mapped_column(ARRAY(PGUUID(as_uuid=True)), nullable=False)
+    conflicting_employee_nos: Mapped[list[str]] = mapped_column(ARRAY(String(30)), nullable=False)
+    closest_distance: Mapped[float] = mapped_column(Float, nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    approved_by: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -172,6 +172,77 @@ test('employee panel does not apply an old save to a newly opened employee or af
   }
 })
 
+test('only HR administrators can approve a similar-face conflict after confirming in person', async () => {
+  for (const [roles, permission] of [[['HR_ADMIN'], true], [['SYSTEM_ADMIN'], true]]) {
+    const calls = []
+    let active = false
+    const conflict = Object.assign(new Error('Too similar to 0201.'), { conflictingEmployeeNos: ['0201'] })
+    const app = harness('features/employees/EmployeeFaceEnrollmentPanel.tsx', {
+      '../../lib/enrollmentApi': { enrollFace: async (file, id, override) => {
+        calls.push({ id, override })
+        if (!override) throw conflict
+        return { sample_count: 1, photo_reference: '/enrollment/photos/approved.jpg' }
+      } },
+      '../../types/role': { getAvailableRoleCodes: () => roles, hasPermission: () => permission },
+      './EmployeeFaceSamples': { __esModule: true, default: () => null },
+      '../../hooks/useBlinkWebcamCapture': { useBlinkWebcamCapture: () => ({
+        isActive: active, stop: () => { active = false }, start: async () => { active = true },
+        capture: async () => ({ name: 'capture.jpg' }), videoRef: { current: null }, isCheckingBlink: false, error: null, blinkStatus: '',
+      }) },
+    }, { employee: employee(), isActive: true, onPhotoReferenceSaved() {} })
+    app.render()
+    button(app, 'Use webcam').props.onClick()
+    button(app, 'Blink and capture').props.onClick()
+    await settle()
+    button(app, 'Save Face Captured').props.onClick()
+    await settle()
+    assert.match(text(app.render()), /Too similar to 0201/)
+    const approve = () => button(app, 'Approve and save face')
+    if (!roles.includes('HR_ADMIN')) {
+      assert.equal(approve(), undefined)
+      app.unmount()
+      continue
+    }
+    assert.equal(approve().props.disabled, true)
+    input(app, 'Similarity approval reason').props.onChange({ target: { value: '  Checked company ID  ' } })
+    assert.equal(approve().props.disabled, true)
+    input(app, 'Confirm different person').props.onChange({ target: { checked: true } })
+    assert.equal(approve().props.disabled, false)
+    approve().props.onClick()
+    await settle()
+    assert.deepEqual(JSON.parse(JSON.stringify(calls[1])), {
+      id: 'employee-a', override: { conflicting_employee_nos: ['0201'], reason: 'Checked company ID' },
+    })
+    assert.equal(approve(), undefined)
+    app.unmount()
+  }
+})
+
+test('enrollment transport sends a similarity override and parses conflict details', async () => {
+  const forms = []
+  let failure
+  class FakeFormData { constructor() { this.fields = [] } append(name, value) { this.fields.push([name, value]) } }
+  const api = compile('lib/enrollmentApi.ts', {
+    './apiClient': { apiClient: { post: async (url, form) => {
+      forms.push(form.fields)
+      if (failure) throw failure
+      return { data: { data: { sample_count: 2 } } }
+    } } },
+  }, { FormData: FakeFormData })
+  await api.enrollFace('file', 'employee-a', { conflicting_employee_nos: ['0201', '0300'], reason: 'Verified' })
+  assert.deepEqual(forms[0].slice(2), [['similarity_override_employee_nos', '0201,0300'], ['similarity_override_reason', 'Verified']])
+  failure = new AxiosError('conflict', undefined, undefined, undefined, { status: 409, data: {
+    code: 'FACE_SIMILARITY_CONFLICT', detail: 'Too similar.', conflicting_employee_nos: ['0201'], closest_distance: 0.47, threshold: 0.5,
+  } })
+  await assert.rejects(api.enrollFace('file', 'employee-a'), (error) => {
+    assert.equal(error.name, 'FaceSimilarityConflictError')
+    assert.deepEqual(Array.from(error.conflictingEmployeeNos), ['0201'])
+    assert.equal(error.closestDistance, 0.47)
+    return error.message === 'Too similar.'
+  })
+  assert.equal(forms[1].length, 2)
+})
+
 test('review/reset controls are shown only for HR administrators with employee-management permission', () => {
   const Samples = () => null
   for (const [roles, permission, visible] of [

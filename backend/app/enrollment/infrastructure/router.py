@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from elasticsearch import AsyncElasticsearch
 from sqlalchemy import exists, or_, select
@@ -11,7 +11,10 @@ from app.audit.service import log_entity_action
 from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.auth.infrastructure.dependencies import get_current_authorization_use_case, require_role
 from app.auth.domain.entities.user import Role
-from app.enrollment.application.use_case import EnrollFaceInputDTO, EnrollFaceOutputDTO, EnrollFaceUseCase
+from app.enrollment.application.use_case import (
+    EnrollFaceInputDTO, EnrollFaceOutputDTO, EnrollFaceUseCase, EnrollmentAuditUnavailable,
+    FaceSimilarityConflict, SimilarityOverride,
+)
 from app.enrollment.application.management import (
     FaceEnrollmentReview, ResetFaceEnrollmentInput, ResetFaceEnrollmentResult,
     reset_face_enrollments, review_face_enrollments,
@@ -34,17 +37,22 @@ class EnrollmentResponseSchema(BaseModel):
     photo_reference: str | None = None
 
 
-async def require_face_management_access(
-    claims: dict = Depends(require_role([Role.ADMIN])),
-    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
-) -> dict:
+async def ensure_face_management_access(claims: dict, use_case: GetCurrentAuthorizationUseCase, action: str) -> UUID:
     try:
         user_id = UUID(str(claims["sub"]))
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=401, detail="Invalid user identity in authentication token.") from error
     authorization = await use_case.execute(user_id)
     if "HR_ADMIN" not in authorization.role_codes or "employees.manage" not in authorization.permission_codes:
-        raise HTTPException(status_code=403, detail="Reviewing and resetting face samples requires HR_ADMIN and employee management access.")
+        raise HTTPException(status_code=403, detail=f"{action} requires HR_ADMIN and employee management access.")
+    return user_id
+
+
+async def require_face_management_access(
+    claims: dict = Depends(require_role([Role.ADMIN])),
+    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> dict:
+    await ensure_face_management_access(claims, use_case, "Reviewing and resetting face samples")
     return claims
 
 
@@ -121,8 +129,11 @@ async def get_enrollment_photo(
 async def enroll_face(
     file: UploadFile = File(...),
     employee_id: UUID = Form(...),
+    similarity_override_employee_nos: str | None = Form(None),
+    similarity_override_reason: str | None = Form(None),
     claims: dict = Depends(require_role([Role.ADMIN])),
     use_case: EnrollFaceUseCase = Depends(get_enroll_face_use_case),
+    authorization: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     image_bytes = await file.read(MAX_ENROLLMENT_IMAGE_BYTES + 1)
@@ -140,12 +151,38 @@ async def enroll_face(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid user identity in authentication token.",
         ) from error
+    override = None
+    if similarity_override_employee_nos is not None or similarity_override_reason is not None:
+        await ensure_face_management_access(claims, authorization, "Approving a similar face")
+        numbers = frozenset(
+            value.strip() for value in (similarity_override_employee_nos or "").split(",") if value.strip()
+        )
+        reason = (similarity_override_reason or "").strip()
+        if not numbers or not reason or len(reason) > 500:
+            raise HTTPException(
+                status_code=422,
+                detail="Approving a similar face requires the similar employee numbers and a reason (max 500 characters).",
+            )
+        override = SimilarityOverride(conflicting_employee_nos=numbers, reason=reason)
     input_dto = EnrollFaceInputDTO(
         employee_id=employee_id,
         image_bytes=image_bytes,
         acting_user_id=acting_user_id,
+        similarity_override=override,
     )
-    result: EnrollFaceOutputDTO = await use_case.execute(input_dto)
+    try:
+        result: EnrollFaceOutputDTO = await use_case.execute(input_dto)
+    except FaceSimilarityConflict as conflict:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={
+            "status": "error",
+            "detail": str(conflict),
+            "code": "FACE_SIMILARITY_CONFLICT",
+            "conflicting_employee_nos": [item.employee_no for item in conflict.conflicts],
+            "closest_distance": round(conflict.conflicts[0].distance, 4),
+            "threshold": conflict.threshold,
+        })
+    except EnrollmentAuditUnavailable as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
     await log_entity_action(
         es_client,
         user_id=acting_user_id,
@@ -156,6 +193,7 @@ async def enroll_face(
             "status": result.status,
             "enrolled_at": result.enrolled_at,
             "sample_count": result.sample_count,
+            "similarity_override": override is not None,
         },
     )
 

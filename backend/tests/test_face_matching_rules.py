@@ -1,19 +1,24 @@
 import unittest
+from io import BytesIO
+from math import hypot
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
+import numpy as np
+from PIL import Image
+
 from app.attendance.application.use_case import ClockAttendanceInputDTO, ClockAttendanceUseCase
 from app.auth.domain.entities.user import UserEntity
 from app.core import face_recognition_service
-from app.enrollment.application.use_case import EnrollFaceUseCase
+from app.enrollment.application.use_case import EnrollFaceUseCase, SimilarityOverride
 from app.enrollment.domain.entities.enrollment import FaceEnrollmentEntity
 from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 
 
 def vector(offset: float) -> list[float]:
-    """128-d encoding whose Euclidean distance from vector(0) equals offset."""
-    return [offset] + [0.0] * 127
+    """Non-zero 128-d encoding whose distance from vector(0) equals offset."""
+    return [offset, 1.0] + [0.0] * 126
 
 
 class FakeUow:
@@ -31,6 +36,19 @@ class FakeUow:
 
 
 class FindBestMatchTests(unittest.TestCase):
+    def test_invalid_encodings_cannot_participate_in_matching(self):
+        invalid = (
+            [0.0] * 128, [float("nan")] + [0.0] * 127,
+            [float("inf")] + [0.0] * 127, [float("-inf")] + [0.0] * 127,
+            [1.0], [], [[1.0] * 128], [None] * 128, ["invalid"] * 128,
+        )
+        for index, encoding in enumerate(invalid):
+            with self.subTest(case=index):
+                with self.assertRaisesRegex(ValueError, "Captured face encoding is invalid"):
+                    face_recognition_service.face_distances(encoding, [vector(0)])
+                with self.assertRaisesRegex(ValueError, "Stored face encoding is invalid"):
+                    face_recognition_service.find_best_match(vector(0), [(uuid4(), encoding)])
+
     def test_default_threshold_comes_from_settings(self):
         employee_id = uuid4()
         with patch.object(face_recognition_service, "match_threshold", return_value=0.5):
@@ -43,9 +61,57 @@ class FindBestMatchTests(unittest.TestCase):
     def test_closest_employee_wins_across_all_enrollments(self):
         selected, other = uuid4(), uuid4()
         match = face_recognition_service.find_best_match(
-            vector(0), [(selected, vector(0.4)), (other, vector(0.2))], threshold=0.5,
+            vector(0), [(selected, vector(0.4)), (other, vector(0.2))], threshold=0.5, margin=0.05,
         )
         self.assertEqual(match[0], other)
+
+    def test_near_tie_between_employees_is_rejected_as_ambiguous(self):
+        selected, other = uuid4(), uuid4()
+        known = [(selected, vector(0.3)), (selected, vector(0.6)), (other, vector(0.33))]
+        with self.assertLogs("app.core.face_recognition_service", level="INFO"):
+            self.assertIsNone(face_recognition_service.find_best_match(vector(0), known, threshold=0.5, margin=0.05))
+        self.assertEqual(
+            face_recognition_service.find_best_match(vector(0), known, threshold=0.5, margin=0.02),
+            (selected, 0.3),
+        )
+        # Several samples of the same employee are never treated as a competing identity.
+        self.assertEqual(
+            face_recognition_service.find_best_match(
+                vector(0), [(selected, vector(0.3)), (selected, vector(0.31))], threshold=0.5, margin=0.05,
+            ),
+            (selected, 0.3),
+        )
+
+
+class FaceExtractionTests(unittest.TestCase):
+    def test_each_upload_is_decoded_as_rgb_and_gets_its_own_encoding(self):
+        photos = []
+        for color in ((255, 0, 0, 255), (0, 0, 255, 255)):
+            image = BytesIO()
+            Image.new("RGBA", (2, 2), color).save(image, format="PNG")
+            photos.append(image.getvalue())
+        with patch.object(
+            face_recognition_service.face_recognition, "face_encodings",
+            side_effect=[[np.asarray(vector(0.1))], [np.asarray(vector(0.8))]],
+        ) as encode:
+            results = [face_recognition_service.extract_face_encoding(photo) for photo in photos]
+        self.assertEqual(results, [vector(0.1), vector(0.8)])
+        self.assertEqual(encode.call_args_list[0].args[0][0, 0].tolist(), [255, 0, 0])
+        self.assertEqual(encode.call_args_list[1].args[0][0, 0].tolist(), [0, 0, 255])
+
+    def test_detector_failure_or_invalid_output_never_becomes_an_enrollment(self):
+        for encodings, message in (
+            ([], "No face detected"),
+            ([np.asarray(vector(0)), np.asarray(vector(1))], "Multiple faces"),
+            ([np.zeros(128)], "Captured face encoding is invalid"),
+            ([np.full(128, np.nan)], "Captured face encoding is invalid"),
+            ([np.ones(127)], "Captured face encoding is invalid"),
+        ):
+            with self.subTest(message=message), \
+                    patch.object(face_recognition_service.face_recognition, "load_image_file"), \
+                    patch.object(face_recognition_service.face_recognition, "face_encodings", return_value=encodings), \
+                    self.assertRaisesRegex(ValueError, message):
+                face_recognition_service.extract_face_encoding(b"capture")
 
 
 class ClockFaceVerificationTests(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +130,7 @@ class ClockFaceVerificationTests(unittest.IsolatedAsyncioTestCase):
         face = SimpleNamespace(
             extract_face_encoding=Mock(return_value=vector(0)),
             find_best_match=lambda candidate, known: face_recognition_service.find_best_match(
-                candidate, known, threshold=0.5,
+                candidate, known, threshold=0.5, margin=0.05,
             ),
         )
         self.use_case = ClockAttendanceUseCase(FakeUow(repos), face)
@@ -80,6 +146,15 @@ class ClockFaceVerificationTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.1)),
         ]
         with self.assertRaisesRegex(ValueError, "does not match the selected employee"):
+            await self.clock()
+
+    async def test_rejects_punch_when_another_employee_is_nearly_as_close(self):
+        self.enrollments = [
+            SimpleNamespace(employee_id=self.employee_id, face_encoding=vector(0.3)),
+            SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.32)),
+        ]
+        with self.assertLogs("app.core.face_recognition_service", level="INFO"), \
+                self.assertRaisesRegex(ValueError, "Face not recognized"):
             await self.clock()
 
     async def test_rejects_face_outside_threshold(self):
@@ -121,14 +196,39 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
             await self.guard(enrolled, vector(0))
 
     async def test_rejects_face_already_enrolled_for_another_employee(self):
-        enrolled = [SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.3))]
-        with self.assertRaisesRegex(ValueError, r"another employee \(EMP-0009\)"):
+        sample_id = uuid4()
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.4)),
+            SimpleNamespace(id=sample_id, employee_id=self.other_id, face_encoding=vector(0.3)),
+        ]
+        with self.assertLogs("app.enrollment.application.use_case", level="WARNING") as logs, \
+                self.assertRaisesRegex(ValueError, r"another employee \(EMP-0009\).*Closest distance 0\.300; limit 0\.500"):
             await self.guard(enrolled, vector(0))
+        message = logs.records[0].getMessage()
+        for field in (
+            f"requested_employee_id={self.employee_id}", f"matched_employee_id={self.other_id}",
+            "matched_employee_no=EMP-0009", f"matched_sample_id={sample_id}", "distance=0.3",
+            "threshold=0.5", "candidate_norm=1.0", f"matched_norm={hypot(0.3, 1.0)!r}",
+            "override_requested=False",
+        ):
+            self.assertIn(field, message)
+        self.assertNotIn(str(vector(0.3)), message)
+
+    async def test_matching_hr_override_returns_every_similar_employee(self):
+        enrolled = [
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.3)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.45)),
+        ]
+        repo = SimpleNamespace(find_all=AsyncMock(return_value=enrolled))
+        conflicts = await self.use_case._ensure_face_belongs_to_employee(
+            self.uow, repo, self.employee_id, vector(0), SimilarityOverride(frozenset({"EMP-0009"}), "Verified"),
+        )
+        self.assertEqual([(item.employee_id, item.distance) for item in conflicts], [(self.other_id, 0.3)])
 
     async def test_strict_protection_remains_even_when_own_sample_is_closer(self):
         enrolled = [
             SimpleNamespace(employee_id=self.employee_id, face_encoding=vector(0)),
-            SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.502)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.502)),
         ]
         with self.assertRaisesRegex(ValueError, "No sample was saved"):
             await self.guard(enrolled, vector(0.01))
@@ -136,8 +236,8 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
     async def test_conflict_uses_nearest_other_sample_not_first_record(self):
         first_id = uuid4()
         enrolled = [
-            SimpleNamespace(employee_id=first_id, face_encoding=vector(0.8)),
-            SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.2)),
+            SimpleNamespace(id=uuid4(), employee_id=first_id, face_encoding=vector(0.8)),
+            SimpleNamespace(id=uuid4(), employee_id=self.other_id, face_encoding=vector(0.2)),
         ]
         with self.assertRaisesRegex(ValueError, "Similarity does not confirm"):
             await self.guard(enrolled, vector(0))

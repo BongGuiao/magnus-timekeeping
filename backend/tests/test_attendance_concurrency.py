@@ -146,13 +146,13 @@ class AttendanceDatabaseConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             ])
             session.add_all([
                 FaceEnrollmentModel(
-                    employee_id=employee_id, face_encoding=[float(index)] + [0.0] * 127,
+                    employee_id=employee_id, face_encoding=[float(index), 1.0] + [0.0] * 126,
                     status=EnrollmentStatus.ENROLLED,
                 )
                 for index, employee_id in enumerate(self.employee_ids)
             ])
         self.face = SimpleNamespace(
-            extract_face_encoding=lambda image: [float(image.decode())] + [0.0] * 127,
+            extract_face_encoding=lambda image: [float(image.decode()), 1.0] + [0.0] * 126,
             find_best_match=lambda candidate, known: find_best_match(candidate, known, threshold=0.5),
         )
 

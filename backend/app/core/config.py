@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # Face recognition: maximum embedding distance accepted as the same person (lower is stricter)
     FACE_MATCH_THRESHOLD: float = 0.5
+    # A face punch is rejected when another employee is within this distance of the best match.
+    FACE_MATCH_MARGIN: float = 0.05
 
     # Login lockout (identity.users.failed_login_count / locked_until)
     AUTH_MAX_FAILED_LOGIN_ATTEMPTS: int = 5

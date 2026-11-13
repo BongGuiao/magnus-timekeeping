@@ -26,16 +26,22 @@ from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.enrollment.application.management import (
     ResetFaceEnrollmentInput, lock_enrollment_employee, reset_face_enrollments,
 )
-from app.enrollment.application.use_case import EnrollFaceInputDTO, EnrollFaceUseCase
+from app.enrollment.application.use_case import (
+    EnrollFaceInputDTO, EnrollFaceUseCase, EnrollmentAuditUnavailable, FaceSimilarityConflict,
+    SimilarEmployee, SimilarityOverride,
+)
 from app.enrollment.domain.entities.enrollment import EnrollmentStatus
-from app.enrollment.infrastructure.db_model import FaceEnrollmentModel, FaceEnrollmentResetModel
+from app.enrollment.infrastructure.db_model import (
+    FaceEnrollmentModel, FaceEnrollmentOverrideModel, FaceEnrollmentResetModel,
+)
+from app.enrollment.infrastructure.dependencies import get_enroll_face_use_case
 from app.enrollment.infrastructure.image_storage import face_image_path, face_image_reference, face_reference_path
 from app.enrollment.infrastructure.router import router
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 
 
-async def request(app, method, path, payload=None):
-    content = json.dumps(payload).encode() if payload is not None else b""
+async def request(app, method, path, payload=None, *, body=None, content_type=b"application/json"):
+    content = body if body is not None else json.dumps(payload).encode() if payload is not None else b""
     messages = []
 
     async def receive():
@@ -47,7 +53,7 @@ async def request(app, method, path, payload=None):
     await app({
         "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
         "method": method, "scheme": "http", "path": path, "raw_path": path.encode(),
-        "root_path": "", "query_string": b"", "headers": [(b"content-type", b"application/json")],
+        "root_path": "", "query_string": b"", "headers": [(b"content-type", content_type)],
         "server": ("localhost", 80), "client": ("127.0.0.1", 1234),
     }, receive, send)
     body = b"".join(message.get("body", b"") for message in messages)
@@ -56,6 +62,64 @@ async def request(app, method, path, payload=None):
         headers=dict(messages[0]["headers"]),
         body=json.loads(body) if body.startswith(b"{") else body,
     )
+
+
+def multipart(fields):
+    boundary = "face-enrollment-test"
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="face.jpg"\r\n'
+             "Content-Type: image/jpeg\r\n\r\nimage\r\n"]
+    parts += [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+              for name, value in fields.items()]
+    return "".join(parts + [f"--{boundary}--\r\n"]).encode(), f"multipart/form-data; boundary={boundary}".encode()
+
+
+class EnrollmentSimilarityOverrideRouteTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.app = FastAPI()
+        self.app.include_router(router)
+        self.actor = uuid4()
+        self.auth = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+            role_codes=["HR_ADMIN"], permission_codes=["employees.manage"],
+        )))
+        self.use_case = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+            status="enrolled", enrolled_at="2026-11-13T00:00:00+00:00", sample_count=1, photo_reference=None,
+        )))
+        self.app.dependency_overrides[get_current_user_claims] = lambda: {"sub": str(self.actor), "role": "admin"}
+        self.app.dependency_overrides[get_current_authorization_use_case] = lambda: self.auth
+        self.app.dependency_overrides[get_enroll_face_use_case] = lambda: self.use_case
+        self.app.dependency_overrides[get_audit_es_client] = lambda: None
+
+    async def enroll(self, **fields):
+        body, content_type = multipart({"employee_id": str(uuid4()), **fields})
+        return await request(self.app, "POST", "/enrollment/face", body=body, content_type=content_type)
+
+    async def test_override_requires_live_hr_admin_access(self):
+        self.auth.execute.return_value = SimpleNamespace(role_codes=["SYSTEM_ADMIN"], permission_codes=["employees.manage"])
+        response = await self.enroll(similarity_override_employee_nos="0201", similarity_override_reason="Verified ID")
+        self.assertEqual(response.status, 403)
+        self.use_case.execute.assert_not_awaited()
+        self.assertEqual((await self.enroll()).status, 201)
+
+    async def test_override_is_passed_with_trimmed_numbers_and_reason(self):
+        response = await self.enroll(similarity_override_employee_nos=" 0201, 0300 ", similarity_override_reason=" Verified ID ")
+        self.assertEqual(response.status, 201)
+        override = self.use_case.execute.await_args.args[0].similarity_override
+        self.assertEqual(override, SimilarityOverride(frozenset({"0201", "0300"}), "Verified ID"))
+        for fields in ({"similarity_override_employee_nos": "0201"}, {"similarity_override_reason": "Verified"}):
+            with self.subTest(fields=fields):
+                self.assertEqual((await self.enroll(**fields)).status, 422)
+
+    async def test_similarity_conflict_returns_structured_details(self):
+        self.use_case.execute.side_effect = FaceSimilarityConflict(
+            "Too similar.", [SimilarEmployee(uuid4(), "0201", 0.47123)], 0.5,
+        )
+        response = await self.enroll()
+        self.assertEqual(response.status, 409)
+        self.assertEqual(response.body["code"], "FACE_SIMILARITY_CONFLICT")
+        self.assertEqual(response.body["conflicting_employee_nos"], ["0201"])
+        self.assertEqual(response.body["closest_distance"], 0.4712)
+        self.assertEqual(response.body["threshold"], 0.5)
+        self.assertEqual(response.body["detail"], "Too similar.")
 
 
 class EnrollmentManagementPermissionsTests(unittest.IsolatedAsyncioTestCase):
@@ -94,10 +158,11 @@ class EnrollmentManagementPermissionsTests(unittest.IsolatedAsyncioTestCase):
 
 DATABASE_NAME = os.getenv("ENROLLMENT_TEST_DATABASE_NAME", "")
 AUDIT_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "20261113_add_face_enrollment_reset_audit.sql"
+OVERRIDE_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "20261113_add_face_enrollment_similarity_overrides.sql"
 
 
-async def apply_audit_sql(connection):
-    ddl = AUDIT_SQL_PATH.read_text().removeprefix("BEGIN;").strip().removesuffix("COMMIT;")
+async def apply_audit_sql(connection, path=AUDIT_SQL_PATH):
+    ddl = path.read_text().removeprefix("BEGIN;").strip().removesuffix("COMMIT;")
     raw = await connection.get_raw_connection()
     await raw.driver_connection.execute(ddl)
 
@@ -117,6 +182,8 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(lambda sync: EmployeeModel.__table__.create(sync, checkfirst=True))
             await connection.run_sync(lambda sync: FaceEnrollmentModel.__table__.create(sync, checkfirst=True))
             await apply_audit_sql(connection)
+            await apply_audit_sql(connection, OVERRIDE_SQL_PATH)
+            await apply_audit_sql(connection, OVERRIDE_SQL_PATH)
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.paths = patch(
@@ -141,9 +208,9 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await session.flush()
             session.add_all([
                 FaceEnrollmentModel(id=self.a_sample, employee_id=self.a, status=EnrollmentStatus.ENROLLED,
-                                    face_encoding=[0.0] * 128, image_path=face_image_reference(self.a_image)),
+                                    face_encoding=[0.0, 1.0] + [0.0] * 126, image_path=face_image_reference(self.a_image)),
                 FaceEnrollmentModel(id=self.b_sample, employee_id=self.b, status=EnrollmentStatus.ENROLLED,
-                                    face_encoding=[0.8] + [0.0] * 127, image_path=face_image_reference(self.b_image)),
+                                    face_encoding=[0.8, 1.0] + [0.0] * 126, image_path=face_image_reference(self.b_image)),
             ])
         self.app = FastAPI()
         self.app.include_router(router)
@@ -159,6 +226,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         # This database is dedicated to these tests; isolate the next synthetic case.
         async with self.engine.begin() as connection:
+            await connection.execute(FaceEnrollmentOverrideModel.__table__.delete())
             await connection.execute(FaceEnrollmentResetModel.__table__.delete())
             await connection.execute(FaceEnrollmentModel.__table__.delete())
             await connection.execute(EmployeeModel.__table__.delete())
@@ -290,7 +358,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
         photo = BytesIO()
         Image.new("RGB", (16, 16), "white").save(photo, format="PNG")
         face = SimpleNamespace(
-            extract_face_encoding=Mock(return_value=[0.1] + [0.0] * 127),
+            extract_face_encoding=Mock(return_value=[0.1, 1.0] + [0.0] * 126),
             match_threshold=lambda: 0.5,
             face_distances=face_recognition_service.face_distances,
         )
@@ -300,10 +368,10 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(face_reference_path(result.photo_reference).is_file())
         async with self.factory() as session:
             self.assertEqual((await session.get(EmployeeModel, self.a)).photo_reference, result.photo_reference)
-        face.extract_face_encoding.return_value = [0.2] + [0.0] * 127
+        face.extract_face_encoding.return_value = [0.2, 1.0] + [0.0] * 126
         second = await use_case.execute(EnrollFaceInputDTO(self.a, photo.getvalue(), self.actor))
         self.assertEqual(second.sample_count, 2)
-        face.extract_face_encoding.return_value = [0.4] + [0.0] * 127
+        face.extract_face_encoding.return_value = [0.4, 1.0] + [0.0] * 126
         with self.assertRaisesRegex(ValueError, "too similar.*another employee"):
             await use_case.execute(EnrollFaceInputDTO(self.a, photo.getvalue(), self.actor))
         async with self.factory() as session:
@@ -358,6 +426,92 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.factory() as session:
             self.assertIsNotNone(await session.scalar(select(FaceEnrollmentResetModel)))
 
+    async def test_hr_override_saves_sample_and_audit_together(self):
+        use_case, photo = self.similar_face_use_case()
+        with self.assertRaises(FaceSimilarityConflict) as raised:
+            await use_case.execute(EnrollFaceInputDTO(self.b, photo, self.actor))
+        self.assertEqual([item.employee_no for item in raised.exception.conflicts], [self.number])
+        self.assertIn("Closest distance 0.450; limit 0.500", str(raised.exception))
+        with self.assertRaisesRegex(FaceSimilarityConflict, "similar employees changed"):
+            await use_case.execute(EnrollFaceInputDTO(
+                self.b, photo, self.actor, SimilarityOverride(frozenset({"SOMEONE-ELSE"}), "Verified ID"),
+            ))
+        self.assertEqual(await self.sample_count(self.b), 1)
+
+        result = await use_case.execute(EnrollFaceInputDTO(
+            self.b, photo, self.actor, SimilarityOverride(frozenset({self.number}), "Verified ID in person"),
+        ))
+        self.assertEqual(result.sample_count, 2)
+        async with self.factory() as session:
+            audit = (await session.scalars(select(FaceEnrollmentOverrideModel))).one()
+            sample = await session.get(FaceEnrollmentModel, audit.enrollment_id)
+            self.assertEqual(sample.employee_id, self.b)
+            self.assertEqual(audit.conflicting_employee_ids, [self.a])
+            self.assertEqual(audit.conflicting_employee_nos, [self.number])
+            self.assertAlmostEqual(audit.closest_distance, 0.45)
+            self.assertEqual(audit.threshold, 0.5)
+            self.assertEqual(audit.approved_by, self.actor)
+            self.assertEqual(audit.reason, "Verified ID in person")
+
+    async def test_unavailable_override_audit_saves_neither_sample_nor_image(self):
+        use_case, photo = self.similar_face_use_case()
+        async with self.engine.begin() as connection:
+            await connection.execute(text(
+                "ALTER TABLE biometric.face_enrollment_similarity_overrides RENAME TO face_enrollment_overrides_off"
+            ))
+        try:
+            with self.assertRaisesRegex(EnrollmentAuditUnavailable, "approval audit could not be recorded"):
+                await use_case.execute(EnrollFaceInputDTO(
+                    self.b, photo, self.actor, SimilarityOverride(frozenset({self.number}), "Verified ID"),
+                ))
+        finally:
+            async with self.engine.begin() as connection:
+                await connection.execute(text(
+                    "ALTER TABLE biometric.face_enrollment_overrides_off RENAME TO face_enrollment_similarity_overrides"
+                ))
+        self.assertEqual(await self.sample_count(self.b), 1)
+        self.assertEqual(sorted(Path(self.directory.name).iterdir()), sorted(
+            [face_image_path(self.a_image), face_image_path(self.b_image)],
+        ))
+
+    async def test_invalid_vectors_cannot_be_saved_or_bypassed_by_an_hr_override(self):
+        use_case, photo = self.similar_face_use_case()
+        payload = EnrollFaceInputDTO(
+            self.b, photo, self.actor, SimilarityOverride(frozenset({self.number}), "Verified ID"),
+        )
+        use_case.face_encoding_service.extract_face_encoding.return_value = [0.0] * 128
+        with self.assertRaisesRegex(ValueError, "Captured face encoding is invalid"):
+            await use_case.execute(payload)
+        use_case.face_encoding_service.extract_face_encoding.return_value = [0.45, 1.0] + [0.0] * 126
+        async with self.factory.begin() as session:
+            sample = await session.get(FaceEnrollmentModel, self.a_sample)
+            sample.face_encoding = [float("nan")] + [0.0] * 127
+        with self.assertRaisesRegex(ValueError, "Stored face encoding is invalid"):
+            await use_case.execute(payload)
+        self.assertEqual(await self.sample_count(self.b), 1)
+        async with self.factory() as session:
+            self.assertIsNone(await session.scalar(select(FaceEnrollmentOverrideModel)))
+        self.assertEqual(
+            set(Path(self.directory.name).iterdir()), {face_image_path(self.a_image), face_image_path(self.b_image)},
+        )
+
+    def similar_face_use_case(self):
+        photo = BytesIO()
+        Image.new("RGB", (16, 16), "white").save(photo, format="PNG")
+        # 0.35 from employee B's own sample, 0.45 from employee A: inside the 0.5 limit for both.
+        face = SimpleNamespace(
+            extract_face_encoding=Mock(return_value=[0.45, 1.0] + [0.0] * 126),
+            match_threshold=lambda: 0.5,
+            face_distances=face_recognition_service.face_distances,
+        )
+        return EnrollFaceUseCase(GenUnitOfWork(self.factory), face), photo.getvalue()
+
+    async def sample_count(self, employee_id):
+        async with self.factory() as session:
+            return len((await session.scalars(
+                select(FaceEnrollmentModel.id).where(FaceEnrollmentModel.employee_id == employee_id)
+            )).all())
+
     async def test_reset_waits_for_enrollment_lock_and_rejects_stale_review(self):
         locked, release = asyncio.Event(), asyncio.Event()
 
@@ -365,7 +519,7 @@ class EnrollmentManagementDatabaseTests(unittest.IsolatedAsyncioTestCase):
             async with self.factory.begin() as session:
                 await lock_enrollment_employee(session, self.a)
                 session.add(FaceEnrollmentModel(
-                    employee_id=self.a, status=EnrollmentStatus.ENROLLED, face_encoding=[0.05] + [0.0] * 127,
+                    employee_id=self.a, status=EnrollmentStatus.ENROLLED, face_encoding=[0.05, 1.0] + [0.0] * 126,
                 ))
                 locked.set()
                 await release.wait()

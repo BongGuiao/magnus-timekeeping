@@ -299,7 +299,10 @@ stack. Before deploying the reset feature, apply
 [`backend/sql/20261113_add_face_enrollment_reset_audit.sql`](backend/sql/20261113_add_face_enrollment_reset_audit.sql)
 to the application's database, or use Alembic revision `f2a3b4c5d6e7` on an
 already correctly tracked installation. The reset and its audit commit together;
-an unavailable audit table blocks the reset. See the
+an unavailable audit table blocks the reset. Then apply
+[`backend/sql/20261113_add_face_enrollment_similarity_overrides.sql`](backend/sql/20261113_add_face_enrollment_similarity_overrides.sql)
+(Alembic `f3a4b5c6d7e8`) for HR-approved similar-face enrollments. Face punches
+also reject near-ties between employees (`FACE_MATCH_MARGIN`, default `0.05`). See the
 [face enrollment correction guide](frontend/README.md#reviewing-and-correcting-face-enrollment)
 for deployment prerequisites, retained audit history, and inspection queries.
 
