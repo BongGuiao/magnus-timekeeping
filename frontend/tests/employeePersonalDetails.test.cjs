@@ -4,6 +4,8 @@ const { runInNewContext } = require('node:vm')
 const assert = require('node:assert/strict')
 const test = require('node:test')
 const ts = require('typescript')
+const React = require('react')
+const { renderToStaticMarkup } = require('react-dom/server')
 
 function loadModule(name) {
   const compiled = ts.transpileModule(readFileSync(join(__dirname, '..', 'src', 'lib', `${name}.ts`), 'utf8'), {
@@ -15,6 +17,69 @@ function loadModule(name) {
 }
 
 const { parsePersonalDetailsCsv, personalDetailsCsvTemplate, personalDetailsFormValues, personalDetailsPayload } = loadModule('employeePersonalDetails')
+
+test('employee CSV export is visible only with the HR_ADMIN role, selected mode, and management permission', () => {
+  const compiled = ts.transpileModule(readFileSync(join(__dirname, '..', 'src', 'pages', 'Employees.tsx'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
+  for (const [roles, selected, manage, expected] of [
+    [['HR_ADMIN'], 'HR_ADMIN', true, true],
+    [['SYSTEM_ADMIN'], 'SYSTEM_ADMIN', true, false],
+    [['SYSTEM_ADMIN'], 'HR_ADMIN', true, false],
+    [['HR_ADMIN', 'SUPERVISOR'], 'SUPERVISOR', true, false],
+    [['HR_ADMIN'], 'HR_ADMIN', false, false],
+  ]) {
+    const exports = {}
+    runInNewContext(compiled, {
+      exports,
+      localStorage: { getItem: () => 'admin' },
+      require(name) {
+        if (name === 'react') return { ...React, useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot() }
+        if (name === '../types/role') return {
+          hasPermission: (permission) => manage && permission === 'employees.manage',
+          getAvailableRoleCodes: () => roles,
+          getSelectedDashboardRoleCode: () => selected,
+        }
+        if (name === '../lib/employeePersonalDetails') return loadModule('employeePersonalDetails')
+        if (name === '../hooks/useLogout') return { useLogout: () => ({ logout() {} }) }
+        if (name === '../components/dashboard/WorkspaceTabsContext') return { useWorkspaceTabs: () => null }
+        if (name.startsWith('../components/') || name === '../features/employees/EmployeePersonalDetailsImport') {
+          return { __esModule: true, default: () => null }
+        }
+        if (name.startsWith('../') || name === './ScheduleUploads') return {}
+        return require(name)
+      },
+    })
+    const html = renderToStaticMarkup(React.createElement(exports.default, { employeeName: 'Test Admin' }))
+    assert.equal(html.includes('Export CSV'), expected, `${roles}/${selected}/${manage}`)
+  }
+})
+
+test('employee export transport sends HR mode and rejects non-CSV responses', async () => {
+  let contentType = 'text/csv; charset=utf-8'
+  const blob = new Blob(['employee_no\r\nEMP001\r\n'], { type: 'text/csv' })
+  const compiled = ts.transpileModule(readFileSync(join(__dirname, '..', 'src', 'lib', 'employeeApi.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const exports = {}
+  runInNewContext(compiled, {
+    exports, Blob,
+    require(name) {
+      if (name === './apiClient') return { apiClient: {
+        async get(path, options) {
+          assert.equal(path, '/employees/export')
+          assert.equal(options.params.dashboard_role_code, 'HR_ADMIN')
+          assert.equal(options.responseType, 'blob')
+          return { data: blob, headers: { 'content-type': contentType } }
+        },
+      } }
+      return require(name)
+    },
+  })
+  assert.equal(await exports.exportEmployeesCsv(), blob)
+  contentType = 'text/html'
+  await assert.rejects(exports.exportEmployeesCsv(), /did not return a CSV file/)
+})
 
 test('downloaded template includes a complete example and rejects unchanged placeholders', () => {
   const template = personalDetailsCsvTemplate()

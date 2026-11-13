@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { enrollFace } from '../lib/enrollmentApi'
 import { searchUserByEmployeeCode } from '../lib/authApi'
 import type { UserSummary } from '../types/auth'
@@ -13,10 +13,22 @@ export function useFaceEnrollment() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<EnrollmentResult | null>(null)
+  const generation = useRef(0)
+
+  useEffect(() => () => { generation.current += 1 }, [])
+  useEffect(() => () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl)
+  }, [previewUrl])
 
   function changeEmployeeCode(next: string) {
+    generation.current += 1
     setEmployeeCode(next)
     setVerifiedUser(null)
+    setFile(null)
+    setPreviewUrl(null)
+    setResult(null)
+    setIsVerifying(false)
+    setIsSubmitting(false)
     setError(null)
   }
 
@@ -29,9 +41,11 @@ export function useFaceEnrollment() {
 
     setError(null)
     setIsVerifying(true)
+    const request = ++generation.current
 
     try {
       const user = await searchUserByEmployeeCode(code)
+      if (request !== generation.current) return
       if (!user.is_active) {
         setVerifiedUser(null)
         setError('This employee account is inactive.')
@@ -39,10 +53,12 @@ export function useFaceEnrollment() {
       }
       setVerifiedUser(user)
     } catch (err) {
-      setVerifiedUser(null)
-      setError(err instanceof Error ? err.message : 'Employee code could not be verified.')
+      if (request === generation.current) {
+        setVerifiedUser(null)
+        setError(err instanceof Error ? err.message : 'Employee code could not be verified.')
+      }
     } finally {
-      setIsVerifying(false)
+      if (request === generation.current) setIsVerifying(false)
     }
   }
 
@@ -50,13 +66,11 @@ export function useFaceEnrollment() {
     setFile(nextFile)
     setResult(null)
     setError(null)
-    setPreviewUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev)
-      return nextFile ? URL.createObjectURL(nextFile) : null
-    })
+    setPreviewUrl(nextFile ? URL.createObjectURL(nextFile) : null)
   }
 
   async function submit() {
+    if (isSubmitting) return
     if (!verifiedUser) {
       setError('Please verify the employee number first.')
       return
@@ -69,14 +83,17 @@ export function useFaceEnrollment() {
 
     setError(null)
     setIsSubmitting(true)
+    const request = generation.current
 
     try {
       const enrollment = await enrollFace(file, verifiedUser.employee_id ?? verifiedUser.id)
+      if (request !== generation.current) return
+      setFile(null)
       setResult(enrollment)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Face enrollment failed. Please try again.')
+      if (request === generation.current) setError(err instanceof Error ? err.message : 'Face enrollment failed. Please try again.')
     } finally {
-      setIsSubmitting(false)
+      if (request === generation.current) setIsSubmitting(false)
     }
   }
 

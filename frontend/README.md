@@ -1,5 +1,40 @@
 # React + TypeScript + Vite
 
+## Editing employee role assignments
+
+Under an employee's **Role** tab, **Edit assignment** allows changing org-unit
+scope, effective-from date, and expiration date. Role and company remain fixed.
+Org-unit choices are active units within the existing role assignment's company,
+not the employee's latest employment-assignment company. **All org units** clears
+the org-unit scope to company-wide. Changed scope and dates are checked for
+overlapping assignments before saving; the backend repeats the overlap checks.
+Existing unavailable/inactive scopes may be retained when changing dates only.
+Global assignments without a company keep their scope and allow date edits only.
+This does not change the employee's organizational placement or employment
+assignment. Existing role-management permissions and backend audit logging apply.
+
+## Employee CSV export
+
+In Employee Records, **Export CSV** downloads all employee profiles (including
+archived/disabled records) with bank account, SSS, Pag-IBIG, PhilHealth, TIN,
+civil status, complete address components, and PSGC codes. Employees without
+saved personal details are included with empty cells. Authentication, face
+encodings, employment assignments, and audit internals are not exported.
+
+Only accounts currently assigned the exact `HR_ADMIN` role, with
+`employees.manage` permission and `HR_ADMIN` dashboard mode, may export.
+`GET /employees/export?dashboard_role_code=HR_ADMIN` independently checks the
+current database authorization; a generic administrator role is insufficient.
+Export auditing records the actor and row count, not the exported personal data.
+Responses use `Cache-Control: no-store`.
+
+The UTF-8 CSV preserves saved address text and identifier strings; import
+identifier, postal-code, and PSGC columns **as Text** in spreadsheet software
+to retain leading zeroes. Formula-like cells receive an apostrophe prefix for
+spreadsheet safety, without modifying saved employee values. The file contains
+confidential personal information and must be stored securely.
+No migration is required; deploy the frontend and reload the backend together.
+
 ## Organizational chart
 
 In **Company Setup > Org Units**, select a company and switch from **Table** to
@@ -179,6 +214,68 @@ must still verify the employee in person. This is a client-side prompt only:
 the enrollment API does not independently verify the blink, and recorded video
 or a modified client can bypass it. Enrollment requires HTTPS (or localhost)
 camera access and connectivity to the model hosts above.
+
+### Reviewing and correcting face enrollment
+
+Employee Records > Face Enrollment shows the actual saved samples to HR Admins
+with `employees.manage`. The backend verifies the currently assigned `HR_ADMIN`
+role, not just cached browser roles. Saved photos are fetched through authenticated
+requests; templates/face encodings are never returned by the review API. A missing
+reference photo is explicitly shown and does not mean the employee is unenrolled.
+The profile picture represents only the first saved sample unless changed separately.
+
+Strict face matching is unchanged: a capture within `FACE_MATCH_THRESHOLD` of
+another employee is blocked even if its own employee's sample is closer. The
+message now describes a similarity conflict, not a confirmed identity. Review the
+named employee separately; do not lower the threshold or reset correct enrollments
+to bypass this protection. This workflow does not change kiosk or mobile punching.
+
+For confirmed incorrect enrollment, use **Remove all face samples** for that employee.
+HR must type the employee number, give a reason, and confirm the warning. The
+server requires the exact reviewed sample IDs and serializes reset with enrollment;
+changed records require a fresh review. Reset deletes only the selected employee's
+samples, clears their profile reference only if linked to those samples, and audits
+the actor, employee, sample IDs/count, and reason without images or templates.
+Attendance records are not deleted. Face punches will fail until the correct
+employee is re-enrolled in person.
+
+Reset auditing is stored in PostgreSQL in `biometric.face_enrollment_resets`, in
+the same transaction as the reset. It records the timestamp, actor and employee
+identifiers, employee number, removed sample IDs/count, reason, and whether the
+linked profile photo was cleared. It never stores photos, image paths, face
+encodings, or similarity scores. It works with Elasticsearch disabled; an
+Elasticsearch event, when configured, is only an optional best-effort copy.
+If the database audit cannot be saved, the reset fails and the samples, profile
+photo, and files remain intact. Database commit failure rolls back both records.
+Employee/account deletion does not cascade-delete audit history.
+
+**Deployment prerequisite:** back up the production database and uploaded files,
+then apply the additive
+[`20261113_add_face_enrollment_reset_audit.sql`](../backend/sql/20261113_add_face_enrollment_reset_audit.sql)
+to the application's database before deploying this backend and frontend together.
+It only creates the reset audit table/index and can safely be rerun. For a database
+already correctly tracked by Alembic, use revision `f2a3b4c5d6e7` (after
+`e1f2a3b4c5d6`) instead. Do not initialize or stamp an existing production database
+just to apply this change. A code rollback should retain the audit table; Alembic
+refuses to drop it once audit records exist. No production Elasticsearch service
+or logging configuration change is needed.
+
+Authorized database administrators can inspect recent resets with:
+
+```sql
+SELECT reset_at, reset_by, employee_id, employee_no, sample_count,
+       reason, profile_photo_cleared
+FROM biometric.face_enrollment_resets
+ORDER BY reset_at DESC
+LIMIT 50;
+```
+
+Unreferenced sample images are removed after the database commit; files shared by
+another profile/sample are preserved. Cleanup failures are reported explicitly,
+and orphaned image URLs are no longer served. Unsupported legacy photo references
+require manual storage cleanup. Neither employee is reset automatically when a
+similarity conflict occurs. Late capture/save/reset responses cannot update a
+different employee after navigating away.
 
 ## Dashboard worked hours
 

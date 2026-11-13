@@ -20,6 +20,18 @@ def face_image_reference(image_id: UUID) -> str:
     return f"/enrollment/photos/{image_id}.jpg"
 
 
+def face_reference_path(reference: str | None) -> Path | None:
+    if not reference or not reference.startswith("/enrollment/photos/") or not reference.endswith(".jpg"):
+        return None
+    try:
+        image_id = UUID(reference.removeprefix("/enrollment/photos/")[:-4])
+    except ValueError:
+        return None
+    if face_image_reference(image_id) != reference:
+        return None
+    return face_image_path(image_id)
+
+
 def prepare_face_reference_image(image_bytes: bytes) -> bytes:
     try:
         with Image.open(BytesIO(image_bytes)) as source:

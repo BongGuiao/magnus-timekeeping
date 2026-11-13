@@ -33,7 +33,7 @@ export interface CreateUserRolePayload {
 }
 
 export type UpdateUserRolePayload = Partial<
-  Pick<UserRoleAssignment, 'effective_from' | 'effective_to'>
+  Pick<UserRoleAssignment, 'org_unit_id' | 'effective_from' | 'effective_to'>
 >
 
 function rethrowApiError(error: unknown, fallback: string): never {

@@ -80,6 +80,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   const [effectiveTo, setEffectiveTo] = useState('')
   const [editingAssignment, setEditingAssignment] = useState<{
     id: string
+    org_unit_id: string
     effective_from: string
     effective_to: string
   } | null>(null)
@@ -89,6 +90,12 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const today = getManilaDate()
+
+  function activeOrgUnitsForCompany(assignmentCompanyId: string | null) {
+    return orgUnits.filter((unit) =>
+      unit.company_id === assignmentCompanyId && unit.is_active && unit.status === 'ACTIVE',
+    )
+  }
 
   useEffect(() => {
     if (!employeeId) {
@@ -183,14 +190,15 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
     setNotice('')
     setEditingAssignment({
       id: assignment.id,
+      org_unit_id: assignment.org_unit_id ?? '',
       effective_from: assignment.effective_from,
       effective_to: assignment.effective_to ?? '',
     })
   }
 
-  async function saveAssignmentDates() {
-    if (!editingAssignment || isSaving) return
-    const { id, effective_from: nextFrom, effective_to: nextTo } = editingAssignment
+  async function saveAssignment() {
+    if (!editingAssignment || isSaving || processingAssignmentId) return
+    const { id, org_unit_id: nextOrgUnit, effective_from: nextFrom, effective_to: nextTo } = editingAssignment
     if (!nextFrom) {
       setError('The effective-from date is required.')
       return
@@ -204,15 +212,26 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
       setError('This role assignment is no longer available. Reload the employee roles and try again.')
       return
     }
+    const scopeChanged = nextOrgUnit !== (current.org_unit_id ?? '')
+    if (scopeChanged && (
+      !current.company_id
+      || (nextOrgUnit && !activeOrgUnitsForCompany(current.company_id).some((unit) => unit.id === nextOrgUnit))
+    )) {
+      setError('Select an active org unit within this role assignment’s company, or choose All org units.')
+      return
+    }
     const hasOverlappingRole = assignments.some((assignment) =>
       assignment.id !== id
       && assignment.role_id === current.role_id
-      && assignmentScopesOverlap(assignment, current)
+      && assignmentScopesOverlap(assignment, {
+        company_id: current.company_id,
+        org_unit_id: nextOrgUnit || null,
+      })
       && (!nextTo || assignment.effective_from <= nextTo)
       && (!assignment.effective_to || assignment.effective_to >= nextFrom),
     )
     if (hasOverlappingRole) {
-      setError('These dates overlap another assignment for the same role and scope.')
+      setError('The selected scope and dates overlap another assignment for the same role.')
       return
     }
 
@@ -221,12 +240,13 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
     setNotice('')
     try {
       await updateUserRoleAssignment(id, {
+        ...(scopeChanged ? { org_unit_id: nextOrgUnit || null } : {}),
         effective_from: nextFrom,
         effective_to: nextTo || null,
       })
       await refreshAssignments()
       setEditingAssignment(null)
-      setNotice('Role assignment dates updated.')
+      setNotice('Role assignment updated.')
     } catch (cause) {
       setError(errorText(cause))
     } finally {
@@ -264,11 +284,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
   const companiesById = new Map(companies.map((company) => [company.id, company]))
   const orgUnitsById = new Map(orgUnits.map((orgUnit) => [orgUnit.id, orgUnit]))
   const activeAssignmentCount = assignments.filter((assignment) => assignmentIsCurrent(assignment, today)).length
-  const scopedOrgUnits = orgUnits.filter((orgUnit) =>
-    orgUnit.company_id === companyId
-    && orgUnit.is_active
-    && orgUnit.status === 'ACTIVE',
-  )
+  const scopedOrgUnits = activeOrgUnitsForCompany(companyId)
 
   return (
     <div className="mx-auto max-w-5xl space-y-5" aria-busy={isLoading || isSaving || Boolean(processingAssignmentId)}>
@@ -366,7 +382,24 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
                         <span>{scopeLabel(assignment, companiesById, orgUnitsById)}</span>
                       </div>
                       {editingAssignment?.id === assignment.id && (
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                          <label className={labelClassName}>Org unit scope
+                            <SearchableSelect
+                              label="Edit org unit scope"
+                              value={editingAssignment.org_unit_id}
+                              onChange={(value) => setEditingAssignment((current) => current
+                                ? { ...current, org_unit_id: value }
+                                : current)}
+                              disabled={!assignment.company_id}
+                              className={inputClassName}
+                              options={[
+                                { value: '', label: 'All org units' },
+                                ...activeOrgUnitsForCompany(assignment.company_id).map((unit) => ({
+                                  value: unit.id, label: `${unit.org_unit_code} — ${unit.org_unit_name}`,
+                                })),
+                              ]}
+                            />
+                          </label>
                           <label className={labelClassName}>Effective from
                             <input
                               type="date"
@@ -398,14 +431,14 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
                         <>
                           <button
                             type="button"
-                            onClick={() => void saveAssignmentDates()}
+                            onClick={() => void saveAssignment()}
                             disabled={Boolean(processingAssignmentId)}
                             className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
                           >
                             {processingAssignmentId === assignment.id
                               ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                               : <Check className="h-4 w-4" aria-hidden="true" />}
-                            Save dates
+                            Save changes
                           </button>
                           <button
                             type="button"
@@ -423,7 +456,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
                             onClick={() => startEditingAssignment(assignment)}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                           >
-                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />Edit dates
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />Edit assignment
                           </button>
                           {isCurrent && !isFuture && assignment.effective_to !== today && (
                             <button type="button" onClick={() => void endAssignment(assignment)} disabled={Boolean(processingAssignmentId)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">
@@ -441,7 +474,7 @@ export default function EmployeeRolePanel({ employee, companies, orgUnits }: Pro
 
         <div className="flex items-start gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-4">
           <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-indigo-500" aria-hidden="true" />
-          <p className="text-[11px] leading-5 text-indigo-900">Set an optional expiration date, edit assignment dates, or revoke a current role. Expired and revoked assignments remain in history. A new assignment for the same role and scope is allowed when its dates do not overlap.</p>
+          <p className="text-[11px] leading-5 text-indigo-900">Edit org-unit scope and dates, set an optional expiration date, or revoke a current role. The role and company remain unchanged. Org-unit scope controls this role assignment, not the employee&apos;s employment assignment. Expired and revoked assignments remain in history. Assignments for the same role and overlapping scope cannot overlap in dates.</p>
         </div>
       </fieldset>
     </div>

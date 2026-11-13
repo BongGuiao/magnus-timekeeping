@@ -22,6 +22,34 @@ function rethrowApiError(error: unknown, fallback: string): never {
   throw error
 }
 
+export async function exportEmployeesCsv(): Promise<Blob> {
+  try {
+    const response = await apiClient.get<Blob>('/employees/export', {
+      params: { dashboard_role_code: 'HR_ADMIN' },
+      responseType: 'blob',
+    })
+    const contentType = response.headers['content-type']
+    if (typeof contentType !== 'string' || !contentType.startsWith('text/csv')) {
+      throw new Error('The employee export server did not return a CSV file.')
+    }
+    return response.data
+  } catch (error) {
+    if (error instanceof AxiosError) {
+      const data: unknown = error.response?.data
+      if (data instanceof Blob) {
+        let body: unknown
+        try { body = JSON.parse(await data.text()) }
+        catch (parseError) { if (!(parseError instanceof SyntaxError)) throw parseError }
+        if (body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string') {
+          throw new Error(body.detail)
+        }
+      }
+      throw new Error('Could not export employees. Check your access and connection, then try again.')
+    }
+    throw error
+  }
+}
+
 export async function fetchEmployeePersonalDetails(employeeId: string): Promise<PersonalDetails | null> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<PersonalDetails | null>>(`/employees/${employeeId}/personal-details`)

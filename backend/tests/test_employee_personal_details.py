@@ -1,20 +1,28 @@
 import asyncio
+import csv
 import os
 import unittest
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.database import engine
 from app.core.generics.uow import GenUnitOfWork
+from app.audit.infrastructure.dependencies import get_audit_es_client
+from app.auth.infrastructure.dependencies import get_current_authorization_use_case, get_current_user_claims
+from app.core.generics.uow import get_unit_of_work
+from app.filemaintenance.employees.application.employee_export import (
+    EMPLOYEE_EXPORT_FIELDS, PERSONAL_DETAILS_EXPORT_FIELDS,
+)
 from app.filemaintenance.employees.application.personal_details import (
     EmployeePersonalDetailsInput,
     plan_personal_details_fill,
@@ -81,6 +89,123 @@ class PersonalDetailsPermissionsTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(path=route.path), self.assertRaises(HTTPException) as error:
                 await permission(claims={"sub": str(uuid4())}, use_case=authorization)
             self.assertEqual(error.exception.status_code, 403)
+
+
+class EmployeeExportTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.actor_id = uuid4()
+        self.authorization = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+            role_codes=["HR_ADMIN"], permission_codes=["employees.manage"],
+        )))
+        self.rows = []
+        self.session = SimpleNamespace(execute=AsyncMock(
+            side_effect=lambda statement: SimpleNamespace(all=lambda: self.rows),
+        ))
+        session = self.session
+
+        class FakeUow:
+            async def __aenter__(self):
+                self.session = session
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        app = FastAPI()
+        app.include_router(router, prefix="/employees")
+        app.dependency_overrides[get_current_user_claims] = lambda: {
+            "sub": str(self.actor_id), "role_codes": ["HR_ADMIN"],
+        }
+        app.dependency_overrides[get_current_authorization_use_case] = lambda: self.authorization
+        app.dependency_overrides[get_unit_of_work] = FakeUow
+        app.dependency_overrides[get_audit_es_client] = lambda: None
+        self.app = app
+
+    async def download(self, role="HR_ADMIN"):
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/employees/export",
+            "raw_path": b"/employees/export", "root_path": "",
+            "query_string": f"dashboard_role_code={role}".encode() if role else b"",
+            "headers": [], "server": ("localhost", 80), "client": ("127.0.0.1", 1234),
+        }
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await self.app(scope, receive, send)
+        return SimpleNamespace(
+            status_code=messages[0]["status"],
+            headers={key.decode(): value.decode() for key, value in messages[0]["headers"]},
+            content=b"".join(message.get("body", b"") for message in messages),
+        )
+
+    async def test_current_hr_role_permission_and_selected_mode_are_all_required(self):
+        for roles, permissions, selected in (
+            (["SYSTEM_ADMIN"], ["employees.manage"], "HR_ADMIN"),
+            (["SUPERVISOR"], ["employees.manage"], "HR_ADMIN"),
+            ([], ["employees.manage"], "HR_ADMIN"),
+            (["HR_ADMIN"], ["employees.read"], "HR_ADMIN"),
+            (["HR_ADMIN", "SUPERVISOR"], ["employees.manage"], "SUPERVISOR"),
+        ):
+            self.authorization.execute.return_value = SimpleNamespace(
+                role_codes=roles, permission_codes=permissions,
+            )
+            with self.subTest(roles=roles, selected=selected):
+                self.assertEqual((await self.download(selected)).status_code, 403)
+        self.session.execute.assert_not_awaited()
+
+    async def test_csv_includes_all_profile_fields_addresses_and_employees_without_details(self):
+        headers = (*EMPLOYEE_EXPORT_FIELDS, *PERSONAL_DETAILS_EXPORT_FIELDS)
+        saved = {
+            "employee_no": "000123", "first_name": "Synthetic", "last_name": "Employee",
+            "bank_account_no": "000456", "sss_no": "001234", "pagibig_no": "000789",
+            "philhealth_no": "000987", "tin_no": "000321", "civil_status": "SINGLE",
+            "address_line_1": 'Unit 1, "Sample" Street', "address_line_2": "Floor 2\nBuilding A",
+            "region": "Test region", "province": "Test province",
+            "city_municipality": "Test city", "barangay": "Test barangay",
+            "postal_code": "0100", "psgc_region_code": "010000000",
+            "psgc_province_code": "010010000", "psgc_city_code": "010010100",
+            "psgc_barangay_code": "010010101", "record_status": "ARCHIVED", "is_active": False,
+        }
+        self.rows = [
+            tuple(saved.get(field) for field in headers),
+            tuple("LEGACY" if field == "employee_no" else None for field in headers),
+        ]
+        with patch(
+            "app.filemaintenance.employees.infrastructure.personal_details_router.log_entity_action",
+            new=AsyncMock(),
+        ) as audit:
+            response = await self.download()
+        self.assertEqual(audit.await_args.kwargs["after"], {"row_count": 2})
+        self.assertEqual(audit.await_args.kwargs["action"], "EXPORT")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertIn('filename="employees.csv"', response.headers["content-disposition"])
+        rows = list(csv.DictReader(StringIO(response.content.decode("utf-8-sig"), newline="")))
+        for field, value in saved.items():
+            self.assertEqual(rows[0][field], str(value))
+        self.assertEqual(rows[1]["employee_no"], "LEGACY")
+        self.assertEqual(rows[1]["address_line_1"], "")
+        statement = self.session.execute.await_args.args[0]
+        self.assertIn("LEFT OUTER JOIN", str(statement))
+        self.assertIsNone(statement.whereclause)
+        self.assertEqual((await self.download(None)).status_code, 422)
+
+    async def test_empty_export_has_headers_and_formula_values_are_neutralized(self):
+        headers = (*EMPLOYEE_EXPORT_FIELDS, *PERSONAL_DETAILS_EXPORT_FIELDS)
+        response = await self.download()
+        self.assertEqual(list(csv.reader(StringIO(response.content.decode("utf-8-sig")))), [list(headers)])
+        for value in ("=1+1", " +cmd", "-1", "@SUM(1,1)", "\tcmd", "\rcmd", "\ncmd"):
+            self.rows = [tuple(value if field == "address_line_1" else None for field in headers)]
+            response = await self.download()
+            rows = list(csv.DictReader(StringIO(response.content.decode("utf-8-sig"), newline="")))
+            self.assertEqual(rows[0]["address_line_1"], "'" + value)
 
 
 TEST_DATABASE_NAME = os.getenv("EMPLOYEE_DETAILS_TEST_DATABASE_NAME", "")

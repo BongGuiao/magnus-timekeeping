@@ -8,6 +8,7 @@ from app.filemaintenance.employees.domain.entities.employee import EmployeeEntit
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 from app.enrollment.infrastructure.db_model import FaceEnrollmentModel
 from app.enrollment.domain.entities.enrollment import EnrollmentStatus, FaceEnrollmentEntity
+from app.enrollment.application.management import lock_enrollment_employee
 from app.enrollment.infrastructure.image_storage import (
     face_image_path,
     face_image_reference,
@@ -50,6 +51,14 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
 
         try:
             async with self.uow as uow:
+                if uow.session is None:
+                    raise RuntimeError("UnitOfWork session is not active.")
+                await lock_enrollment_employee(uow.session, input_dto.employee_id)
+                employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
+                employee = await employee_repo.find_one(EmployeeModel.id == input_dto.employee_id)
+                if employee is None or not employee.is_active or employee.record_status != "ACTIVE":
+                    raise ValueError("An active employee profile is required for face enrollment.")
+
                 repo = uow.get_repo(FaceEnrollmentEntity, FaceEnrollmentModel)
                 existing = await repo.find_all(
                     FaceEnrollmentModel.employee_id == input_dto.employee_id,
@@ -78,11 +87,6 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
                         updated_by=input_dto.acting_user_id,
                     )
                 )
-
-                employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
-                employee = await employee_repo.find_one(EmployeeModel.id == input_dto.employee_id)
-                if employee is None or not employee.is_active or employee.record_status != "ACTIVE":
-                    raise ValueError("An active employee profile is required for face enrollment.")
 
                 employee_photo_reference = employee.photo_reference
                 if not existing:
@@ -134,5 +138,9 @@ class EnrollFaceUseCase(BaseUseCase[EnrollFaceOutputDTO]):
             if other_distances[closest_index] <= threshold:
                 employee_repo = uow.get_repo(EmployeeEntity, EmployeeModel)
                 other_employee = await employee_repo.find_one(EmployeeModel.id == others[closest_index].employee_id)
-                label = other_employee.employee_no if other_employee else "another employee"
-                raise ValueError(f"This face is already enrolled for another employee ({label}).")
+                label = f"another employee ({other_employee.employee_no})" if other_employee else "another employee"
+                raise ValueError(
+                    f"This capture is too similar to an enrolled face for {label}. "
+                    "No sample was saved. Ask an HR Admin to review the saved samples in Employee Records. "
+                    "Similarity does not confirm that they are the same person."
+                )

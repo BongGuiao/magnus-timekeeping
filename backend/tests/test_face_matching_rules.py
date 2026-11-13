@@ -125,6 +125,25 @@ class EnrollmentFaceGuardTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, r"another employee \(EMP-0009\)"):
             await self.guard(enrolled, vector(0))
 
+    async def test_strict_protection_remains_even_when_own_sample_is_closer(self):
+        enrolled = [
+            SimpleNamespace(employee_id=self.employee_id, face_encoding=vector(0)),
+            SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.502)),
+        ]
+        with self.assertRaisesRegex(ValueError, "No sample was saved"):
+            await self.guard(enrolled, vector(0.01))
+
+    async def test_conflict_uses_nearest_other_sample_not_first_record(self):
+        first_id = uuid4()
+        enrolled = [
+            SimpleNamespace(employee_id=first_id, face_encoding=vector(0.8)),
+            SimpleNamespace(employee_id=self.other_id, face_encoding=vector(0.2)),
+        ]
+        with self.assertRaisesRegex(ValueError, "Similarity does not confirm"):
+            await self.guard(enrolled, vector(0))
+        criterion = self.employee_repo.find_one.await_args.args[0]
+        self.assertEqual(criterion.right.value, self.other_id)
+
 
 if __name__ == "__main__":
     unittest.main()

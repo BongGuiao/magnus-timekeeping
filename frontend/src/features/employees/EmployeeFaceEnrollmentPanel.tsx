@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Camera, CheckCircle2 } from 'lucide-react'
 import { enrollFace } from '../../lib/enrollmentApi'
 import type { Employee } from '../../types/employee'
 import type { EnrollmentResult } from '../../types/enrollment'
 import { useBlinkWebcamCapture } from '../../hooks/useBlinkWebcamCapture'
+import { getAvailableRoleCodes, hasPermission } from '../../types/role'
+import EmployeeFaceSamples from './EmployeeFaceSamples'
 
 interface Props {
   employee: Employee | null
   isActive: boolean
-  onPhotoReferenceSaved?: (photoReference: string) => void
+  onPhotoReferenceSaved?: (photoReference: string | null) => void
 }
 
 export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhotoReferenceSaved }: Props) {
@@ -16,15 +18,26 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [result, setResult] = useState<EnrollmentResult | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isResetting, setIsResetting] = useState(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const [error, setError] = useState('')
-  const webcam = useBlinkWebcamCapture()
-  const stopCamera = webcam.stop
+  const generation = useRef(0)
+  const {
+    videoRef, isActive: cameraActive, isCheckingBlink, blinkStatus, error: webcamError,
+    stop: stopCamera, start: startCamera, capture,
+  } = useBlinkWebcamCapture()
+  const busy = isSubmitting || isResetting
+  const canReview = getAvailableRoleCodes().includes('HR_ADMIN') && hasPermission('employees.manage')
 
   useEffect(() => {
+    generation.current += 1
     setFile(null)
     setPreviewUrl(null)
     setResult(null)
     setError('')
+    setIsSubmitting(false)
+    setIsResetting(false)
+    return () => { generation.current += 1 }
   }, [employee?.id])
 
   useEffect(() => {
@@ -49,14 +62,16 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   }
 
   async function capturePhoto() {
-    const photo = await webcam.capture()
-    if (photo) {
+    const request = generation.current
+    const photo = await capture()
+    if (photo && request === generation.current) {
       selectFile(photo)
-      webcam.stop()
+      stopCamera()
     }
   }
 
   async function submitEnrollment() {
+    if (busy) return
     if (!employee || !employee.is_active || employee.record_status !== 'ACTIVE') {
       setError('An active employee profile is required for face enrollment.')
       return
@@ -68,17 +83,20 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
 
     setError('')
     setIsSubmitting(true)
+    const request = generation.current
     try {
       const enrollmentResult = await enrollFace(file, employee.id)
+      if (request !== generation.current) return
       setFile(null)
       setResult(enrollmentResult)
+      setRefreshVersion((value) => value + 1)
       if (enrollmentResult.photo_reference) {
         onPhotoReferenceSaved?.(enrollmentResult.photo_reference)
       }
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Face enrollment failed.')
+      if (request === generation.current) setError(submitError instanceof Error ? submitError.message : 'Face enrollment failed.')
     } finally {
-      setIsSubmitting(false)
+      if (request === generation.current) setIsSubmitting(false)
     }
   }
 
@@ -96,6 +114,20 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
 
   return (
     <section className="flex flex-col gap-4">
+      {canReview && (
+        <EmployeeFaceSamples
+          employee={employee}
+          isActive={isActive}
+          disabled={isSubmitting || cameraActive}
+          refreshVersion={refreshVersion}
+          onResettingChange={setIsResetting}
+          onReset={(photoReference) => {
+            selectFile(null)
+            setRefreshVersion((value) => value + 1)
+            onPhotoReferenceSaved?.(photoReference)
+          }}
+        />
+      )}
       {result && !isActive && (
         <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -107,14 +139,14 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
         <div className="flex flex-col gap-2">
           <div className={`relative flex aspect-[5/3] w-full items-center justify-center overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 ${isActive ? 'min-h-[16rem] max-h-[75svh]' : 'min-h-52'}`}>
             <video
-              ref={webcam.videoRef}
+              ref={videoRef}
               muted
               autoPlay
               playsInline
               aria-label="Live camera preview"
-              className={`absolute inset-0 h-full w-full object-cover ${webcam.isActive ? '' : 'hidden'}`}
+              className={`absolute inset-0 h-full w-full object-cover ${cameraActive ? '' : 'hidden'}`}
             />
-            {webcam.isActive ? (
+            {cameraActive ? (
               <>
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/40" />
                 <div className="pointer-events-none absolute inset-x-[28%] inset-y-[10%] rounded-[45%] border-2 border-white/80 shadow-[0_0_0_999px_rgba(15,23,42,0.16)]" />
@@ -132,15 +164,15 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
               </div>
             )}
           </div>
-          {file && !webcam.isActive && (
+          {file && !cameraActive && (
             <p className="truncate text-xs text-slate-500" title={file.name}>Selected: {file.name}</p>
           )}
-          {webcam.blinkStatus && <p role="status" className="text-sm text-indigo-700">{webcam.blinkStatus}</p>}
+          {blinkStatus && <p role="status" className="text-sm text-indigo-700">{blinkStatus}</p>}
         </div>
 
         <div className="flex flex-col justify-center gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
           {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
-          {webcam.error && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{webcam.error}</p>}
+          {webcamError && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{webcamError}</p>}
           {result && isActive && (
             <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
               <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -157,18 +189,18 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
             </ul>
           </div>
 
-          {webcam.isActive ? (
+          {cameraActive ? (
             <div className="flex flex-wrap gap-2">
-              <button type="button" disabled={webcam.isCheckingBlink || isSubmitting} onClick={() => void capturePhoto()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
-                <Camera className="h-4 w-4" aria-hidden="true" /> {webcam.isCheckingBlink ? 'Waiting for blink...' : 'Blink and capture'}
+              <button type="button" disabled={isCheckingBlink || busy} onClick={() => void capturePhoto()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2">
+                <Camera className="h-4 w-4" aria-hidden="true" /> {isCheckingBlink ? 'Waiting for blink...' : 'Blink and capture'}
               </button>
-              <button type="button" onClick={webcam.stop} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
+              <button type="button" onClick={stopCamera} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-100">
                 Cancel camera
               </button>
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              <button type="button" disabled={isSubmitting} onClick={() => { selectFile(null); void webcam.start() }} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50">
+              <button type="button" disabled={busy} onClick={() => { selectFile(null); void startCamera() }} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50">
                 <Camera className="h-4 w-4" aria-hidden="true" /> Use webcam
               </button>
             </div>
@@ -176,7 +208,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
 
           <button
             type="button"
-            disabled={!employee.is_active || employee.record_status !== 'ACTIVE' || !file || isSubmitting || webcam.isActive}
+            disabled={!employee.is_active || employee.record_status !== 'ACTIVE' || !file || busy || cameraActive}
             onClick={() => void submitEnrollment()}
             className="w-full rounded-lg border border-indigo-700 bg-white px-4 py-2.5 text-sm font-bold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
           >

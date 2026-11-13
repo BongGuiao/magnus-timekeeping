@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { BadgeCheck, BriefcaseBusiness, CalendarDays, ContactRound, Download, FileUp, MapPin, Pencil, Plus, ScanFace, Shield, Sparkles, Users } from 'lucide-react'
 import { z } from 'zod'
@@ -10,7 +10,7 @@ import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
 import { apiClient } from '../lib/apiClient'
-import { createEmployee, EMPLOYEE_CREATED_EVENT, fetchEmployee, fetchEmployeePersonalDetails, fetchEmployees, updateEmployee } from '../lib/employeeApi'
+import { createEmployee, EMPLOYEE_CREATED_EVENT, exportEmployeesCsv, fetchEmployee, fetchEmployeePersonalDetails, fetchEmployees, updateEmployee } from '../lib/employeeApi'
 import type { EmployeeWritePayload } from '../lib/employeeApi'
 import { fetchCompanies } from '../lib/companyApi'
 import { fetchOrgUnits } from '../lib/orgUnitApi'
@@ -43,7 +43,7 @@ import {
 } from '../lib/employeePersonalDetails'
 import type { PersonalDetailsValues } from '../lib/employeePersonalDetails'
 import { useWorkspaceTabs } from '../components/dashboard/WorkspaceTabsContext'
-import { hasPermission } from '../types/role'
+import { getAvailableRoleCodes, getSelectedDashboardRoleCode, hasPermission } from '../types/role'
 import type { Company } from '../types/company'
 import type { Employee } from '../types/employee'
 import type { OrgUnit } from '../types/orgUnit'
@@ -132,6 +132,17 @@ function FieldError({ message }: { message?: string }) {
   return message ? <p className="mt-1 text-xs font-medium text-rose-600">{message}</p> : null
 }
 
+function subscribeToDashboardRole(onChange: () => void) {
+  window.addEventListener('dashboard-role-change', onChange)
+  return () => window.removeEventListener('dashboard-role-change', onChange)
+}
+
+function getEmployeeExportAccess() {
+  return hasPermission('employees.manage')
+    && getSelectedDashboardRoleCode() === 'HR_ADMIN'
+    && getAvailableRoleCodes().includes('HR_ADMIN')
+}
+
 function EmployeePhoto({ photoReference, employeeName, size = 'h-10 w-10', shape = 'circle' }: {
   photoReference: string | null
   employeeName: string
@@ -186,6 +197,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const [isExportingCsv, setIsExportingCsv] = useState(false)
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false)
   const [csvFileName, setCsvFileName] = useState('')
   const [csvPreviewRows, setCsvPreviewRows] = useState<EmployeeCsvPreviewRow[]>([])
@@ -210,6 +222,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [companies, setCompanies] = useState<Company[]>([])
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([])
   const canManageEmployees = hasPermission('employees.manage')
+  const canExportEmployees = useSyncExternalStore(subscribeToDashboardRole, getEmployeeExportAccess, getEmployeeExportAccess)
   const canManageRoles = hasPermission('system.manage')
   const canManagePayroll = hasPermission('payroll.manage')
   const canUploadSchedules = hasPermission('schedule.upload_team')
@@ -404,6 +417,31 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
     link.download = 'employee-import-template.csv'
     link.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function downloadEmployeeExport() {
+    setErrorMessage('')
+    setSuccessMessage('')
+    setIsExportingCsv(true)
+    try {
+      const blob = await exportEmployeesCsv()
+      const url = URL.createObjectURL(blob)
+      try {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = 'employees.csv'
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+      setSuccessMessage('Employee CSV downloaded. It contains confidential personal information; store it securely.')
+    } catch (error: unknown) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not export employees.')
+    } finally {
+      setIsExportingCsv(false)
+    }
   }
 
   async function selectEmployeeCsv(file: File | undefined) {
@@ -912,6 +950,16 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             </p>
           </div>
           {canManageEmployees && <div className="flex flex-wrap gap-2">
+            {canExportEmployees && <button
+              type="button"
+              onClick={() => { void downloadEmployeeExport() }}
+              disabled={isLoading || isExportingCsv || isImportingCsv || isImportingAssignmentCsv}
+              title="Export all employee records, including confidential personal information and addresses"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" />
+              {isExportingCsv ? 'Exporting...' : 'Export CSV'}
+            </button>}
             <button
               type="button"
               onClick={() => {
@@ -1245,8 +1293,8 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                       isActive={isWorkspaceActive && isFormOpen && activeTab === 'face'}
                       onPhotoReferenceSaved={(photoReference) => {
                         if (!editingEmployee) return
-                        setValue('photo_reference', photoReference)
-                        setEditingEmployee((current) => current
+                        setValue('photo_reference', photoReference ?? '')
+                        setEditingEmployee((current) => current?.id === editingEmployee.id
                           ? { ...current, photo_reference: photoReference }
                           : current)
                         setEmployees((current) => current.map((employee) => employee.id === editingEmployee.id

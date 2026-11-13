@@ -1,11 +1,19 @@
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from elasticsearch import AsyncElasticsearch
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from app.auth.infrastructure.dependencies import require_permission
+from app.audit.infrastructure.dependencies import get_audit_es_client
+from app.audit.service import log_entity_action
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case,
+    get_current_user_claims,
+    require_permission,
+)
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.employees.application.personal_details import (
@@ -14,12 +22,69 @@ from app.filemaintenance.employees.application.personal_details import (
     plan_personal_details_fill,
     save_personal_details,
 )
+from app.filemaintenance.employees.application.employee_export import (
+    EMPLOYEE_EXPORT_FIELDS,
+    PERSONAL_DETAILS_EXPORT_FIELDS,
+    employee_export_csv,
+)
 from app.filemaintenance.employees.infrastructure.db_model import (
     EmployeeModel,
     EmployeePersonalDetailsModel,
 )
 
 router = APIRouter()
+
+
+async def require_employee_export_access(
+    dashboard_role_code: str = Query(...),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> dict[str, Any]:
+    try:
+        user_id = UUID(str(claims["sub"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=401, detail="Invalid user identity in authentication token.") from error
+    current = await use_case.execute(user_id)
+    if "employees.manage" not in current.permission_codes:
+        raise HTTPException(status_code=403, detail="Permission denied.")
+    if dashboard_role_code != "HR_ADMIN" or "HR_ADMIN" not in current.role_codes:
+        raise HTTPException(status_code=403, detail="Employee exports require the HR_ADMIN role and HR_ADMIN dashboard mode.")
+    return claims
+
+
+@router.get("/export")
+async def export_employees(
+    claims: dict[str, Any] = Depends(require_employee_export_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    async with uow as active_uow:
+        session = active_uow.session
+        if session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        columns = [
+            *(getattr(EmployeeModel, field) for field in EMPLOYEE_EXPORT_FIELDS),
+            *(getattr(EmployeePersonalDetailsModel, field) for field in PERSONAL_DETAILS_EXPORT_FIELDS),
+        ]
+        rows = (await session.execute(
+            select(*columns)
+            .outerjoin(EmployeePersonalDetailsModel, EmployeePersonalDetailsModel.employee_id == EmployeeModel.id)
+            .order_by(EmployeeModel.employee_no)
+        )).all()
+        content = employee_export_csv(rows)
+    await log_entity_action(
+        es_client, user_id=claims["sub"], action="EXPORT",
+        resource="employee", resource_id="csv",
+        after={"row_count": len(rows)},
+    )
+    return Response(
+        content=content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="employees.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 class PersonalDetailsImportRow(EmployeePersonalDetailsInput):
