@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWebcamCapture } from './useWebcamCapture'
+import { faceFramingIssue, guideRegion } from '../lib/faceFraming'
 
 export function useBlinkWebcamCapture() {
   const webcam = useWebcamCapture()
+  // Attach to the on-screen face guide to require the face inside it and crop the capture to it.
+  const guideRef = useRef<HTMLDivElement | null>(null)
   const pendingRef = useRef<AbortController | null>(null)
   const [isCheckingBlink, setIsCheckingBlink] = useState(false)
   const [blinkStatus, setBlinkStatus] = useState('')
@@ -37,9 +40,18 @@ export function useBlinkWebcamCapture() {
     try {
       const { waitForEyeBlink } = await import('../lib/faceBlinkDetection')
       controller.signal.throwIfAborted()
-      await waitForEyeBlink(video, setBlinkStatus, controller.signal)
+      const readGuide = () => guideRef.current
+        ? guideRegion(
+          video.getBoundingClientRect(), guideRef.current.getBoundingClientRect(),
+          video.videoWidth, video.videoHeight,
+        )
+        : null
+      await waitForEyeBlink(video, setBlinkStatus, controller.signal, (landmarks) => {
+        const guide = readGuide()
+        return guide ? faceFramingIssue(landmarks, guide, video.videoWidth, video.videoHeight) : null
+      })
       controller.signal.throwIfAborted()
-      const photo = await webcam.capture()
+      const photo = await webcam.capture(readGuide() ?? undefined)
       controller.signal.throwIfAborted()
       return photo
     } catch (error) {
@@ -61,5 +73,5 @@ export function useBlinkWebcamCapture() {
     return webcam.start()
   }
 
-  return { ...webcam, capture, start, stop, isCheckingBlink, blinkStatus, error: blinkError ?? webcam.error }
+  return { ...webcam, guideRef, capture, start, stop, isCheckingBlink, blinkStatus, error: blinkError ?? webcam.error }
 }

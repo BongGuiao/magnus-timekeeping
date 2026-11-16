@@ -31,7 +31,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
   const [overrideConfirmed, setOverrideConfirmed] = useState(false)
   const generation = useRef(0)
   const {
-    videoRef, isActive: cameraActive, isCheckingBlink, blinkStatus, error: webcamError,
+    videoRef, guideRef, isActive: cameraActive, isCheckingBlink, blinkStatus, error: webcamError,
     stop: stopCamera, start: startCamera, capture,
   } = useBlinkWebcamCapture()
   const busy = isSubmitting || isResetting
@@ -174,9 +174,9 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
             {cameraActive ? (
               <>
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/40" />
-                <div className="pointer-events-none absolute inset-x-[28%] inset-y-[10%] rounded-[45%] border-2 border-white/80 shadow-[0_0_0_999px_rgba(15,23,42,0.16)]" />
+                <div ref={guideRef} className="pointer-events-none absolute inset-x-[28%] inset-y-[10%] rounded-[45%] border-2 border-white/80 shadow-[0_0_0_999px_rgba(15,23,42,0.16)]" />
                 <span className="absolute bottom-3 rounded-full bg-slate-950/65 px-3 py-1 text-[11px] font-medium text-white">
-                  Center the face in the frame
+                  Fill the oval with the face
                 </span>
               </>
             ) : previewUrl ? (

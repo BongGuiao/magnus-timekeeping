@@ -37,6 +37,7 @@ export async function waitForEyeBlink(
   video: HTMLVideoElement,
   onStatus: (message: string) => void,
   signal?: AbortSignal,
+  checkFraming?: (landmarks: { x: number; y: number }[]) => string | null,
 ): Promise<void> {
   signal?.throwIfAborted()
   onStatus('Loading blink detection…')
@@ -51,11 +52,14 @@ export async function waitForEyeBlink(
     let hasSeenClosedEyes = false
     let settled = false
     let hasSeenFace = false
+    let framingIssue: string | null = null
     const timeoutId = window.setTimeout(() => {
       finish(new Error(
-        hasSeenFace
-          ? 'A blink was not detected. Look at the camera and blink once to try again.'
-          : 'No face was detected. Center your face in the camera and try again.',
+        framingIssue
+          ? `${framingIssue} Then blink once to try again.`
+          : hasSeenFace
+            ? 'A blink was not detected. Look at the camera and blink once to try again.'
+            : 'No face was detected. Center your face in the camera and try again.',
       ))
     }, BLINK_TIMEOUT_MS)
 
@@ -94,10 +98,19 @@ export async function waitForEyeBlink(
             onStatus('Center your face in the camera.')
           }
 
+          framingIssue = result.faceLandmarks.length === 1
+            ? checkFraming?.(result.faceLandmarks[0]) ?? null
+            : null
           const categories = result.faceBlendshapes[0]?.categories
           const leftBlink = categories?.find((item) => item.categoryName === 'eyeBlinkLeft')?.score
           const rightBlink = categories?.find((item) => item.categoryName === 'eyeBlinkRight')?.score
-          if (leftBlink !== undefined && rightBlink !== undefined) {
+          if (framingIssue) {
+            // A blink only counts while the face is framed, so the captured frame is framed too.
+            hasSeenFace = true
+            hasSeenOpenEyes = false
+            hasSeenClosedEyes = false
+            onStatus(framingIssue)
+          } else if (leftBlink !== undefined && rightBlink !== undefined) {
             hasSeenFace = true
             onStatus('Face detected. Blink once to continue.')
             const bothEyesOpen = leftBlink < OPEN_EYE_SCORE && rightBlink < OPEN_EYE_SCORE

@@ -27,7 +27,7 @@ function face(score, count = 1) {
   }
 }
 
-async function detector({ failLoad = false } = {}) {
+async function detector({ failLoad = false, checkFraming } = {}) {
   let frame
   let timeout
   let result
@@ -51,7 +51,7 @@ async function detector({ failLoad = false } = {}) {
   })
   const controller = new AbortController()
   let settled = false
-  const pending = waitForEyeBlink({ readyState: 2 }, () => {}, controller.signal)
+  const pending = waitForEyeBlink({ readyState: 2 }, () => {}, controller.signal, checkFraming)
     .then(() => { settled = true })
   // Allow model-loading promises to settle before driving video frames.
   for (let i = 0; i < 10; i++) await Promise.resolve()
@@ -128,6 +128,47 @@ test('model download failure is explicit', async () => {
   await assert.rejects(d.pending, /Could not load blink detection/)
 })
 
+test('a blink outside the face guide does not pass and the timeout says why', async () => {
+  let issue = 'Move closer so your face fills the guide.'
+  const d = await detector({ checkFraming: () => issue })
+  d.tick(face(0.1))
+  d.tick(face(0.9))
+  d.tick(face(0.1))
+  assert.equal(d.settled(), false)
+  const timeout = d.timeout
+  issue = null
+  d.tick(face(0.1))
+  d.tick(face(0.9))
+  issue = 'Move closer so your face fills the guide.'
+  d.tick(face(0.1))
+  assert.equal(d.settled(), false)
+  const rejected = assert.rejects(d.pending, /Move closer.*blink once/)
+  timeout()
+  await rejected
+})
+
+test('face guide maps to the video frame, judges framing, and crops the capture', () => {
+  const { guideRegion, faceFramingIssue, cropRectangle } = load('lib\\faceFraming.ts', {})
+  // 640x480 camera shown with object-cover in a 500x300 box; guide inset 28% / 10%.
+  const guide = guideRegion(
+    { left: 10, top: 20, width: 500, height: 300 },
+    { left: 150, top: 50, width: 220, height: 240 },
+    640, 480,
+  )
+  for (const [key, expected] of Object.entries({ x: 0.28, y: 0.18, width: 0.44, height: 0.64 })) {
+    assert.ok(Math.abs(guide[key] - expected) < 1e-9, `${key}=${guide[key]}`)
+  }
+  assert.equal(guideRegion({ left: 0, top: 0, width: 500, height: 300 }, { left: 0, top: 0, width: 0, height: 0 }, 640, 480), null)
+
+  const box = (left, top, right, bottom) => [{ x: left, y: top }, { x: right, y: bottom }]
+  assert.equal(faceFramingIssue(box(0.36, 0.3, 0.64, 0.7), guide, 640, 480), null)
+  assert.match(faceFramingIssue(box(0.44, 0.42, 0.56, 0.58), guide, 640, 480), /closer/)
+  assert.match(faceFramingIssue(box(0.2, 0.05, 0.8, 0.95), guide, 640, 480), /Move back/)
+  assert.match(faceFramingIssue(box(0.56, 0.3, 0.84, 0.7), guide, 640, 480), /Center/)
+
+  assert.deepEqual({ ...cropRectangle(guide, 640, 480) }, { x: 67, y: 0, width: 506, height: 480 })
+})
+
 function captureHook() {
   let acceptBlink
   let rejectBlink
@@ -151,6 +192,7 @@ function captureHook() {
         stop: () => {}, capture: async () => { captures++; return photo },
       }) }
       if (name === '../lib/faceBlinkDetection') return { waitForEyeBlink: () => blink }
+      if (name === '../lib/faceFraming') return {}
       throw new Error(`Unexpected import: ${name}`)
     },
   })

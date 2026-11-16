@@ -159,7 +159,7 @@ export default function Enrollment({ employeeName, onNavigate, onLoggedOut }: Pr
                     className={`h-full w-full object-cover ${webcam.isActive ? '' : 'hidden'}`}
                   />
                   {webcam.isActive && (
-                    <div className="pointer-events-none absolute inset-8 rounded-full border-2 border-white/40" />
+                    <div ref={webcam.guideRef} className="pointer-events-none absolute inset-x-[24%] inset-y-[8%] rounded-[45%] border-2 border-white/40" />
                   )}
                   {!webcam.isActive && (
                     <div className="flex h-full w-full items-center justify-center bg-slate-50">

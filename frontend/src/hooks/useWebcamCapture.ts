@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { cropRectangle } from '../lib/faceFraming'
+import type { FaceRegion } from '../lib/faceFraming'
 
 export function useWebcamCapture() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -43,7 +45,7 @@ export function useWebcamCapture() {
   // Release the camera if the page unmounts while the stream is still open
   useEffect(() => stop, [stop])
 
-  const capture = useCallback(async (): Promise<File | null> => {
+  const capture = useCallback(async (region?: FaceRegion): Promise<File | null> => {
     const video = videoRef.current
     if (!video) {
       setError('The camera is not ready yet. Please try again.')
@@ -67,9 +69,14 @@ export function useWebcamCapture() {
 
     return new Promise((resolve) => {
       const canvas = document.createElement('canvas')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      canvas.getContext('2d')?.drawImage(video, 0, 0)
+      const crop = region
+        ? cropRectangle(region, video.videoWidth, video.videoHeight)
+        : { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight }
+      canvas.width = crop.width
+      canvas.height = crop.height
+      canvas.getContext('2d')?.drawImage(
+        video, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height,
+      )
 
       canvas.toBlob((blob) => {
         if (!blob) {
