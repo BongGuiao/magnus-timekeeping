@@ -156,7 +156,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
       {result && !isActive && (
         <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-          Face sample enrolled. {result.sample_count} sample{result.sample_count === 1 ? '' : 's'} on file.
+          Live image enrolled. {result.sample_count} live image{result.sample_count === 1 ? '' : 's'} on file.
         </p>
       )}
 
@@ -240,7 +240,7 @@ export default function EmployeeFaceEnrollmentPanel({ employee, isActive, onPhot
           {result && isActive && (
             <p role="status" className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
               <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-              Face sample enrolled. {result.sample_count} sample{result.sample_count === 1 ? '' : 's'} on file.
+              Live image enrolled. {result.sample_count} live image{result.sample_count === 1 ? '' : 's'} on file.
             </p>
           )}
           <div>

@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # Enrollment duplicate-identity flag: a capture at or below this distance from another employee's
     # sample needs HR approval. Separate from (and stricter than) FACE_MATCH_THRESHOLD so genuinely
     # different people are not blocked; attendance acceptance is unaffected by this setting.
-    FACE_ENROLLMENT_CONFLICT_THRESHOLD: float = 0.4
+    FACE_ENROLLMENT_CONFLICT_THRESHOLD: float = 0.35
 
     # Login lockout (identity.users.failed_login_count / locked_until)
     AUTH_MAX_FAILED_LOGIN_ATTEMPTS: int = 5
