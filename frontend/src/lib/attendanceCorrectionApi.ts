@@ -30,6 +30,53 @@ export interface CorrectionDay {
 }
 
 const path = '/attendance/corrections'
+const hrExceptionsPath = `${path}/hr-exceptions`
+
+export interface AttendanceExceptionSchedule {
+  schedule_code: string
+  expected_clock_in_at: string
+  expected_clock_out_at: string
+  schedule_fingerprint: string
+  schedule_context: {
+    grace_minutes: number
+    ot_eligible: boolean
+    minimum_ot_minutes: number
+    pre_shift_ot_allowed: boolean
+    break_rules: Array<{ segment_id: string; break_slot: string; break_minutes: number; auto_deduct: boolean }>
+  }
+}
+
+export async function fetchAttendanceExceptions(): Promise<AttendanceCorrection[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<AttendanceCorrection[]>>(hrExceptionsPath)
+    if (!Array.isArray(response.data.data)) throw new Error('Invalid attendance exceptions response.')
+    return response.data.data
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not load attendance exceptions.'))
+  }
+}
+
+export async function fetchAttendanceExceptionSchedule(id: string): Promise<AttendanceExceptionSchedule> {
+  try {
+    return (await apiClient.get<ApiSuccessEnvelope<AttendanceExceptionSchedule>>(`${hrExceptionsPath}/${id}/schedule`)).data.data
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not verify the schedule.'))
+  }
+}
+
+export async function resolveAttendanceException(
+  request: AttendanceCorrection, schedule: AttendanceExceptionSchedule, notes: string,
+): Promise<void> {
+  try {
+    await apiClient.post(`${hrExceptionsPath}/${request.id}/resolve`, {
+      row_version: request.row_version,
+      schedule_fingerprint: schedule.schedule_fingerprint,
+      review_notes: notes.trim(),
+    })
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not resolve the attendance exception.'))
+  }
+}
 
 export async function fetchCorrectionDay(workDate: string): Promise<CorrectionDay> {
   try {

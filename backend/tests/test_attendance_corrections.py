@@ -131,6 +131,107 @@ class CorrectionFinalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SCHEDULE_CREDITED", str(session.scalar.await_args.args[0].compile(compile_kwargs={"literal_binds": True})))
 
 
+class HRExceptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_hr_admin_passes_the_role_gate(self):
+        for role in ("SUPERVISOR", "SYSTEM_ADMIN", "MANAGER"):
+            with self.subTest(role=role), self.assertRaises(HTTPException) as error:
+                await corrections.require_hr_exception_access({"role_codes": [role]})
+            self.assertEqual(error.exception.status_code, 403)
+        claims = {"role_codes": ["HR_ADMIN"]}
+        self.assertEqual(await corrections.require_hr_exception_access(claims), claims)
+
+    async def test_schedule_preview_preserves_metadata_and_changes_when_policy_changes(self):
+        request = SimpleNamespace(employee_id=uuid4(), work_date=WORK_DATE)
+        record = day(clock_in_at=START, punch_metadata={"clock_in": {"channel": "web"}})
+        template_id = uuid4()
+        context = {"schedule_template_id": str(template_id), "ot_eligible": False, "break_rules": []}
+        configured = SimpleNamespace(
+            work_type="REG", attendance_mode="PUNCH_REQUIRED", expected_clock_in_at=START, expected_clock_out_at=END,
+            schedule_template_id=template_id, schedule_context=context,
+        )
+        session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(
+            schedule_code="OFFICE", effective_from=WORK_DATE, effective_to=None,
+        )))
+        with patch.object(corrections, "resolve_schedule_day", new=AsyncMock(return_value=configured)):
+            prepared, first = await corrections._prepare_exception_schedule(session, request, record)
+            self.assertEqual(prepared.punch_metadata["clock_in"], {"channel": "web"})
+            self.assertNotIn("schedule_context", record.punch_metadata)
+            self.assertEqual(prepared.schedule_template_id, template_id)
+            self.assertEqual(recalculate_corrected_attendance(prepared, START, END)["approved_hours_worked"], 9)
+
+            configured.schedule_context = {**context, "ot_eligible": True}
+            _, second = await corrections._prepare_exception_schedule(session, request, record)
+            self.assertNotEqual(first.schedule_fingerprint, second.schedule_fingerprint)
+
+            configured.expected_clock_out_at = END + timedelta(hours=1)
+            with self.assertRaisesRegex(HTTPException, "") as error:
+                await corrections._prepare_exception_schedule(session, request, record)
+            self.assertIn("conflicts", error.exception.detail)
+
+    async def test_stale_review_cannot_write_and_confirmed_review_preserves_raw_punch(self):
+        actor, employee_id, template_id = uuid4(), uuid4(), uuid4()
+        original = day(clock_in_at=START, punch_metadata={})
+        record = day(id=original.id, clock_in_at=START, punch_metadata={})
+        request = SimpleNamespace(
+            id=uuid4(), status="PENDING", row_version=1, employee_id=employee_id, user_id=record.user_id,
+            work_date=WORK_DATE, attendance_record_id=record.id, original_clock_in_at=START,
+            original_clock_out_at=None, requested_clock_in_at=START, requested_clock_out_at=END,
+            reason="Forgot clock-out", supporting_reference=None, created_at=START,
+        )
+        cutoff = SimpleNamespace(
+            id=uuid4(), export_batch_id=None, status="SCHEDULED", calculation_version="TIME_TOTALS_V1", row_version=1,
+        )
+        employee = SimpleNamespace(employee_no="test", first_name="Test", last_name="Employee")
+        session = SimpleNamespace(scalar=AsyncMock(return_value=None), get=AsyncMock(return_value=employee),
+                                  execute=AsyncMock(), flush=AsyncMock(), refresh=AsyncMock())
+        prepared = day(schedule_template_id=template_id, clock_in_at=START)
+        preview = SimpleNamespace(schedule_fingerprint="a" * 64)
+        claims = {"sub": str(actor)}
+        with patch.multiple(
+            corrections,
+            _exception_request=AsyncMock(return_value=(request, object())),
+            _account=AsyncMock(return_value=corrections.CorrectionAccount(record.user_id, employee_id)),
+            _open=AsyncMock(return_value=[cutoff]),
+            _attendance=AsyncMock(return_value=record),
+            _day=AsyncMock(return_value=original),
+            _prepare_exception_schedule=AsyncMock(return_value=(prepared, preview)),
+            queue_recent_attendance_refresh=lambda *_: None,
+            log_entity_action=AsyncMock(),
+        ):
+            async def submit(fingerprint):
+                return await corrections.resolve_hr_exception(
+                    request.id, corrections.ExceptionDecision(
+                        row_version=1, review_notes="Verified with supervisor", schedule_fingerprint=fingerprint,
+                    ),
+                    claims=claims, uow=TransactionUnitOfWork(session), es_client=None,
+                )
+
+            with self.assertRaises(HTTPException) as stale:
+                await submit("b" * 64)
+            self.assertIn("schedule changed", stale.exception.detail)
+            self.assertIsNone(record.corrected_clock_out_at)
+            self.assertEqual(request.status, "PENDING")
+            cutoff.status = "CLOSED"
+            with self.assertRaises(HTTPException) as closed:
+                await submit("a" * 64)
+            self.assertIn("closed or processed", closed.exception.detail)
+            self.assertIsNone(record.corrected_clock_out_at)
+            self.assertEqual(request.status, "PENDING")
+            self.assertEqual(session.execute.await_count, 0)
+            cutoff.status = "SCHEDULED"
+            result = await submit("a" * 64)
+            self.assertEqual(result.data.review_notes, "Verified with supervisor")
+            self.assertEqual(record.clock_in_at, START)
+            self.assertIsNone(record.clock_out_at)
+            self.assertEqual(record.corrected_clock_out_at, END)
+            self.assertEqual(record.schedule_template_id, template_id)
+            self.assertEqual(record.punch_metadata["schedule_context"], prepared.punch_metadata["schedule_context"])
+            self.assertEqual(request.status, "APPROVED")
+            self.assertEqual(request.reviewed_by, actor)
+            self.assertIsNone(cutoff.calculation_version)
+            self.assertEqual(session.execute.await_count, 1)
+
+
 class TransactionUnitOfWork:
     def __init__(self, session):
         self.session = session

@@ -963,6 +963,20 @@ calculation and resets the affected employee's confirmations and payroll status
 to PENDING/HOLD. HR must recalculate and review cutoff attendance before
 finalization, and recalculate payroll if necessary.
 
+In **HR Admin Dashboard → Review queue → Resolve Attendance Exceptions**, HR
+Admins with organization attendance access can review pending correction
+requests for valid, unlocked records with one existing punch but no saved
+schedule policy. Select **Load pending exceptions**, then **Review schedule**.
+Magnus resolves the configured schedule for the work date; HR must verify that
+it was actually in force and confirm the requested punch with the supervisor
+before approving with review notes. If no eligible schedule can be verified,
+or it conflicts with the original shift, the request stays pending.
+Approval saves the reviewed schedule and fills only the missing punch in the
+same transaction, preserving raw punches and recording the reviewer and notes.
+It follows cutoff deadlines and cannot change finalized, locked, closed, or
+processed payroll. Recalculate and review cutoff attendance afterward. This
+does not create a request for a day with no punches or assign a new schedule.
+
 Attendance finalization now rejects pending correction requests and incomplete
 punch-required attendance records. Explicit absence records and
 schedule-credited days are excluded from the incomplete-punch check. A day

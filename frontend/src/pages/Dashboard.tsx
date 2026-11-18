@@ -38,6 +38,7 @@ import OfficialBusinessApprovalsPanel from '../components/dashboard/OfficialBusi
 import SupervisorAttendanceLocationsPanel from '../features/attendance/SupervisorAttendanceLocationsPanel'
 import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendanceReviewPanel'
 import UnresolvedAttendanceApprovals from '../features/attendance/UnresolvedAttendanceApprovals'
+import AttendanceExceptionsPanel from '../features/attendance/AttendanceExceptionsPanel'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -46,6 +47,7 @@ import {
 import {
   getAvailableRoleCodes,
   getSelectedDashboardRole,
+  getSelectedDashboardRoleCode,
   hasAnyPermission,
   hasPermission,
   normalizeDashboardRole,
@@ -100,7 +102,10 @@ interface DeviceReviewDraft {
 export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Props) {
   const data = mockDashboardData
   const { logout } = useLogout({ onLoggedOut })
-  const [role, setRole] = useState<DashboardRole>(getSelectedDashboardRole)
+  const [dashboardRole, setDashboardRole] = useState(() => ({
+    role: getSelectedDashboardRole(), code: getSelectedDashboardRoleCode(),
+  }))
+  const { role, code: roleCode } = dashboardRole
   const hasSupervisorRoleCode = getAvailableRoleCodes().some(
     (roleCode) => roleCode.trim().toUpperCase() === 'SUPERVISOR',
   )
@@ -110,6 +115,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const canReviewTeamOvertime = hasPermission('overtime.approve_team')
   const canReviewTeamOfficialBusiness = hasPermission('official_business.approve_team')
   const canReadOrgAttendance = hasPermission('attendance.read_org')
+  const canResolveAttendanceExceptions = role === 'administrator'
+    && roleCode === 'HR_ADMIN' && canReadOrgAttendance
   const [pendingDevices, setPendingDevices] = useState<DeviceRecord[]>([])
   const [isLoadingDevices, setIsLoadingDevices] = useState(isAdmin)
   const [hasLoadedDevices, setHasLoadedDevices] = useState(false)
@@ -129,6 +136,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [teamAttendancePanel, setTeamAttendancePanel] = useState<TeamAttendancePanel | null>(null)
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
   const [isOfflineReviewOpen, setIsOfflineReviewOpen] = useState(false)
+  const [isAttendanceExceptionsOpen, setIsAttendanceExceptionsOpen] = useState(false)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
   const [missedClockInsThisMonth, setMissedClockInsThisMonth] = useState<number | null>(null)
@@ -178,7 +186,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   )
 
   useEffect(() => {
-    const updateRole = () => setRole(getSelectedDashboardRole())
+    const updateRole = () => {
+      setDashboardRole({ role: getSelectedDashboardRole(), code: getSelectedDashboardRoleCode() })
+      setIsAttendanceExceptionsOpen(false)
+    }
     window.addEventListener('dashboard-role-change', updateRole)
     return () => window.removeEventListener('dashboard-role-change', updateRole)
   }, [])
@@ -822,6 +833,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     setEmployeePanel(null)
     setAdminPanel(null)
     setIsOfflineReviewOpen(false)
+    setIsAttendanceExceptionsOpen(false)
     setIsTeamHoursOpen(false)
     setIsTeamLocationsOpen(false)
     setTeamAttendancePanel(null)
@@ -1019,6 +1031,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       onClick: () => toggleTeamReview(isOfflineReviewOpen, () => setIsOfflineReviewOpen(true)),
     })
   }
+  if (canResolveAttendanceExceptions) adminReviews.push({
+    id: 'attendance-exceptions', label: 'Resolve Attendance Exceptions',
+    open: isAttendanceExceptionsOpen, controls: 'hr-attendance-exceptions',
+    onClick: () => toggleTeamReview(isAttendanceExceptionsOpen, () => setIsAttendanceExceptionsOpen(true)),
+  })
 
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
@@ -1036,6 +1053,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
         {isAdmin && role === 'administrator' && (
           <div id="offline-attendance-review" hidden={!isOfflineReviewOpen}><OfflineAttendanceReviewPanel /></div>
+        )}
+        {canResolveAttendanceExceptions && (
+          <div id="hr-attendance-exceptions" hidden={!isAttendanceExceptionsOpen}>
+            {isAttendanceExceptionsOpen && <AttendanceExceptionsPanel />}
+          </div>
         )}
         {hasPermission('attendance.approve_corrections_team') && (
           <div id="supervisor-attendance-corrections" hidden={!isCorrectionApprovalOpen}>

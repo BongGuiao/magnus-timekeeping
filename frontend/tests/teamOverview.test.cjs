@@ -32,7 +32,7 @@ function find(tree, predicate) {
   return null
 }
 
-function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = {}) {
+function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = {}, roleCode = 'SUPERVISOR') {
   let index = 0
   const states = []
   const dependencies = {
@@ -55,7 +55,8 @@ function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = 
     } },
     '../types/role': {
       getSelectedDashboardRole: () => role,
-      getAvailableRoleCodes: () => ['SUPERVISOR'],
+      getSelectedDashboardRoleCode: () => roleCode,
+      getAvailableRoleCodes: () => [roleCode],
       normalizeDashboardRole: (value) => value,
       hasPermission: (permission) => permissions.includes(permission),
       hasAnyPermission: (values) => values.some((permission) => permissions.includes(permission)),
@@ -246,6 +247,18 @@ test('Administrator metrics and review categories are permission-filtered and mu
   const approvalOnly = dashboard('administrator', ['leave.approve_team'], true)().overview
   assert.ok(approvalOnly.props.reviews.some((item) => item.id === 'assigned-leave'))
   assert.ok(!approvalOnly.props.reviews.some((item) => item.id === 'leave'))
+})
+
+test('only the HR Admin dashboard with organization attendance access shows the exception panel', () => {
+  const action = (page) => page.overview.props.reviews.find((item) => item.id === 'attendance-exceptions')
+  assert.equal(action(dashboard('administrator', [], true, undefined, {}, 'HR_ADMIN')()), undefined)
+  assert.equal(action(dashboard('administrator', ['attendance.read_org'], true, undefined, {}, 'SYSTEM_ADMIN')()), undefined)
+  const render = dashboard('administrator', ['attendance.read_org'], true, undefined, {}, 'HR_ADMIN')
+  assert.doesNotMatch(render().html, /data-component="AttendanceExceptionsPanel"/)
+  action(render()).onClick()
+  assert.match(render().html, /data-component="AttendanceExceptionsPanel"/)
+  render().overview.props.metrics.find((item) => item.id === 'missing-out').onClick()
+  assert.doesNotMatch(render().html, /data-component="AttendanceExceptionsPanel"/)
 })
 
 test('assigned leave and invalid-attendance failures do not show empty approval queues', async () => {

@@ -1,18 +1,22 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
-from typing import Literal
+from hashlib import sha256
+import json
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import cast, exists, func, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.attendance.application.correction_calculation import recalculate_corrected_attendance
+from app.attendance.application.use_case import resolve_schedule_day
 from app.attendance.domain.entities.overtime import OvertimeAttendance
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
@@ -32,7 +36,7 @@ from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel,
 from app.filemaintenance.payroll_cutoffs.application.deadline_policy import CutoffDeadlineError, DeadlineStage, require_attendance_open
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import EmployeeCutoffResultModel
-from app.filemaintenance.schedule.infrastructure.db_model import EmployeeScheduleAssignmentModel
+from app.filemaintenance.schedule.infrastructure.db_model import EmployeeScheduleAssignmentModel, ScheduleTemplateModel
 
 router = APIRouter(prefix="/corrections", tags=["Attendance Corrections"])
 MANILA = ZoneInfo("Asia/Manila")
@@ -77,6 +81,21 @@ class CorrectionDecision(BaseModel):
     row_version: int = Field(ge=1)
     review_notes: str = Field(min_length=1, max_length=2000)
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class ExceptionDecision(BaseModel):
+    row_version: int = Field(ge=1)
+    review_notes: str = Field(min_length=1, max_length=2000)
+    schedule_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class ExceptionSchedule(BaseModel):
+    schedule_code: str
+    expected_clock_in_at: datetime
+    expected_clock_out_at: datetime
+    schedule_context: dict[str, Any]
+    schedule_fingerprint: str
 
 
 class CorrectionOutput(BaseModel):
@@ -216,6 +235,124 @@ async def _open(session: AsyncSession, employee_id: UUID, work_date: date, stage
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
+async def require_hr_exception_access(
+    claims: dict = Depends(require_approval_permission("attendance.read_org")),
+) -> dict:
+    if "HR_ADMIN" not in claims["role_codes"]:
+        raise HTTPException(status_code=403, detail="Only HR Admins can resolve attendance exceptions.")
+    return claims
+
+
+def _exception_requests(actor: UUID):
+    context = cast(AttendanceModel.punch_metadata, JSONB)["schedule_context"]
+    return (
+        select(AttendanceCorrectionModel, EmployeeModel)
+        .join(EmployeeModel, EmployeeModel.id == AttendanceCorrectionModel.employee_id)
+        .join(UserModel, UserModel.id == AttendanceCorrectionModel.user_id)
+        .join(AttendanceModel, AttendanceModel.id == AttendanceCorrectionModel.attendance_record_id)
+        .where(
+            AttendanceCorrectionModel.status == "PENDING",
+            AttendanceCorrectionModel.user_id != actor,
+            UserModel.employee_id == AttendanceCorrectionModel.employee_id,
+            AttendanceModel.user_id == AttendanceCorrectionModel.user_id,
+            AttendanceModel.work_date == AttendanceCorrectionModel.work_date,
+            AttendanceModel.record_status == "VALID",
+            AttendanceModel.is_locked.is_(False),
+            func.num_nonnulls(
+                func.coalesce(AttendanceModel.corrected_clock_in_at, AttendanceModel.clock_in_at),
+                func.coalesce(AttendanceModel.corrected_clock_out_at, AttendanceModel.clock_out_at),
+            ) == 1,
+            not_merged_source(),
+            ~func.coalesce(context.has_key("ot_eligible"), False),
+        )
+    )
+
+
+async def _exception_request(session: AsyncSession, actor: UUID, request_id: UUID, *, lock: bool = False):
+    statement = _exception_requests(actor).where(AttendanceCorrectionModel.id == request_id)
+    if lock:
+        statement = statement.with_for_update(of=AttendanceCorrectionModel)
+    row = (await session.execute(statement)).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=409, detail="This exception is no longer available. Refresh the list.")
+    return row
+
+
+async def _prepare_exception_schedule(
+    session: AsyncSession, request: AttendanceCorrectionModel, day: OvertimeAttendance,
+) -> tuple[OvertimeAttendance, ExceptionSchedule]:
+    metadata = day.punch_metadata or {}
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=409, detail="This record has invalid punch metadata.")
+    old_context = metadata.get("schedule_context")
+    if isinstance(old_context, dict) and "ot_eligible" in old_context:
+        raise HTTPException(status_code=409, detail="This record already has a saved policy. Use normal correction review.")
+    try:
+        schedule = await resolve_schedule_day(session, request.employee_id, request.work_date)
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    start, end = schedule.expected_clock_in_at, schedule.expected_clock_out_at
+    context = schedule.schedule_context
+    template_id = schedule.schedule_template_id
+    if (
+        schedule.work_type != "REG" or schedule.attendance_mode != "PUNCH_REQUIRED"
+        or start is None or end is None or template_id is None or not context or "ot_eligible" not in context
+    ):
+        raise HTTPException(status_code=409, detail="No punch-required schedule could be verified for this work date.")
+    if (
+        (day.schedule_template_id is not None and day.schedule_template_id != template_id)
+        or (day.expected_clock_in_at is not None and day.expected_clock_in_at != start)
+        or (day.expected_clock_out_at is not None and day.expected_clock_out_at != end)
+    ):
+        raise HTTPException(status_code=409, detail="The configured schedule conflicts with this record's saved shift.")
+    template = await session.get(ScheduleTemplateModel, template_id)
+    if template is None or template.effective_from > request.work_date or (
+        template.effective_to is not None and template.effective_to < request.work_date
+    ):
+        raise HTTPException(status_code=409, detail="The schedule template did not cover this work date.")
+    snapshot = {
+        "schedule_code": template.schedule_code, "expected_clock_in_at": start.isoformat(),
+        "expected_clock_out_at": end.isoformat(), "schedule_context": context,
+    }
+    if "break_rules" in context:
+        context = {**context, "break_rules": sorted(context["break_rules"], key=lambda rule: rule["segment_id"])}
+        snapshot["schedule_context"] = context
+    fingerprint = sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
+    return replace(
+        day, schedule_template_id=template_id, expected_clock_in_at=start, expected_clock_out_at=end,
+        punch_metadata={**metadata, "schedule_context": context},
+    ), ExceptionSchedule(**snapshot, schedule_fingerprint=fingerprint)
+
+
+@router.get("/hr-exceptions", response_model=ResponseEnvelope[list[CorrectionOutput]])
+async def list_hr_exceptions(
+    claims: dict = Depends(require_hr_exception_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    async with uow as active:
+        rows = (await _session(active).execute(
+            _exception_requests(_actor_id(claims))
+            .order_by(AttendanceCorrectionModel.created_at, AttendanceCorrectionModel.id).limit(200)
+        )).all()
+        return ResponseEnvelope(status="success", data=[_output(request, employee) for request, employee in rows])
+
+
+@router.get("/hr-exceptions/{request_id}/schedule", response_model=ResponseEnvelope[ExceptionSchedule])
+async def preview_hr_exception(
+    request_id: UUID,
+    claims: dict = Depends(require_hr_exception_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    async with uow as active:
+        session = _session(active)
+        request, _ = await _exception_request(session, _actor_id(claims), request_id)
+        record = await session.get(AttendanceModel, request.attendance_record_id)
+        if record is None:
+            raise HTTPException(status_code=409, detail="The attendance record is no longer available.")
+        _, preview = await _prepare_exception_schedule(session, request, copy_fields(record, OvertimeAttendance))
+        return ResponseEnvelope(status="success", data=preview)
+
+
 @router.get("/day", response_model=ResponseEnvelope[CorrectionDay])
 async def correction_day(
     work_date: date = Query(), claims: dict = Depends(require_permission("attendance.correct_own")),
@@ -329,18 +466,43 @@ async def decide_correction(
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
+    return await _decide_correction(request_id, payload, claims, uow, es_client)
+
+
+@router.post("/hr-exceptions/{request_id}/resolve", response_model=ResponseEnvelope[CorrectionOutput])
+async def resolve_hr_exception(
+    request_id: UUID, payload: ExceptionDecision,
+    claims: dict = Depends(require_hr_exception_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    decision = CorrectionDecision(
+        decision="APPROVED", row_version=payload.row_version, review_notes=payload.review_notes,
+    )
+    return await _decide_correction(
+        request_id, decision, claims, uow, es_client, schedule_fingerprint=payload.schedule_fingerprint,
+    )
+
+
+async def _decide_correction(
+    request_id: UUID, payload: CorrectionDecision, claims: dict, uow: GenUnitOfWork,
+    es_client: AsyncElasticsearch | None, *, schedule_fingerprint: str | None = None,
+) -> ResponseEnvelope[CorrectionOutput]:
     actor = _actor_id(claims)
     async with uow as active:
         session = _session(active)
-        reviewer = await _account(session, actor)
-        request = await session.scalar(select(AttendanceCorrectionModel).where(
-            AttendanceCorrectionModel.id == request_id,
-            AttendanceCorrectionModel.employee_id != reviewer.employee_id,
-            approval_route_scope(
-                "attendance_correction", AttendanceCorrectionModel.id, reviewer.employee_id,
-                _team(reviewer.employee_id, AttendanceCorrectionModel.employee_id),
-            ),
-        ).with_for_update())
+        if schedule_fingerprint is not None:
+            request, _ = await _exception_request(session, actor, request_id, lock=True)
+        else:
+            reviewer = await _account(session, actor)
+            request = await session.scalar(select(AttendanceCorrectionModel).where(
+                AttendanceCorrectionModel.id == request_id,
+                AttendanceCorrectionModel.employee_id != reviewer.employee_id,
+                approval_route_scope(
+                    "attendance_correction", AttendanceCorrectionModel.id, reviewer.employee_id,
+                    _team(reviewer.employee_id, AttendanceCorrectionModel.employee_id),
+                ),
+            ).with_for_update())
         if request is None:
             raise HTTPException(status_code=404, detail="Correction request not found for your assigned employees.")
         if request.status != "PENDING" or request.row_version != payload.row_version:
@@ -349,6 +511,11 @@ async def decide_correction(
         if account.employee_id != request.employee_id:
             raise HTTPException(status_code=409, detail="The request account is no longer linked to this employee; contact HR.")
         cutoffs = await _open(session, request.employee_id, request.work_date, "APPROVAL")
+        if schedule_fingerprint is not None and any(
+            cutoff.export_batch_id is not None or cutoff.status.strip().upper() in {"CLOSED", "PROCESSED", "FINALIZED"}
+            for cutoff in cutoffs
+        ):
+            raise HTTPException(status_code=409, detail="A closed or processed payroll cutoff cannot be changed.")
         if payload.decision == "APPROVED":
             record = await _attendance(session, request.user_id, request.work_date)
             if record is None:
@@ -368,10 +535,24 @@ async def decide_correction(
                 OvertimeApplicationModel.status != "REJECTED",
             ).limit(1)):
                 raise HTTPException(status_code=409, detail="Resolve existing overtime applications before correcting these punches.")
+            if schedule_fingerprint is not None:
+                if record.id != request.attendance_record_id:
+                    raise HTTPException(status_code=409, detail="The attendance record changed. Refresh the list.")
+                day, preview = await _prepare_exception_schedule(session, request, day)
+                if preview.schedule_fingerprint != schedule_fingerprint:
+                    raise HTTPException(status_code=409, detail="The schedule changed. Reload and verify it before approving.")
             try:
                 values = recalculate_corrected_attendance(day, request.requested_clock_in_at, request.requested_clock_out_at)
             except ValueError as error:
                 raise HTTPException(status_code=409, detail=str(error)) from error
+            if schedule_fingerprint is not None:
+                record.schedule_template_id = day.schedule_template_id
+                record.expected_clock_in_at = day.expected_clock_in_at
+                record.expected_clock_out_at = day.expected_clock_out_at
+                values["punch_metadata"]["schedule_exception_resolution"] = {
+                    "request_id": str(request.id), "reviewer_id": str(actor),
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                }
             if request.original_clock_in_at is None:
                 record.corrected_clock_in_at = request.requested_clock_in_at
             if request.original_clock_out_at is None:
@@ -404,6 +585,8 @@ async def decide_correction(
         result = _output(request, employee)
     if payload.decision == "APPROVED":
         queue_recent_attendance_refresh(request.user_id)
-    await log_entity_action(es_client, user_id=actor, action=payload.decision, resource="attendance_correction",
+    await log_entity_action(es_client, user_id=actor,
+                            action="RESOLVE_SCHEDULE_EXCEPTION" if schedule_fingerprint is not None else payload.decision,
+                            resource="attendance_correction",
                             resource_id=str(result.id), after=result.model_dump(mode="json"))
     return ResponseEnvelope(status="success", data=result)
