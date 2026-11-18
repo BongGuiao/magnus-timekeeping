@@ -787,6 +787,15 @@ Existing cutoffs are left undesignated by the migration and must be assigned
 before calculating payroll when a first-half or second-half schedule applies.
 Apply `backend/sql/20261023_add_payroll_cutoff_half_designation.sql`.
 
+### Downloading cutoff results
+
+The Payroll Cutoffs results panel can download the displayed time totals as a
+CSV, including cutoff and payroll-group details, employee identifiers, days,
+hours, exceptions, and payroll status. The export contains confidential
+employee information; store and share it according to the organization's
+payroll-data handling rules. It contains time totals only, not monetary payroll
+amounts.
+
 ## Attendance finalization before payroll
 
 Payroll Cutoffs has an **Employee filing deadline** and an **Approval

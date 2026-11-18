@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ArrowDown, ArrowUp, Calculator, ChevronsUpDown, Eye, Pencil, Plus, Search } from 'lucide-react'
+import { ArrowDown, ArrowUp, Calculator, ChevronsUpDown, Download, Eye, Pencil, Plus, Search } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import { useLogout } from '../hooks/useLogout'
@@ -13,6 +13,7 @@ import {
   updatePayrollCutoff,
 } from '../lib/payrollCutoffApi'
 import type { EmployeeCutoffResult, PayrollCutoff, PayrollCutoffPayload } from '../lib/payrollCutoffApi'
+import { payrollCutoffResultsCsv, payrollCutoffResultsFilename } from '../lib/payrollCutoffCsv'
 import { fetchPayrollGroups } from '../lib/payrollGroupApi'
 import type { PayrollGroup } from '../lib/payrollGroupApi'
 
@@ -244,6 +245,37 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
     } finally {
       setCalculatingCutoffId(null)
       setResultsLoading(false)
+    }
+  }
+
+  function downloadResults() {
+    if (!resultsCutoff || resultsLoading || results.length === 0) return
+    setError('')
+    setSuccess('')
+    try {
+      const contents = payrollCutoffResultsCsv(
+        resultsCutoff,
+        groupLabel(resultsCutoff.payroll_group_id, groups),
+        results,
+      )
+      const url = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }))
+      try {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = payrollCutoffResultsFilename(
+          resultsCutoff.cutoff_code,
+          resultsCutoff.period_start,
+          resultsCutoff.period_end,
+        )
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+      setSuccess('Payroll time results downloaded as CSV. This file contains confidential employee information; store it securely.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not download payroll cutoff results.')
     }
   }
 
@@ -560,9 +592,21 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                 </p>
                 <p className="mt-1 text-xs text-slate-500">Time totals only; no monetary payroll amounts are calculated.</p>
               </div>
-              <button type="button" onClick={() => { setResultsCutoff(null); setResults([]) }} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-white">
-                Close results
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={downloadResults}
+                  disabled={resultsLoading || results.length === 0}
+                  title="CSV contains confidential employee time results."
+                  className="inline-flex items-center gap-1.5 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" aria-hidden="true" />
+                  Download CSV
+                </button>
+                <button type="button" onClick={() => { setResultsCutoff(null); setResults([]) }} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-white">
+                  Close results
+                </button>
+              </div>
             </div>
             {resultsLoading ? (
               <p role="status" className="px-5 py-6 text-sm text-slate-500">
