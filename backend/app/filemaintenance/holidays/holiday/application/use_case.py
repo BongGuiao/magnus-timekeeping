@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import date
+import re
 from typing import Any
 from uuid import UUID
 
@@ -29,6 +30,31 @@ def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
         value = normalized.get(field)
         if isinstance(value, str):
             normalized[field] = UUID(value)
+    for field in ("included_municipalities", "excluded_municipalities"):
+        if field not in normalized:
+            continue
+        values = normalized[field]
+        if not isinstance(values, list):
+            raise ValueError(f"{field} must be a list of municipalities.")
+        municipalities = []
+        seen = set()
+        for item in values:
+            if not isinstance(item, dict) or set(item) != {"code", "name"}:
+                raise ValueError(f"Each municipality in {field} must have code and name fields.")
+            code, name = item["code"], item["name"]
+            if code is not None and (not isinstance(code, str) or not re.fullmatch(r"[0-9]{9}", code)):
+                raise ValueError(f"Municipality codes in {field} must contain nine digits.")
+            if name is not None and (not isinstance(name, str) or not name.strip() or len(name.strip()) > 100):
+                raise ValueError(f"Municipality names in {field} must be nonempty and at most 100 characters.")
+            name = name.strip() if name else None
+            if not code and not name:
+                raise ValueError(f"Each municipality in {field} must have a code or name.")
+            key = code or name.casefold()
+            if key in seen:
+                raise ValueError(f"Duplicate municipality in {field}.")
+            seen.add(key)
+            municipalities.append({"code": code, "name": name})
+        normalized[field] = sorted(municipalities, key=lambda item: (item["code"] or "", (item["name"] or "").casefold()))
     return normalized
 
 
@@ -36,7 +62,11 @@ async def _validate_local_holiday_scope(
     holiday: HolidayEntity,
 ) -> None:
     if holiday.holiday_type != "LOCAL":
+        if holiday.included_municipalities or holiday.excluded_municipalities:
+            raise ValueError("Municipality lists can only be used for local holidays.")
         return
+    if holiday.included_municipalities and (holiday.psgc_city_code or holiday.city):
+        raise ValueError("Use either the legacy municipality or the include list, not both.")
     has_region = bool(holiday.psgc_region_code or holiday.region)
     is_ncr = (
         holiday.psgc_region_code == NCR_PSGC_REGION_CODE

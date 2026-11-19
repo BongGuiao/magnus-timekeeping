@@ -30,6 +30,7 @@ interface Props {
   onChange: (field: PsgcAddressField, value: string) => void
   errors?: Partial<Record<'province' | 'city' | 'barangay', string>>
   includeBarangay?: boolean
+  includeCity?: boolean
 }
 
 const inputClassName =
@@ -48,6 +49,7 @@ export default function PsgcAddressFields({
   onChange,
   errors = {},
   includeBarangay = true,
+  includeCity = true,
 }: Props) {
   const [regions, setRegions] = useState<PsgcPlace[]>([])
   const [provinces, setProvinces] = useState<PsgcPlace[]>([])
@@ -86,6 +88,7 @@ export default function PsgcAddressFields({
         if (!isCurrent) return
         setProvinces(provinceOptions)
 
+        if (!includeCity) return
         let cityOptions: PsgcPlace[] = []
         if (initialCodes.province) {
           cityOptions = await fetchPsgcProvinceCities(initialCodes.province)
@@ -117,7 +120,7 @@ export default function PsgcAddressFields({
     return () => {
       isCurrent = false
     }
-  }, [includeBarangay])
+  }, [includeBarangay, includeCity])
 
   async function changeRegion(nextRegionCode: string) {
     if (nextRegionCode === 'legacy') {
@@ -147,7 +150,7 @@ export default function PsgcAddressFields({
     try {
       const nextProvinces = await fetchPsgcProvinces(nextRegionCode)
       setProvinces(nextProvinces)
-      if (nextProvinces.length === 0) {
+      if (includeCity && nextProvinces.length === 0) {
         setIsLoadingCities(true)
         setCities(await fetchPsgcRegionCities(nextRegionCode))
       }
@@ -177,7 +180,7 @@ export default function PsgcAddressFields({
     onChange('barangay', '')
     onChange('psgc_barangay_code', '')
     setError('')
-    if (!nextProvinceCode) return
+    if (!nextProvinceCode || !includeCity) return
 
     setIsLoadingCities(true)
     try {
@@ -264,7 +267,7 @@ export default function PsgcAddressFields({
         </select>
         {errors.province && <p className="mt-1 text-xs font-medium text-rose-600">{errors.province}</p>}
       </label>
-      <label className={labelClassName}>
+      {includeCity && <label className={labelClassName}>
         City / Municipality
         <select
           value={cityCode}
@@ -279,8 +282,8 @@ export default function PsgcAddressFields({
           {cities.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
         </select>
         {errors.city && <p className="mt-1 text-xs font-medium text-rose-600">{errors.city}</p>}
-      </label>
-      {includeBarangay && (
+      </label>}
+      {includeCity && includeBarangay && (
         <label className={labelClassName}>
           Barangay
           <select

@@ -6,6 +6,7 @@ import { useLogout } from '../hooks/useLogout'
 import { useCompanySetupSelection } from '../hooks/useCompanySetupSelection'
 import PsgcAddressFields, { type PsgcAddressField } from '../components/common/PsgcAddressFields'
 import { fetchCompanies } from '../lib/companyApi'
+import { fetchPsgcProvinceCities, fetchPsgcRegionCities } from '../lib/psgcApi'
 import {
   createHoliday,
   createHolidayCalendar,
@@ -18,6 +19,7 @@ import type {
   Holiday,
   HolidayCalendar,
   HolidayCalendarPayload,
+  HolidayMunicipality,
   HolidayPayload,
   HolidayType,
 } from '../lib/holidayCalendarApi'
@@ -64,6 +66,8 @@ function newHolidayForm(calendarId: string): HolidayPayload {
     psgc_province_code: null,
     psgc_city_code: null,
     ncr_district: null,
+    included_municipalities: [],
+    excluded_municipalities: [],
     is_double_holiday: false,
     pay_rule_code: null,
     source_reference: null,
@@ -76,13 +80,20 @@ function errorText(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
-function holidayScopeName(holiday: Pick<Holiday, 'holiday_type' | 'region' | 'province' | 'city' | 'psgc_region_code' | 'psgc_province_code' | 'psgc_city_code' | 'ncr_district'>): string {
+function municipalityKey(item: HolidayMunicipality): string {
+  return item.code ? `code:${item.code}` : `name:${(item.name ?? '').trim().toLowerCase()}`
+}
+
+function holidayScopeName(holiday: Pick<Holiday, 'holiday_type' | 'region' | 'province' | 'city' | 'psgc_region_code' | 'psgc_province_code' | 'psgc_city_code' | 'ncr_district' | 'included_municipalities' | 'excluded_municipalities'>): string {
   if (holiday.holiday_type !== 'LOCAL') return 'Nationwide'
   const city = holiday.city ?? (holiday.psgc_city_code ? `Municipality ${holiday.psgc_city_code}` : '')
   const province = holiday.province ?? (holiday.psgc_province_code ? `Province ${holiday.psgc_province_code}` : '')
   const region = holiday.region ?? (holiday.psgc_region_code ? `Region ${holiday.psgc_region_code}` : '')
   const district = ncrDistricts.find(({ value }) => value === holiday.ncr_district)?.label
-  return [region, district, province, city].filter(Boolean).join(', ') || 'Scope required'
+  const included = holiday.included_municipalities.map((item) => item.name ?? item.code).join(', ')
+  const excluded = holiday.excluded_municipalities.map((item) => item.name ?? item.code).join(', ')
+  const area = [region, district, province].filter(Boolean).join(', ') || 'Scope required'
+  return `${area} · Include: ${included || city || 'All municipalities'}${excluded ? ` · Exclude: ${excluded}` : ''}`
 }
 
 function isNcrRegion(region: string | null, regionCode: string | null) {
@@ -107,16 +118,10 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
   const [isHolidayFormOpen, setIsHolidayFormOpen] = useState(false)
   const [isHolidayScopeModalOpen, setIsHolidayScopeModalOpen] = useState(false)
   const [scopeModalError, setScopeModalError] = useState('')
-  const [scopeModalSnapshot, setScopeModalSnapshot] = useState<{
-    holidayType: HolidayType
-    region: string | null
-    province: string | null
-    city: string | null
-    psgc_region_code: string | null
-    psgc_province_code: string | null
-    psgc_city_code: string | null
-    ncr_district: string | null
-  } | null>(null)
+  const [scopeModalSnapshot, setScopeModalSnapshot] = useState<HolidayPayload | null>(null)
+  const [municipalityOptions, setMunicipalityOptions] = useState<HolidayMunicipality[]>([])
+  const [municipalityLoading, setMunicipalityLoading] = useState(false)
+  const [municipalityError, setMunicipalityError] = useState('')
   const [isLoadingCalendars, setIsLoadingCalendars] = useState(false)
   const [isLoadingHolidays, setIsLoadingHolidays] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -205,6 +210,31 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
     }
   }, [calendarId])
 
+  useEffect(() => {
+    let current = true
+    setMunicipalityOptions([])
+    setMunicipalityError('')
+    const regionCode = holidayForm.psgc_region_code
+    const provinceCode = holidayForm.psgc_province_code
+    const request = isHolidayScopeModalOpen && regionCode
+      ? provinceCode ? fetchPsgcProvinceCities(provinceCode)
+        : regionCode === NCR_PSGC_REGION_CODE ? fetchPsgcRegionCities(regionCode) : null
+      : null
+    if (!request) {
+      setMunicipalityLoading(false)
+      return () => { current = false }
+    }
+    setMunicipalityLoading(true)
+    request.then((items) => {
+      if (current) setMunicipalityOptions(items)
+    }).catch((cause: unknown) => {
+      if (current) setMunicipalityError(errorText(cause, 'Could not load municipalities.'))
+    }).finally(() => {
+      if (current) setMunicipalityLoading(false)
+    })
+    return () => { current = false }
+  }, [isHolidayScopeModalOpen, holidayForm.psgc_region_code, holidayForm.psgc_province_code])
+
   const selectedCompany = companies.find((company) => company.id === companyId)
   const selectedCalendar = calendars.find((calendar) => calendar.id === calendarId) ?? null
 
@@ -217,41 +247,26 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
   }
 
   function setHolidayAddressField(field: PsgcAddressField, value: string) {
-    if (field === 'barangay' || field === 'psgc_barangay_code') return
-    setHolidayField(field, value || null)
-    if (field === 'psgc_region_code') {
-      setHolidayField('ncr_district', null)
-    }
+    if (field === 'barangay' || field === 'psgc_barangay_code' || field === 'city' || field === 'psgc_city_code') return
+    setHolidayForm((current) => ({
+      ...current,
+      [field]: value || null,
+      ...((field === 'psgc_region_code' || field === 'psgc_province_code') && current[field] !== (value || null)
+        ? { included_municipalities: [], excluded_municipalities: [] }
+        : {}),
+      ...(field === 'psgc_region_code' && current.psgc_region_code !== (value || null) ? { ncr_district: null } : {}),
+    }))
   }
 
   function openHolidayScopeModal() {
     setScopeModalError('')
-    setScopeModalSnapshot({
-      holidayType: holidayForm.holiday_type,
-      region: holidayForm.region,
-      province: holidayForm.province,
-      city: holidayForm.city,
-      psgc_region_code: holidayForm.psgc_region_code,
-      psgc_province_code: holidayForm.psgc_province_code,
-      psgc_city_code: holidayForm.psgc_city_code,
-      ncr_district: holidayForm.ncr_district,
-    })
+    setScopeModalSnapshot(holidayForm)
     setIsHolidayScopeModalOpen(true)
   }
 
   function cancelHolidayScopeModal() {
     if (scopeModalSnapshot) {
-      setHolidayForm((current) => ({
-        ...current,
-        holiday_type: scopeModalSnapshot.holidayType,
-        region: scopeModalSnapshot.region,
-        province: scopeModalSnapshot.province,
-        city: scopeModalSnapshot.city,
-        psgc_region_code: scopeModalSnapshot.psgc_region_code,
-        psgc_province_code: scopeModalSnapshot.psgc_province_code,
-        psgc_city_code: scopeModalSnapshot.psgc_city_code,
-        ncr_district: scopeModalSnapshot.ncr_district,
-      }))
+      setHolidayForm(scopeModalSnapshot)
     }
     setScopeModalSnapshot(null)
     setScopeModalError('')
@@ -259,11 +274,15 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
   }
 
   function confirmHolidayScopeModal() {
+    if (municipalityLoading || municipalityError) {
+      setScopeModalError('Wait for municipalities to load successfully before confirming this area.')
+      return
+    }
     const isNcr = isNcrRegion(holidayForm.region, holidayForm.psgc_region_code)
     if (!holidayForm.region || (isNcr ? !holidayForm.ncr_district : !holidayForm.province)) {
       setScopeModalError(isNcr
-        ? 'Select an NCR district. Municipality is optional.'
-        : 'Select a region and province. Municipality is optional.')
+        ? 'Select an NCR district.'
+        : 'Select a region and province.')
       return
     }
     setScopeModalError('')
@@ -342,11 +361,17 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
       holiday_type: holiday.holiday_type,
       region: holiday.region,
       province: holiday.province,
-      city: holiday.city,
+      city: null,
       psgc_region_code: holiday.psgc_region_code,
       psgc_province_code: holiday.psgc_province_code,
-      psgc_city_code: holiday.psgc_city_code,
+      psgc_city_code: null,
       ncr_district: holiday.ncr_district,
+      included_municipalities: holiday.included_municipalities.length
+        ? holiday.included_municipalities
+        : holiday.psgc_city_code || holiday.city
+          ? [{ code: holiday.psgc_city_code, name: holiday.city }]
+          : [],
+      excluded_municipalities: holiday.excluded_municipalities,
       is_double_holiday: holiday.is_double_holiday,
       pay_rule_code: holiday.pay_rule_code,
       source_reference: holiday.source_reference,
@@ -375,7 +400,7 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
           : !holidayForm.province)
       )
     ) {
-      setError('Select a region and province, or an NCR district, for a local holiday. Municipality is optional.')
+      setError('Select a region and province, or an NCR district, for a local holiday.')
       openHolidayScopeModal()
       return
     }
@@ -397,6 +422,24 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
     } finally {
       setIsSaving(false)
     }
+  }
+
+  const municipalityChoices = Array.from(new Map(
+    [...municipalityOptions, ...holidayForm.included_municipalities, ...holidayForm.excluded_municipalities]
+      .map((item) => [municipalityKey(item), item]),
+  ).values())
+
+  function toggleMunicipality(field: 'included_municipalities' | 'excluded_municipalities', item: HolidayMunicipality) {
+    setHolidayForm((current) => {
+      const selected = current[field]
+      const key = municipalityKey(item)
+      return {
+        ...current,
+        [field]: selected.some((entry) => municipalityKey(entry) === key)
+          ? selected.filter((entry) => municipalityKey(entry) !== key)
+          : [...selected, item],
+      }
+    })
   }
 
   return (
@@ -507,6 +550,8 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
                             psgc_province_code: null,
                             psgc_city_code: null,
                             ncr_district: null,
+                            included_municipalities: [],
+                            excluded_municipalities: [],
                           }),
                         }))
                       }
@@ -571,7 +616,7 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
             </table>
           </div>
         </section>
-        <p className="flex items-center gap-2 text-xs text-slate-500"><CalendarDays className="h-4 w-4" />Calendars contain dates; each LOCAL date carries its own applicable region and province, or NCR district, plus an optional municipality.</p>
+        <p className="flex items-center gap-2 text-xs text-slate-500"><CalendarDays className="h-4 w-4" />Each LOCAL date has an applicable region and province or NCR district, with optional municipality inclusions and exclusions.</p>
       </main>
       {isHolidayScopeModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
@@ -579,10 +624,10 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
             role="dialog"
             aria-modal="true"
             aria-labelledby="holiday-scope-title"
-            className="w-full max-w-3xl rounded-xl bg-white p-5 shadow-xl"
+            className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl"
           >
             <h2 id="holiday-scope-title" className="text-lg font-bold text-slate-900">Local holiday applicable area</h2>
-            <p className="mt-1 text-sm text-slate-600">Choose the applicable region and province, or an NCR district. Leave municipality unselected to cover the full selected area; choose one municipality to limit the holiday to that area.</p>
+            <p className="mt-1 text-sm text-slate-600">Choose a region and province, or an NCR district. An empty include list covers the whole area. Excluded municipalities never apply, even if also included.</p>
             {scopeModalError && <p role="alert" className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{scopeModalError}</p>}
             <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <PsgcAddressFields
@@ -596,19 +641,59 @@ export default function Calendar({ employeeName, onNavigate, onLoggedOut }: Prop
                 psgcBarangayCode={null}
                 onChange={setHolidayAddressField}
                 includeBarangay={false}
+                includeCity={false}
               />
               {isNcrRegion(holidayForm.region, holidayForm.psgc_region_code) && (
                 <label className={labelClass}>NCR district
                   <select
                     className={inputClass}
                     value={holidayForm.ncr_district ?? ''}
-                    onChange={(event) => setHolidayField('ncr_district', event.target.value || null)}
+                    onChange={(event) => {
+                      const district = event.target.value || null
+                      setHolidayForm((current) => ({
+                        ...current,
+                        ncr_district: district,
+                        ...(district !== current.ncr_district
+                          ? { included_municipalities: [], excluded_municipalities: [] }
+                          : {}),
+                      }))
+                    }}
                   >
                     <option value="">Select a district</option>
                     {ncrDistricts.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
                   </select>
                 </label>
               )}
+            </div>
+            {isNcrRegion(holidayForm.region, holidayForm.psgc_region_code) && (
+              <p className="mt-3 text-xs text-slate-500">The municipality list covers all of NCR; select only municipalities in the chosen district.</p>
+            )}
+            {municipalityError && <p role="alert" className="mt-3 text-sm text-rose-700">{municipalityError} Saved selections remain available.</p>}
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {([
+                ['included_municipalities', 'Include municipalities'],
+                ['excluded_municipalities', 'Exclude municipalities'],
+              ] as const).map(([field, label]) => (
+                <fieldset key={field} className="rounded-lg border border-slate-200 p-3">
+                  <legend className="px-1 text-sm font-semibold text-slate-700">{label}</legend>
+                  {municipalityLoading && <p className="text-xs text-slate-500">Loading municipalities…</p>}
+                  {!municipalityLoading && municipalityChoices.length === 0 && (
+                    <p className="text-xs text-slate-500">Select a region and province or NCR district to choose municipalities.</p>
+                  )}
+                  <div className="max-h-48 space-y-1 overflow-y-auto">
+                    {municipalityChoices.map((item) => (
+                      <label key={municipalityKey(item)} className="flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={holidayForm[field].some((entry) => municipalityKey(entry) === municipalityKey(item))}
+                          onChange={() => toggleMunicipality(field, item)}
+                        />
+                        {item.name ?? item.code}
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
             </div>
             <div className="mt-5 flex justify-end gap-3">
               <button type="button" onClick={cancelHolidayScopeModal} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>

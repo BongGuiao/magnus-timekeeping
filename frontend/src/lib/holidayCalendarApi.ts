@@ -6,6 +6,11 @@ export type HolidayCalendarStatus = 'DRAFT' | 'PUBLISHED' | 'CLOSED'
 export type HolidayStatus = 'ACTIVE' | 'CANCELLED' | 'SUPERSEDED'
 export type HolidayType = 'REGULAR' | 'SPECIAL_NONWORKING' | 'SPECIAL_WORKING' | 'LOCAL' | 'COMPANY'
 
+export interface HolidayMunicipality {
+  code: string | null
+  name: string | null
+}
+
 export interface HolidayCalendar {
   id: string
   company_id: string
@@ -39,6 +44,8 @@ export interface Holiday {
   psgc_province_code: string | null
   psgc_city_code: string | null
   ncr_district: string | null
+  included_municipalities: HolidayMunicipality[]
+  excluded_municipalities: HolidayMunicipality[]
   is_double_holiday: boolean
   pay_rule_code: string | null
   source_reference: string | null

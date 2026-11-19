@@ -2,10 +2,11 @@ from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, String, func, text
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.filemaintenance.holidays.calendar.domain.scope import Municipality
 
 
 class HolidayModel(Base):
@@ -30,6 +31,14 @@ class HolidayModel(Base):
             "('NCR_1ST_DISTRICT', 'NCR_2ND_DISTRICT', 'NCR_3RD_DISTRICT', 'NCR_4TH_DISTRICT')",
             name="ck_holidays_ncr_district",
         ),
+        CheckConstraint(
+            "jsonb_typeof(included_municipalities) = 'array'",
+            name="ck_holidays_included_municipalities_array",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(excluded_municipalities) = 'array'",
+            name="ck_holidays_excluded_municipalities_array",
+        ),
         Index(
             "uq_holidays_calendar_date_name_scope",
             "holiday_calendar_id",
@@ -39,6 +48,8 @@ class HolidayModel(Base):
             text("CASE WHEN holiday_type = 'LOCAL' THEN COALESCE(psgc_province_code, upper(btrim(province)), '') ELSE '' END"),
             text("CASE WHEN holiday_type = 'LOCAL' THEN COALESCE(psgc_city_code, upper(btrim(city)), '') ELSE '' END"),
             text("CASE WHEN holiday_type = 'LOCAL' THEN COALESCE(ncr_district, '') ELSE '' END"),
+            text("CASE WHEN holiday_type = 'LOCAL' THEN md5(included_municipalities::text) ELSE '' END"),
+            text("CASE WHEN holiday_type = 'LOCAL' THEN md5(excluded_municipalities::text) ELSE '' END"),
             unique=True,
         ),
         {"schema": "core"},
@@ -64,6 +75,12 @@ class HolidayModel(Base):
     psgc_province_code: Mapped[str | None] = mapped_column(String(9), nullable=True)
     psgc_city_code: Mapped[str | None] = mapped_column(String(9), nullable=True)
     ncr_district: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    included_municipalities: Mapped[list[Municipality]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"),
+    )
+    excluded_municipalities: Mapped[list[Municipality]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"),
+    )
     is_double_holiday: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

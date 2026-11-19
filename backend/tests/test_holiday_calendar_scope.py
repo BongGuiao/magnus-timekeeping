@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from app.filemaintenance.holidays.calendar.domain.scope import (
     GeographicArea,
@@ -7,6 +8,71 @@ from app.filemaintenance.holidays.calendar.domain.scope import (
 
 
 class HolidayScopeTests(unittest.TestCase):
+    def test_multiple_inclusions_and_exclusions(self):
+        area = GeographicArea(region="Region VII", province="Cebu")
+        holiday = SimpleNamespace(
+            **area.__dict__,
+            included_municipalities=[
+                {"code": "111111111", "name": "First"},
+                {"code": "222222222", "name": "Second"},
+            ],
+            excluded_municipalities=[
+                {"code": "222222222", "name": "Second"},
+                {"code": "333333333", "name": "Third"},
+            ],
+        )
+        for code, expected in (("111111111", True), ("222222222", False), ("333333333", False), ("444444444", False)):
+            with self.subTest(code=code):
+                location = GeographicArea(region="Region VII", province="Cebu", psgc_city_code=code)
+                self.assertEqual(holiday_applies_to_location("LOCAL", holiday, location), expected)
+        self.assertTrue(holiday_applies_to_location("REGULAR", holiday, GeographicArea()))
+
+    def test_empty_includes_cover_area_except_multiple_exclusions(self):
+        area = GeographicArea(region="Region VII", province="Cebu")
+        holiday = SimpleNamespace(
+            **area.__dict__,
+            included_municipalities=[],
+            excluded_municipalities=[
+                {"code": "111111111", "name": "First"},
+                {"code": None, "name": "Second"},
+            ],
+        )
+        for location, expected in (
+            (GeographicArea(region="Region VII", province="Cebu", psgc_city_code="111111111"), False),
+            (GeographicArea(region="Region VII", province="Cebu", city=" second "), False),
+            (GeographicArea(region="Region VII", province="Cebu", city="Third", psgc_city_code="333333333"), True),
+            (GeographicArea(region="Region VII", province="Bohol", city="Third", psgc_city_code="333333333"), False),
+            (GeographicArea(region="Region VII", province="Cebu", city="Unknown"), False),
+        ):
+            with self.subTest(location=location):
+                self.assertEqual(holiday_applies_to_location("LOCAL", holiday, location), expected)
+
+    def test_municipality_codes_do_not_fall_back_to_matching_name(self):
+        holiday = SimpleNamespace(
+            **GeographicArea(province="Cebu").__dict__,
+            included_municipalities=[{"code": "111111111", "name": "First"}],
+            excluded_municipalities=[],
+        )
+        self.assertFalse(holiday_applies_to_location(
+            "LOCAL", holiday, GeographicArea(province="Cebu", city="First"),
+        ))
+
+    def test_ncr_lists_remain_limited_to_selected_district(self):
+        area = GeographicArea(region="NCR", ncr_district="NCR_2ND_DISTRICT")
+        holiday = SimpleNamespace(
+            **area.__dict__,
+            included_municipalities=[{"code": "111111111", "name": "City"}],
+            excluded_municipalities=[],
+        )
+        self.assertTrue(holiday_applies_to_location(
+            "LOCAL", holiday,
+            GeographicArea(region="NCR", ncr_district="NCR_2ND_DISTRICT", psgc_city_code="111111111"),
+        ))
+        self.assertFalse(holiday_applies_to_location(
+            "LOCAL", holiday,
+            GeographicArea(region="NCR", ncr_district="NCR_1ST_DISTRICT", psgc_city_code="111111111"),
+        ))
+
     def test_national_holiday_applies_across_locations(self):
         applies = holiday_applies_to_location(
             "REGULAR",

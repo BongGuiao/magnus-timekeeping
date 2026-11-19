@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from typing_extensions import TypedDict
+
+
+class Municipality(TypedDict):
+    code: str | None
+    name: str | None
+
 
 @dataclass(frozen=True)
 class GeographicArea:
@@ -60,7 +67,7 @@ def holiday_applies_to_location(
     if holiday.ncr_district and holiday.ncr_district != location.ncr_district:
         return False
 
-    return (
+    in_area = (
         _matches(
             holiday.psgc_region_code,
             holiday.region,
@@ -73,10 +80,30 @@ def holiday_applies_to_location(
             location.psgc_province_code,
             location.province,
         )
-        and _matches(
-            holiday.psgc_city_code,
-            holiday.city,
-            location.psgc_city_code,
-            location.city,
+    )
+    if not in_area:
+        return False
+
+    included: list[Municipality] = getattr(holiday, "included_municipalities", [])
+    excluded: list[Municipality] = getattr(holiday, "excluded_municipalities", [])
+
+    def matches_municipality(municipality: Municipality) -> bool:
+        return _matches(
+            municipality["code"], municipality["name"],
+            location.psgc_city_code, location.city,
         )
+
+    if any(
+        (item["code"] and not location.psgc_city_code)
+        or (not item["code"] and item["name"] and not location.city)
+        for item in excluded
+    ):
+        return False
+    if any(matches_municipality(item) for item in excluded):
+        return False
+    if included:
+        return any(matches_municipality(item) for item in included)
+    return _matches(
+        holiday.psgc_city_code, holiday.city,
+        location.psgc_city_code, location.city,
     )

@@ -317,13 +317,21 @@ each holiday date once. When a date is assigned type `LOCAL`, select its
 applicable region and province in the location modal. For NCR, select one of
 the four districts (1st through 4th) instead; assign each NCR location its
 district in Location maintenance. No city-to-district mapping is assumed.
-Leave municipality blank to cover **all municipalities in the selected
-province or NCR district**; select a municipality to narrow the holiday to
-that one municipality. If a fiesta applies to only
-several municipalities, add a separate LOCAL date record for each municipality
-using the same date and holiday name. Other holiday types remain nationwide.
-Existing calendar-level scopes are transferred to their local holiday dates by
-the migration.
+For installations managed with manual SQL, apply
+`backend/sql/20261119_add_local_holiday_municipality_lists.sql`. For an
+Alembic-managed installation, apply revision `b5e7f9a1c3d5` instead. Use only
+one of these paths for the same database.
+Leave the include list empty to cover **all municipalities in the selected
+province or NCR district**, or select multiple municipalities to limit it.
+Select any municipalities to exclude; exclusions take precedence over inclusions.
+For NCR, the municipality list shows all NCR cities, so select only cities in
+the chosen district. Existing single-municipality dates retain their scope and
+are shown in the include list when edited. Other holiday types remain nationwide.
+An exclusion affects only its own holiday record; another applicable holiday on
+the same date can still apply. When exclusions are configured, an employee's
+primary location must have the municipality code (or name for a name-only
+legacy selection) needed to evaluate them; otherwise the local holiday does not
+apply.
 
 Employees may be assigned multiple locations where they can punch. Set one of
 those as the assignment's primary work location; local holiday eligibility
@@ -333,7 +341,10 @@ Choose the primary location in the assignment form or provide
 `location_codes`). If omitted from a CSV, the first location remains the
 backward-compatible default. Existing attendance records are not automatically
 reclassified; the new primary-location rule applies when attendance day types
-are determined going forward.
+are determined going forward. Municipality changes also do not automatically
+reclassify existing attendance or recalculate saved payroll results. Reports
+and cutoff calculations that resolve a date without a punch use the current
+holiday scope.
 
 Declared local holidays are non-working days for attendance and absence
 calculations. If worked, their minutes are classified as special-day work and
