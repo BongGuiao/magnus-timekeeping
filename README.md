@@ -50,11 +50,15 @@ install the sanitizer listed in `requirements.txt`.
 Notice issuance, scheduled screening, return-to-work absence detection, and the
 mobile inbox are not yet implemented. Have HR or legal review return-to-work
 wording before use. The notice workflow migrations remain unfinished and should
-not yet be applied as a deployment. For an existing untracked database, the
-reviewable [manual return-to-work template SQL](backend/sql/manual_return_to_work_notice_templates.sql)
-only widens the existing module constraint and refuses tracked or unexpected
-schemas. Back up first and reconcile manually created notice tables with the
-migrations before using Alembic; do not blindly stamp it.
+not yet be applied as a deployment. For an existing untracked database, if
+`attendance.notice_templates` is missing, the reviewable
+[manual notice-template setup SQL](backend/sql/manual_create_notice_templates.sql)
+creates only that table and its index. If the table already exists with the
+original TARDINESS-only constraint, the
+[manual return-to-work template SQL](backend/sql/manual_return_to_work_notice_templates.sql)
+widens that constraint. Both refuse tracked or unexpected schemas. Back up first
+and reconcile manually created notice tables with the migrations before using
+Alembic; do not blindly stamp it.
 
 For a new database, apply the migrations before starting the application as
 described in [Database migrations](#database-migrations). Do not apply the
