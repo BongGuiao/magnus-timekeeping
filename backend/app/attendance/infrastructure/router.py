@@ -13,6 +13,8 @@ from app.attendance.infrastructure.overtime_router import router as overtime_rou
 from app.attendance.infrastructure.offline_router import router as offline_router
 from app.attendance.infrastructure.correction_router import router as correction_router
 from app.attendance.infrastructure.kiosk_router import router as kiosk_router
+from app.attendance.infrastructure.tardiness_review_router import router as tardiness_review_router
+from app.attendance.infrastructure.notice_template_router import router as notice_template_router
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
@@ -29,5 +31,7 @@ for feature_router in (
     attendance_report_router,
     authorized_location_router,
     attendance_dashboard_router,
+    tardiness_review_router,
+    notice_template_router,
 ):
     router.include_router(feature_router)

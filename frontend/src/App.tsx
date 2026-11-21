@@ -5,6 +5,8 @@ import Dashboard from './pages/Dashboard'
 import Enrollment from './pages/Enrollment'
 import Attendance from './pages/Attendance'
 import AttendanceMergeManagement from './pages/AttendanceMergeManagement'
+import TardinessReview from './pages/TardinessReview'
+import NoticeTemplates from './pages/NoticeTemplates'
 import AttendanceRecalculation from './pages/AttendanceRecalculation'
 import MySchedule from './pages/MySchedule'
 import ScheduleUploads from './pages/ScheduleUploads'
@@ -66,6 +68,7 @@ const navViews: NavView[] = [
   'kiosk-devices',
   'dashboard', 'enrollment', 'attendance', 'attendance-detail-report', 'attendance-org-unit-summary', 'attendance-recalculation', 'companies', 'org-units', 'org-unit-types', 'locations', 'location-types',
   'attendance-merge-management',
+  'tardiness-review', 'notice-templates',
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
@@ -342,6 +345,22 @@ function App() {
         (roleCode) => roleCode.trim().toUpperCase() === 'HR_ADMIN',
       )
         ? <AttendanceMergeManagement employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'tardiness-review') {
+      return getAvailableRoleCodes().some(
+        (roleCode) => roleCode.trim().toUpperCase() === 'HR_ADMIN',
+      )
+        ? <TardinessReview employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+        : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'notice-templates') {
+      return getAvailableRoleCodes().some(
+        (roleCode) => roleCode.trim().toUpperCase() === 'HR_ADMIN',
+      )
+        ? <NoticeTemplates employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
         : <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 

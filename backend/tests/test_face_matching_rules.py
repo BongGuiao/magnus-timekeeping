@@ -84,6 +84,31 @@ class FindBestMatchTests(unittest.TestCase):
 
 
 class FaceExtractionTests(unittest.TestCase):
+    def test_exif_orientation_is_applied_before_face_detection(self):
+        source = Image.new("RGB", (2, 3))
+        source.putdata([
+            (255, 0, 0), (0, 255, 0),
+            (0, 0, 255), (255, 255, 0),
+            (255, 0, 255), (0, 255, 255),
+        ])
+        for orientation in (1, 6, 8):
+            with self.subTest(orientation=orientation):
+                exif = Image.Exif()
+                exif[274] = orientation
+                photo = BytesIO()
+                source.save(photo, format="PNG", exif=exif)
+                expected = source
+                if orientation == 6:
+                    expected = source.transpose(Image.Transpose.ROTATE_270)
+                elif orientation == 8:
+                    expected = source.transpose(Image.Transpose.ROTATE_90)
+                with patch.object(
+                    face_recognition_service.face_recognition, "face_encodings",
+                    return_value=[np.asarray(vector(0.1))],
+                ) as encode:
+                    face_recognition_service.extract_face_encoding(photo.getvalue())
+                np.testing.assert_array_equal(encode.call_args.args[0], np.asarray(expected))
+
     def test_each_upload_is_decoded_as_rgb_and_gets_its_own_encoding(self):
         photos = []
         for color in ((255, 0, 0, 255), (0, 0, 255, 255)):
@@ -100,6 +125,8 @@ class FaceExtractionTests(unittest.TestCase):
         self.assertEqual(encode.call_args_list[1].args[0][0, 0].tolist(), [0, 0, 255])
 
     def test_detector_failure_or_invalid_output_never_becomes_an_enrollment(self):
+        photo = BytesIO()
+        Image.new("RGB", (2, 2)).save(photo, format="PNG")
         for encodings, message in (
             ([], "No face detected"),
             ([np.asarray(vector(0)), np.asarray(vector(1))], "Multiple faces"),
@@ -108,10 +135,9 @@ class FaceExtractionTests(unittest.TestCase):
             ([np.ones(127)], "Captured face encoding is invalid"),
         ):
             with self.subTest(message=message), \
-                    patch.object(face_recognition_service.face_recognition, "load_image_file"), \
                     patch.object(face_recognition_service.face_recognition, "face_encodings", return_value=encodings), \
                     self.assertRaisesRegex(ValueError, message):
-                face_recognition_service.extract_face_encoding(b"capture")
+                face_recognition_service.extract_face_encoding(photo.getvalue())
 
 
 class ClockFaceVerificationTests(unittest.IsolatedAsyncioTestCase):

@@ -48,6 +48,8 @@ export type NavView =
   | 'enrollment'
   | 'attendance'
   | 'attendance-merge-management'
+  | 'tardiness-review'
+  | 'notice-templates'
   | 'attendance-detail-report'
   | 'attendance-org-unit-summary'
   | 'attendance-recalculation'
@@ -158,6 +160,8 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   dashboard: LayoutDashboard,
   attendance: ClipboardCheck,
   'attendance-merge-management': GitMerge,
+  'tardiness-review': FileClock,
+  'notice-templates': FileClock,
   'attendance-detail-report': ChartColumn,
   'attendance-org-unit-summary': ChartColumn,
   'attendance-recalculation': RefreshCw,
@@ -233,6 +237,8 @@ const navLinks: NavLink[] = [
         permission: ['attendance.read_own', 'attendance.read_team', 'attendance.read_org', 'payroll.manage'],
         requiredRoleCode: 'HR_ADMIN',
       },
+      { label: 'Tardiness Review', view: 'tardiness-review', requiredRoleCode: 'HR_ADMIN' },
+      { label: 'Notice Templates', view: 'notice-templates', requiredRoleCode: 'HR_ADMIN' },
       {
         label: 'Attendance Recalculation',
         view: 'attendance-recalculation',

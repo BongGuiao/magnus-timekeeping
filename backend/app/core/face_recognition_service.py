@@ -5,6 +5,7 @@ from uuid import UUID
 
 import face_recognition
 import numpy as np
+from PIL import Image, ImageOps
 
 DEFAULT_MATCH_THRESHOLD = 0.5
 DEFAULT_MATCH_MARGIN = 0.05
@@ -68,7 +69,8 @@ def face_distances(candidate_encoding: list[float], known_encodings: list[list[f
 
 def extract_face_encoding(image_bytes: bytes) -> list[float]:
     """Runs face detection + 128-d embedding extraction on an uploaded image."""
-    image = face_recognition.load_image_file(io.BytesIO(image_bytes))
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        image = np.array(ImageOps.exif_transpose(source).convert("RGB"))
     encodings = face_recognition.face_encodings(image)
 
     if not encodings:

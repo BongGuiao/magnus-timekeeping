@@ -7,6 +7,55 @@ exactly one environment overlay when starting the stack: the development
 overlay provides the HTTP proxy, while the production overlay configures the
 production runtime, HTTPS proxy, and certificates.
 
+### Tardiness review preview
+
+**Timekeeping → Tardiness Review** and `GET /attendance/tardiness-review` provide
+a read-only preview for users with a currently active `HR_ADMIN` role. It screens the previous calendar month in
+Philippine time, independently of payroll cutoffs. The result includes
+employees with at least four distinct late work dates, their valid attendance
+records, effective clock-ins, and dates with duplicate records or pending
+correction requests. Merged source records are excluded; schedule-credited
+days do not count as late, consistent with the attendance detail report.
+The response must be treated as confidential.
+
+This preview does not create cases, issue notices, block issuance, send
+notifications, or run on a schedule. HR must review the underlying records;
+the preview can change if attendance or corrections change. Scheduled
+screening and the notice workflow are not yet implemented.
+
+HR administrators can use **Timekeeping → Notice Templates**, or expand
+**Notice templates** on the Tardiness Review page, to upload, preview, and
+activate an HTML template for Tardiness or Return to Work.
+Each upload creates a separate version, and activation only changes which
+version is selected for that module. Uploading or activating a template does not create or
+issue a notice. Only users with a current `HR_ADMIN` role can access the API.
+
+Uploads must be UTF-8 `.html` or `.htm` files, at most 100,000 bytes. Templates
+must contain `{{signature}}`; the HR head's signature is inserted at issuance,
+not uploaded in the HTML. Available fields are `{{employee_name}}`,
+`{{employee_no}}`, `{{employee_position}}`, `{{notice_date}}`,
+`{{signatory_name}}`, `{{signatory_title}}`, and `{{signature}}`. Tardiness
+templates can also use `{{period_start}}`, `{{period_end}}`, `{{late_dates}}`,
+and `{{attendance_records}}`; the attendance-records field is intended for dated
+arrival and scheduled-start details. Return-to-Work templates can instead use
+`{{employee_address}}`, `{{salutation}}`, `{{last_attendance_date}}`,
+`{{consecutive_absence_days}}`, `{{expected_return_date}}`, and
+`{{signatory_contact}}`. Fields from another module are rejected.
+
+The server strips scripts, styles, links, images, attributes, and other
+unsupported HTML. Review the sanitized preview before activation; uploaded
+formatting may differ from the original. The backend image must be rebuilt to
+install the sanitizer listed in `requirements.txt`.
+
+Notice issuance, scheduled screening, return-to-work absence detection, and the
+mobile inbox are not yet implemented. Have HR or legal review return-to-work
+wording before use. The notice workflow migrations remain unfinished and should
+not yet be applied as a deployment. For an existing untracked database, the
+reviewable [manual return-to-work template SQL](backend/sql/manual_return_to_work_notice_templates.sql)
+only widens the existing module constraint and refuses tracked or unexpected
+schemas. Back up first and reconcile manually created notice tables with the
+migrations before using Alembic; do not blindly stamp it.
+
 For a new database, apply the migrations before starting the application as
 described in [Database migrations](#database-migrations). Do not apply the
 fresh-install baseline to an existing database.
