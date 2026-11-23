@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
+import DataTable, { type DataTableColumn } from '../components/common/DataTable'
 import AttendanceCorrectionsPanel from '../components/dashboard/AttendanceCorrectionsPanel'
 import TeamOverview, { type TeamOverviewItem } from '../components/dashboard/TeamOverview'
 import { ChevronDown } from 'lucide-react'
@@ -77,6 +78,47 @@ function formatWeeklyHours(hours: number): string {
   const totalMinutes = Math.round(hours * 60)
   return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`
 }
+
+function formatPunchTime(timestamp: string | null): string {
+  return timestamp
+    ? new Date(timestamp).toLocaleTimeString('en-PH', {
+      timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit',
+    })
+    : '—'
+}
+
+const punchedEmployeeColumns: DataTableColumn<AdminPunchedEmployee>[] = [
+  {
+    key: 'employee',
+    header: 'Employee',
+    value: (record) => record.employee_name,
+    render: (record) => (
+      <div>
+        <p className="font-semibold text-slate-900">{record.employee_name}</p>
+        <p className="text-xs text-slate-500">{record.employee_code}</p>
+      </div>
+    ),
+  },
+  {
+    key: 'employee-number',
+    header: 'Employee number',
+    value: (record) => record.employee_code,
+  },
+  {
+    key: 'clock-in',
+    header: 'Clock in',
+    value: (record) => record.clock_in_at ? Date.parse(record.clock_in_at) : -1,
+    searchable: false,
+    render: (record) => formatPunchTime(record.clock_in_at),
+  },
+  {
+    key: 'clock-out',
+    header: 'Clock out',
+    value: (record) => record.clock_out_at ? Date.parse(record.clock_out_at) : -1,
+    searchable: false,
+    render: (record) => formatPunchTime(record.clock_out_at),
+  },
+]
 
 function getAdminPanelForMetric(label: string): AdminDashboardPanel | null {
   switch (label) {
@@ -1117,39 +1159,15 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 No employees have punched in or out today.
               </p>
             ) : (
-              <div className="mt-5 overflow-x-auto">
-                <table className="w-full min-w-[600px] text-left text-sm">
-                  <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
-                    <tr>
-                      <th className="px-3 py-3">Employee</th>
-                      <th className="px-3 py-3">Employee number</th>
-                      <th className="px-3 py-3">Clock in</th>
-                      <th className="px-3 py-3">Clock out</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {adminDashboardSnapshot?.punched_employees_today.map((record: AdminPunchedEmployee) => (
-                      <tr key={record.employee_id}>
-                        <td className="px-3 py-3 font-semibold text-slate-900">{record.employee_name}</td>
-                        <td className="px-3 py-3 text-slate-600">{record.employee_code}</td>
-                        <td className="px-3 py-3 text-slate-600">
-                          {record.clock_in_at
-                            ? new Date(record.clock_in_at).toLocaleTimeString('en-PH', {
-                              timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit',
-                            })
-                            : '—'}
-                        </td>
-                        <td className="px-3 py-3 text-slate-600">
-                          {record.clock_out_at
-                            ? new Date(record.clock_out_at).toLocaleTimeString('en-PH', {
-                              timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit',
-                            })
-                            : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="mt-5">
+                <DataTable
+                  rows={adminDashboardSnapshot?.punched_employees_today ?? []}
+                  columns={punchedEmployeeColumns}
+                  getRowKey={(record) => record.employee_id}
+                  searchPlaceholder="Search employee name or number"
+                  emptyMessage="No employees have punched in or out today."
+                  pageSize={10}
+                />
               </div>
             )}
           </section>

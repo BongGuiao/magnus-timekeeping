@@ -180,16 +180,23 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
                         }
                 else:
                     rejection = is_login_allowed(user, now_utc)
+                    employee = None
+                    if rejection is None and user.employee_id is not None:
+                        employee = await uow.get_repo(EmployeeEntity, EmployeeModel).find_one(
+                            EmployeeModel.id == user.employee_id
+                        )
+                        if (
+                            employee is None
+                            or not employee.is_active
+                            or employee.record_status != "ACTIVE"
+                        ):
+                            rejection = "Employee profile is inactive or no longer exists."
+                            failure_reason = "account_inactive"
                     if rejection is None:
                         user = await user_repo.update(
                             replace(user, failed_login_count=0, locked_until=None, last_login_at=now_utc)
                         )
                         role, role_codes = await get_app_role(uow, user.id)
-                        employee = None
-                        if user.employee_id is not None:
-                            employee = await uow.get_repo(EmployeeEntity, EmployeeModel).find_one(
-                                EmployeeModel.id == user.employee_id
-                            )
                         output = LoginOutputDTO(
                             access_token=self.security_service.create_access_token(
                                 _build_token_payload(user, role, role_codes)
@@ -201,7 +208,7 @@ class LoginUseCase(BaseUseCase[LoginOutputDTO]):
                             role_code=role_codes,
                             must_change_password=input_dto.password == DEFAULT_EMPLOYEE_PASSWORD,
                         )
-                    else:
+                    elif failure_reason is None:
                         failure_reason = (
                             "account_inactive"
                             if not user.is_active or user.account_status == AccountStatus.DISABLED.value

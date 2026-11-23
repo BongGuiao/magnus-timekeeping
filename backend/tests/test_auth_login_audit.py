@@ -6,7 +6,8 @@ from uuid import uuid4
 
 from app.auth.application.accounts import DEFAULT_EMPLOYEE_PASSWORD
 from app.auth.application.use_case import LoginInputDTO, LoginUseCase
-from app.auth.domain.entities.user import Role, UserEntity
+from app.auth.domain.entities.user import AccountStatus, Role, UserEntity
+from app.filemaintenance.employees.domain.entities.employee import EmployeeEntity
 
 
 class FakeUserRepository:
@@ -22,14 +23,17 @@ class FakeUserRepository:
 
 
 class FakeEmployeeRepository:
+    def __init__(self, employee: EmployeeEntity | None = None):
+        self.employee = employee
+
     async def find_one(self, *_conditions):
-        return None
+        return self.employee
 
 
 class FakeUnitOfWork:
-    def __init__(self, user: UserEntity | None):
+    def __init__(self, user: UserEntity | None, employee: EmployeeEntity | None = None):
         self.user_repository = FakeUserRepository(user)
-        self.employee_repository = FakeEmployeeRepository()
+        self.employee_repository = FakeEmployeeRepository(employee)
 
     async def __aenter__(self):
         return self
@@ -46,11 +50,13 @@ class FakeUnitOfWork:
 class FakeSecurityService:
     def __init__(self, password_matches: bool):
         self.password_matches = password_matches
+        self.access_token_calls = 0
 
     def verify_password(self, _password: str, _password_hash: str) -> bool:
         return self.password_matches
 
     def create_access_token(self, _payload: dict) -> str:
+        self.access_token_calls += 1
         return "test-token"
 
 
@@ -61,6 +67,7 @@ class LoginAuditTests(unittest.IsolatedAsyncioTestCase):
             username="employee-1",
             password_hash="hashed-secret",
             email="employee@example.test",
+            account_status=AccountStatus.ACTIVE.value,
         )
         return replace(user, **changes)
 
@@ -131,6 +138,72 @@ class LoginAuditTests(unittest.IsolatedAsyncioTestCase):
             result = await use_case.execute(LoginInputDTO("employee-1", DEFAULT_EMPLOYEE_PASSWORD))
 
         self.assertTrue(result.must_change_password)
+
+    async def test_login_rejects_an_archived_linked_employee_before_issuing_a_token(self):
+        employee_id = uuid4()
+        user = self.make_user(employee_id=employee_id)
+        employee = EmployeeEntity(
+            id=employee_id,
+            employee_no=user.username,
+            first_name="Archived",
+            last_name="Employee",
+            record_status="ARCHIVED",
+        )
+        security = FakeSecurityService(password_matches=True)
+        audit = AsyncMock()
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user, employee),
+            security,
+            audit,
+        )
+
+        with patch("app.auth.application.use_case.get_app_role", new=AsyncMock()) as get_app_role:
+            with self.assertRaisesRegex(ValueError, "Employee profile is inactive"):
+                await use_case.execute(LoginInputDTO("employee-1", "secret"))
+
+        self.assertEqual(security.access_token_calls, 0)
+        get_app_role.assert_not_awaited()
+        audit.record.assert_awaited_once_with(
+            user_id=user.id,
+            action="LOGIN_FAILURE",
+            resource="authentication",
+            resource_id=str(user.id),
+            after={"reason": "account_inactive"},
+        )
+
+    async def test_login_rejects_a_missing_linked_employee_profile(self):
+        user = self.make_user(employee_id=uuid4())
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user),
+            FakeSecurityService(password_matches=True),
+            AsyncMock(),
+        )
+
+        with self.assertRaisesRegex(ValueError, "Employee profile is inactive"):
+            await use_case.execute(LoginInputDTO("employee-1", "secret"))
+
+    async def test_login_allows_an_active_linked_employee(self):
+        employee_id = uuid4()
+        user = self.make_user(employee_id=employee_id)
+        employee = EmployeeEntity(
+            id=employee_id,
+            employee_no=user.username,
+            first_name="Active",
+            last_name="Employee",
+        )
+        use_case = LoginUseCase(
+            FakeUnitOfWork(user, employee),
+            FakeSecurityService(password_matches=True),
+            AsyncMock(),
+        )
+
+        with patch(
+            "app.auth.application.use_case.get_app_role",
+            new=AsyncMock(return_value=(Role.USER, ["EMPLOYEE"])),
+        ):
+            result = await use_case.execute(LoginInputDTO("employee-1", "secret"))
+
+        self.assertEqual(result.employee_name, "Active Employee")
 
     async def test_failed_unknown_user_login_is_audited_without_identifier(self):
         audit = AsyncMock()
