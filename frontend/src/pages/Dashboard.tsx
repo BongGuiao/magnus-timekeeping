@@ -15,6 +15,7 @@ import {
   fetchRecentAttendanceSnapshot,
   type AdminAttendanceException,
   type AdminDashboardSnapshot,
+  type AdminPunchedEmployee,
   type OvertimeApplication,
   type SupervisorInvalidAttendance,
 } from '../lib/attendanceApi'
@@ -137,6 +138,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
   const [isOfflineReviewOpen, setIsOfflineReviewOpen] = useState(false)
   const [isAttendanceExceptionsOpen, setIsAttendanceExceptionsOpen] = useState(false)
+  const [isPunchedEmployeesOpen, setIsPunchedEmployeesOpen] = useState(false)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
   const [missedClockInsThisMonth, setMissedClockInsThisMonth] = useState<number | null>(null)
@@ -189,6 +191,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     const updateRole = () => {
       setDashboardRole({ role: getSelectedDashboardRole(), code: getSelectedDashboardRoleCode() })
       setIsAttendanceExceptionsOpen(false)
+      setIsPunchedEmployeesOpen(false)
     }
     window.addEventListener('dashboard-role-change', updateRole)
     return () => window.removeEventListener('dashboard-role-change', updateRole)
@@ -834,6 +837,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     setAdminPanel(null)
     setIsOfflineReviewOpen(false)
     setIsAttendanceExceptionsOpen(false)
+    setIsPunchedEmployeesOpen(false)
     setIsTeamHoursOpen(false)
     setIsTeamLocationsOpen(false)
     setTeamAttendancePanel(null)
@@ -1014,15 +1018,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         onClick: () => { if (panel) toggleTeamReview(adminPanel === panel, () => setAdminPanel(panel)) },
       }
     })
-  if (canReadOrgAttendance) {
-    adminMetrics.unshift({
-      id: 'punched-today',
-      label: 'Employees punched today',
-      value: isLoadingAdminDashboard ? '…' : adminDashboardError ? 'Unavailable'
-        : adminDashboardSnapshot?.employees_punched_today ?? '—',
-      open: false,
-    })
-  }
   const adminReviews: TeamOverviewItem[] = []
   if (canReviewTeamLeave && canReadOrgAttendance) adminReviews.push({
     id: 'leave', label: 'All pending leave',
@@ -1037,11 +1032,27 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     onClick: () => toggleTeamReview(adminPanel === 'invalid-attendance', () => setAdminPanel('invalid-attendance')),
   })
   if (isAdmin) {
-    adminReviews.push(...teamReviews
+    const adminReviewItems: TeamOverviewItem[] = teamReviews
       .filter((item) => ['devices', 'overtime', 'ob', 'leave', 'correction'].includes(item.id))
       .map((item) => item.id === 'leave'
         ? { ...item, id: 'assigned-leave', label: 'Assigned leave approvals' }
-        : item))
+        : item)
+    if (canResolveAttendanceExceptions) {
+      const deviceIndex = adminReviewItems.findIndex((item) => item.id === 'devices')
+      adminReviewItems.splice(deviceIndex < 0 ? adminReviewItems.length : deviceIndex, 0, {
+        id: 'punched-today',
+        label: 'Employees punched today',
+        value: isLoadingAdminDashboard ? '…' : adminDashboardError ? 'Unavailable'
+          : adminDashboardSnapshot?.employees_punched_today ?? '—',
+        open: isPunchedEmployeesOpen,
+        controls: 'admin-punched-employees',
+        onClick: () => toggleTeamReview(
+          isPunchedEmployeesOpen,
+          () => setIsPunchedEmployeesOpen(true),
+        ),
+      })
+    }
+    adminReviews.push(...adminReviewItems)
     adminReviews.push({
       id: 'offline', label: 'Offline attendance review', open: isOfflineReviewOpen, controls: 'offline-attendance-review',
       onClick: () => toggleTeamReview(isOfflineReviewOpen, () => setIsOfflineReviewOpen(true)),
@@ -1065,6 +1076,83 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           <TeamOverview role="employee" employeeName={employeeName} metrics={employeeMetrics} reviews={employeeActions} />
         ) : (
           <TeamOverview role="administrator" employeeName={employeeName} metrics={adminMetrics} reviews={adminReviews} />
+        )}
+
+        {canResolveAttendanceExceptions && (
+          <section
+            id="admin-punched-employees"
+            hidden={!isPunchedEmployeesOpen}
+            className="mt-6 rounded-2xl border border-sky-200 bg-white p-6 shadow-sm"
+          >
+            <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+              <div>
+                <h2 className="text-lg font-extrabold text-slate-900">Employees punched today</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Active employees with a valid raw clock-in or clock-out today.
+                </p>
+                {adminDashboardSnapshot && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Snapshot refreshed {new Date(adminDashboardSnapshot.refreshed_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsPunchedEmployeesOpen(false)}
+                className="w-fit rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+            {adminDashboardError && (
+              <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {adminDashboardError}
+              </p>
+            )}
+            {isLoadingAdminDashboard && !adminDashboardSnapshot ? (
+              <p className="mt-5 text-sm text-slate-500">Loading employees who punched today…</p>
+            ) : adminDashboardError && !adminDashboardSnapshot ? null
+            : (adminDashboardSnapshot?.punched_employees_today.length ?? 0) === 0 ? (
+              <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                No employees have punched in or out today.
+              </p>
+            ) : (
+              <div className="mt-5 overflow-x-auto">
+                <table className="w-full min-w-[600px] text-left text-sm">
+                  <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-3 py-3">Employee</th>
+                      <th className="px-3 py-3">Employee number</th>
+                      <th className="px-3 py-3">Clock in</th>
+                      <th className="px-3 py-3">Clock out</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {adminDashboardSnapshot?.punched_employees_today.map((record: AdminPunchedEmployee) => (
+                      <tr key={record.employee_id}>
+                        <td className="px-3 py-3 font-semibold text-slate-900">{record.employee_name}</td>
+                        <td className="px-3 py-3 text-slate-600">{record.employee_code}</td>
+                        <td className="px-3 py-3 text-slate-600">
+                          {record.clock_in_at
+                            ? new Date(record.clock_in_at).toLocaleTimeString('en-PH', {
+                              timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit',
+                            })
+                            : '—'}
+                        </td>
+                        <td className="px-3 py-3 text-slate-600">
+                          {record.clock_out_at
+                            ? new Date(record.clock_out_at).toLocaleTimeString('en-PH', {
+                              timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit',
+                            })
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         )}
 
         {isAdmin && role === 'administrator' && (

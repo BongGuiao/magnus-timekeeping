@@ -8,6 +8,7 @@ from sqlalchemy.orm import aliased
 
 from app.attendance.domain.entities.admin_dashboard import (
     PendingLeaveSummary,
+    PunchedEmployeeToday,
     TeamAttendanceDay,
     WeeklyAttendanceSample,
 )
@@ -42,6 +43,18 @@ def _employee_columns(model, prefix: str):
     ]
 
 
+def _employee_group_columns(model):
+    return [
+        model.id,
+        model.employee_no,
+        model.first_name,
+        model.middle_name,
+        model.last_name,
+        model.suffix,
+        model.preferred_name,
+    ]
+
+
 def _employee_from(row, prefix: str) -> AttendanceEmployee:
     values = row._mapping
     return AttendanceEmployee(
@@ -59,9 +72,9 @@ class SqlAlchemyAdminDashboardRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def count_employees_punched_today(
+    async def list_employees_punched_today(
         self, today: date, approver_employee_id: UUID | None = None
-    ) -> int:
+    ) -> list[PunchedEmployeeToday]:
         conditions = [
             EmployeeModel.is_active.is_(True),
             EmployeeModel.record_status == "ACTIVE",
@@ -76,35 +89,68 @@ class SqlAlchemyAdminDashboardRepository:
             ),
         ]
         if approver_employee_id is None:
-            count = await self._session.scalar(
-                select(func.count(func.distinct(EmployeeModel.id)))
-                .select_from(EmployeeModel)
-                .join(UserModel, UserModel.employee_id == EmployeeModel.id)
-                .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
-                .where(*conditions)
-            )
-            return int(count or 0)
+            rows = (
+                await self._session.execute(
+                    select(
+                        *_employee_columns(EmployeeModel, "employee_"),
+                        func.min(AttendanceModel.clock_in_at).label("clock_in_at"),
+                        func.max(AttendanceModel.clock_out_at).label("clock_out_at"),
+                    )
+                    .select_from(EmployeeModel)
+                    .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+                    .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
+                    .where(*conditions)
+                    .group_by(*_employee_group_columns(EmployeeModel))
+                    .order_by(EmployeeModel.employee_no)
+                )
+            ).all()
+            return [
+                PunchedEmployeeToday(
+                    employee=_employee_from(row, "employee_"),
+                    clock_in_at=row._mapping["clock_in_at"],
+                    clock_out_at=row._mapping["clock_out_at"],
+                )
+                for row in rows
+            ]
 
         punch_rows = (
             await self._session.execute(
                 select(
-                    EmployeeModel.id,
-                    EmploymentAssignmentModel.company_id,
-                    EmploymentAssignmentModel.org_unit_id,
+                    *_employee_columns(EmployeeModel, "employee_"),
+                    EmploymentAssignmentModel.company_id.label("company_id"),
+                    EmploymentAssignmentModel.org_unit_id.label("org_unit_id"),
+                    func.min(AttendanceModel.clock_in_at).label("clock_in_at"),
+                    func.max(AttendanceModel.clock_out_at).label("clock_out_at"),
                 )
                 .select_from(EmployeeModel)
                 .join(UserModel, UserModel.employee_id == EmployeeModel.id)
                 .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
                 .join(EmploymentAssignmentModel, EmploymentAssignmentModel.employee_id == EmployeeModel.id)
                 .where(*conditions, *active_assignment_conditions(today))
-                .distinct()
+                .group_by(
+                    *_employee_group_columns(EmployeeModel),
+                    EmploymentAssignmentModel.company_id,
+                    EmploymentAssignmentModel.org_unit_id,
+                )
+                .order_by(EmployeeModel.employee_no)
             )
         ).all()
         assignments_by_employee: dict[UUID, set[tuple[UUID, UUID | None]]] = {}
+        punches_by_employee: dict[UUID, PunchedEmployeeToday] = {}
         company_ids: set[UUID] = set()
-        for employee_id, company_id, source_unit_id in punch_rows:
+        for row in punch_rows:
+            values = row._mapping
+            employee = _employee_from(row, "employee_")
+            employee_id = employee.id
+            company_id = values["company_id"]
+            source_unit_id = values["org_unit_id"]
             assignments_by_employee.setdefault(employee_id, set()).add((company_id, source_unit_id))
             company_ids.add(company_id)
+            punches_by_employee[employee_id] = PunchedEmployeeToday(
+                employee=employee,
+                clock_in_at=values["clock_in_at"],
+                clock_out_at=values["clock_out_at"],
+            )
 
         org_units = (
             await self._session.scalars(
@@ -113,7 +159,7 @@ class SqlAlchemyAdminDashboardRepository:
         ).all() if company_ids else []
         org_units_by_id = {unit.id: unit for unit in org_units}
 
-        count = 0
+        punched_employees: list[PunchedEmployeeToday] = []
         unresolved_count = 0
         for employee_id, assignments in assignments_by_employee.items():
             if len(assignments) != 1:
@@ -132,14 +178,14 @@ class SqlAlchemyAdminDashboardRepository:
                 unresolved_count += 1
                 continue
             if approver.employee_id == approver_employee_id:
-                count += 1
+                punched_employees.append(punches_by_employee[employee_id])
 
         if unresolved_count:
             logger.warning(
                 "Skipped %s punched employee(s) with unresolved Org Chart approval assignments.",
                 unresolved_count,
             )
-        return count
+        return sorted(punched_employees, key=lambda punched: punched.employee.employee_no)
 
     async def list_team_attendance(
         self, supervisor_employee_id: UUID, today: date, month_start: date

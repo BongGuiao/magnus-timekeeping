@@ -59,10 +59,18 @@ class EmployeeWeeklyHours:
 
 
 @dataclass
+class PunchedEmployeeToday:
+    employee: AttendanceEmployee
+    clock_in_at: Optional[datetime]
+    clock_out_at: Optional[datetime]
+
+
+@dataclass
 class AdminDashboard:
     no_login: list[AttendanceException] = field(default_factory=list)
     no_logout: list[AttendanceException] = field(default_factory=list)
     pending_leaves: list[PendingLeaveSummary] = field(default_factory=list)
     weekly_hours: list[EmployeeWeeklyHours] = field(default_factory=list)
     employees_punched_today: int = 0
+    punched_employees_today: list[PunchedEmployeeToday] = field(default_factory=list)
     refreshed_at: Optional[datetime] = None

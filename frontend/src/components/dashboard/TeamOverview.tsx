@@ -12,7 +12,7 @@ export interface TeamOverviewItem {
 const categoryColors: Record<string, string> = {
   'missing-in': 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100',
   'missing-out': 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
-  'punched-today': 'border-sky-200 bg-sky-50 text-sky-800',
+  'punched-today': 'border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100',
   hours: 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
   leave: 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100',
   'apply-leave': 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100',

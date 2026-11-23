@@ -71,12 +71,21 @@ class AdminWeeklyHoursSchema(BaseModel):
     minutes_worked: int = Field(ge=0)
 
 
+class AdminPunchedEmployeeSchema(BaseModel):
+    employee_id: UUID
+    employee_code: str
+    employee_name: str
+    clock_in_at: datetime | None
+    clock_out_at: datetime | None
+
+
 class AdminDashboardSnapshotSchema(BaseModel):
     no_login: list[AdminAttendanceExceptionSchema]
     no_logout: list[AdminAttendanceExceptionSchema]
     pending_leaves: list[AdminPendingLeaveSchema]
     weekly_hours: list[AdminWeeklyHoursSchema]
     employees_punched_today: int = Field(ge=0)
+    punched_employees_today: list[AdminPunchedEmployeeSchema]
     refreshed_at: datetime
 
 
@@ -179,6 +188,16 @@ def _dashboard_schema(dashboard: AdminDashboard) -> AdminDashboardSnapshotSchema
             for total in dashboard.weekly_hours
         ],
         employees_punched_today=dashboard.employees_punched_today,
+        punched_employees_today=[
+            AdminPunchedEmployeeSchema(
+                employee_id=punched.employee.id,
+                employee_code=punched.employee.employee_no,
+                employee_name=punched.employee.display_name,
+                clock_in_at=punched.clock_in_at,
+                clock_out_at=punched.clock_out_at,
+            )
+            for punched in dashboard.punched_employees_today
+        ],
         refreshed_at=dashboard.refreshed_at,
     )
 

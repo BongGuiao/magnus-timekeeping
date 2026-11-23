@@ -1,5 +1,6 @@
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from app.attendance.domain.entities.admin_dashboard import (
     AdminDashboard,
     EmployeeWeeklyHours,
     PendingLeaveSummary,
+    PunchedEmployeeToday,
     TeamAttendanceDay,
     WeeklyAttendanceSample,
 )
@@ -131,7 +133,10 @@ class WeeklyMinutesTests(unittest.TestCase):
 class FakeDashboardRepository:
     def __init__(self, team=(), leaves=(), weekly=(), punched_today=0):
         self.team, self.leaves, self.weekly, self.calls = list(team), list(leaves), list(weekly), []
-        self.punched_today = punched_today
+        self.punched_today = [
+            PunchedEmployeeToday(employee(f"P{index:03}"), None, None)
+            for index in range(punched_today)
+        ]
 
     async def list_team_attendance(self, supervisor_employee_id, today, month_start):
         self.calls.append(("team", supervisor_employee_id, today, month_start))
@@ -145,7 +150,7 @@ class FakeDashboardRepository:
         self.calls.append(("weekly", week_start, today, supervisor_employee_id))
         return self.weekly
 
-    async def count_employees_punched_today(self, today, approver_employee_id=None):
+    async def list_employees_punched_today(self, today, approver_employee_id=None):
         self.calls.append(("punched_today", today, approver_employee_id))
         return self.punched_today
 
@@ -187,10 +192,11 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
             ("punched_today", date(2026, 10, 14), supervisor),
         )
 
-    async def test_punched_today_count_uses_org_chart_approver_with_parent_fallback(self):
+    async def test_punched_today_details_use_org_chart_approver_with_parent_fallback(self):
         manager_id, company_id = uuid4(), uuid4()
         fallback_employee_id, child_manager_employee_id = uuid4(), uuid4()
         parent_id, fallback_child_id, child_manager_unit_id = uuid4(), uuid4(), uuid4()
+        fallback_clock_in = NOW - timedelta(hours=2)
 
         def org_unit(
             unit_id,
@@ -213,11 +219,26 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
                 effective_to=None,
             )
 
+        def punch_row(employee_id, employee_code, org_unit_id, clock_in_at):
+            return SimpleNamespace(_mapping={
+                "employee_id": employee_id,
+                "employee_employee_no": employee_code,
+                "employee_first_name": "First",
+                "employee_middle_name": None,
+                "employee_last_name": "Last",
+                "employee_suffix": None,
+                "employee_preferred_name": None,
+                "company_id": company_id,
+                "org_unit_id": org_unit_id,
+                "clock_in_at": clock_in_at,
+                "clock_out_at": None,
+            })
+
         class FakePunchSession:
             async def execute(self, _statement):
                 return SimpleNamespace(all=lambda: [
-                    (fallback_employee_id, company_id, fallback_child_id),
-                    (child_manager_employee_id, company_id, child_manager_unit_id),
+                    punch_row(fallback_employee_id, "FALLBACK", fallback_child_id, fallback_clock_in),
+                    punch_row(child_manager_employee_id, "CHILD", child_manager_unit_id, NOW),
                 ])
 
             async def scalars(self, _statement):
@@ -236,14 +257,17 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ])
 
-        count = await SqlAlchemyAdminDashboardRepository(FakePunchSession()).count_employees_punched_today(
+        punched = await SqlAlchemyAdminDashboardRepository(FakePunchSession()).list_employees_punched_today(
             date(2026, 10, 14),
             approver_employee_id=manager_id,
         )
 
-        self.assertEqual(count, 1)
+        self.assertEqual(len(punched), 1)
+        self.assertEqual(punched[0].employee.id, fallback_employee_id)
+        self.assertEqual(punched[0].employee.employee_no, "FALLBACK")
+        self.assertEqual(punched[0].clock_in_at, fallback_clock_in)
 
-    async def test_punched_today_count_uses_organization_or_supervisor_scope(self):
+    async def test_punched_today_details_are_only_returned_for_organization_scope(self):
         organization_repository = FakeDashboardRepository(punched_today=12)
         organization_dashboard = await GetAdminDashboardUseCase(
             FakeUnitOfWork(organization_repository), clock=lambda: NOW
@@ -253,6 +277,7 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
             organization_repository.calls[3],
             ("punched_today", date(2026, 10, 14), None),
         )
+        self.assertEqual(len(organization_dashboard.punched_employees_today), 12)
 
         supervisor = uuid4()
         team_repository = FakeDashboardRepository(punched_today=4)
@@ -264,6 +289,7 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
             team_repository.calls[3],
             ("punched_today", date(2026, 10, 14), supervisor),
         )
+        self.assertEqual(team_dashboard.punched_employees_today, [])
 
     async def test_month_boundary_uses_manila_date_not_utc(self):
         late_utc = datetime(2026, 10, 31, 17, tzinfo=timezone.utc)
@@ -295,7 +321,11 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
         dashboard = AdminDashboard(
             no_logout=classify_attendance_exceptions([day(subject)], NOW)[1],
             pending_leaves=[leave], weekly_hours=[EmployeeWeeklyHours(subject, 481)],
-            employees_punched_today=3, refreshed_at=NOW,
+            employees_punched_today=1,
+            punched_employees_today=[
+                PunchedEmployeeToday(subject, NOW - timedelta(hours=8), NOW)
+            ],
+            refreshed_at=NOW,
         )
         use_case = MagicMock(execute=AsyncMock(return_value=dashboard))
         employee_id = uuid4()
@@ -309,7 +339,9 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((data.no_logout[0].employee_name, data.no_logout[0].supervisor_name), ("Ana", "The Boss"))
         self.assertEqual(data.pending_leaves[0].requested_minutes, 240)
         self.assertEqual((data.weekly_hours[0].minutes_worked, data.weekly_hours[0].hours_worked), (481, 8.02))
-        self.assertEqual(data.employees_punched_today, 3)
+        self.assertEqual(data.employees_punched_today, 1)
+        self.assertEqual(data.punched_employees_today[0].employee_name, "Ana")
+        self.assertEqual(data.punched_employees_today[0].clock_out_at, NOW)
 
     async def test_non_admin_or_unlinked_accounts_are_forbidden(self):
         use_case = MagicMock(execute=AsyncMock())

@@ -57,7 +57,7 @@ class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
                 today,
                 supervisor_employee_id=supervisor_employee_id,
             )
-            employees_punched_today = await uow.dashboard.count_employees_punched_today(
+            punched_employees_today = await uow.dashboard.list_employees_punched_today(
                 today,
                 approver_employee_id=supervisor_employee_id,
             )
@@ -68,6 +68,7 @@ class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
             no_logout=no_logout,
             pending_leaves=pending_leaves,
             weekly_hours=total_weekly_minutes(weekly_samples),
-            employees_punched_today=employees_punched_today,
+            employees_punched_today=len(punched_employees_today),
+            punched_employees_today=[] if data.team_scope else punched_employees_today,
             refreshed_at=now,
         )

@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.attendance.domain.entities.admin_dashboard import (
     PendingLeaveSummary,
+    PunchedEmployeeToday,
     TeamAttendanceDay,
     WeeklyAttendanceSample,
 )
@@ -16,10 +17,10 @@ class AdminDashboardRepository(Protocol):
         """Valid attendance this month for employees currently supervised by the given employee."""
         ...
 
-    async def count_employees_punched_today(
+    async def list_employees_punched_today(
         self, today: date, approver_employee_id: UUID | None = None
-    ) -> int:
-        """Count active employees with a valid punch today, optionally limited to an org approver."""
+    ) -> list[PunchedEmployeeToday]:
+        """List active employees with a valid punch today, optionally limited to an org approver."""
         ...
 
     async def list_pending_leaves(

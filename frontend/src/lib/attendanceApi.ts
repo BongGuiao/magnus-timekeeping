@@ -272,12 +272,21 @@ export interface AdminWeeklyHours {
   minutes_worked: number
 }
 
+export interface AdminPunchedEmployee {
+  employee_id: string
+  employee_code: string
+  employee_name: string
+  clock_in_at: string | null
+  clock_out_at: string | null
+}
+
 export interface AdminDashboardSnapshot {
   no_login: AdminAttendanceException[]
   no_logout: AdminAttendanceException[]
   pending_leaves: AdminPendingLeave[]
   weekly_hours: AdminWeeklyHours[]
   employees_punched_today: number
+  punched_employees_today: AdminPunchedEmployee[]
   refreshed_at: string
 }
 
