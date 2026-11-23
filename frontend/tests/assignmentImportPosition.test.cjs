@@ -44,6 +44,7 @@ function harness(canManage = true, overrides = {}, canUploadSchedules = false, r
     editingEmployee: { id: 'employee', employee_no: '0001', first_name: 'Ana', last_name: 'Cruz' },
     isFormOpen: true,
     activeTab: 'assignments',
+    visitedEmployeeTabs: new Set(['details', 'assignments', 'schedule']),
     isLoading: false,
     assignmentLookups: { loaded: true, error: '', locations: [], payrollGroups: [] },
     ...overrides,
@@ -52,28 +53,51 @@ function harness(canManage = true, overrides = {}, canUploadSchedules = false, r
   const calls = []
   const FormModal = () => null
   const AssignmentPanel = () => null
+  const TopNav = () => null
+  const EntitlementUpload = () => null
   const ScheduleUploadPanel = () => null
   const ScheduleAssignmentsPanel = () => null
   const DataTable = () => null
   const hooks = {
     useId: () => 'employee-form',
     useEffect: () => {},
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
     useState: (initial) => {
       const name = stateNames[index++]
-      if (!(name in states)) states[name] = initial
+      if (!(name in states)) states[name] = typeof initial === 'function' ? initial() : initial
       return [states[name], (value) => { states[name] = typeof value === 'function' ? value(states[name]) : value }]
     },
   }
   const components = loadComponent(join('pages', 'Employees.tsx'), {
     react: hooks,
     '../hooks/useLogout': { useLogout: () => ({ logout() {} }) },
-    '../types/role': { hasPermission: (permission) => (permission === 'employees.manage' && canManage) || (permission === 'schedule.upload_team' && canUploadSchedules) },
+    '../types/role': {
+      hasPermission: (permission) => (permission === 'employees.manage' && canManage)
+        || (permission === 'schedule.upload_team' && canUploadSchedules)
+        || (permission === 'leave.manage' && overrides.leaveManage === true),
+      getAvailableRoleCodes: () => role === 'admin' ? ['HR_ADMIN'] : ['SUPERVISOR'],
+      getSelectedDashboardRoleCode: () => role === 'admin' ? 'HR_ADMIN' : 'SUPERVISOR',
+    },
+    '../components/dashboard/WorkspaceTabsContext': { useWorkspaceTabs: () => null },
+    '../components/dashboard/TopNav': { __esModule: true, default: TopNav },
+    '../lib/employeePersonalDetails': {
+      CIVIL_STATUSES: [], PERSONAL_DETAILS_FIELDS: [], EMPTY_PERSONAL_DETAILS: {},
+      personalDetailsSchema: require('zod').z.object({}),
+      personalDetailsFormValues: () => ({}), personalDetailsPayload: (value) => value,
+    },
     '../components/common/FormModal': { __esModule: true, default: FormModal },
     '../components/common/DataTable': { __esModule: true, default: DataTable },
     '../features/employees/EmployeeRelatedPanels': { EmploymentAssignmentsPanel: AssignmentPanel },
+    '../features/employees/EmployeeEntitlementsPanel': {
+      __esModule: true, default: () => null, EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT: 'entitlements-uploaded',
+    },
+    '../features/employees/EntitlementUpload': { __esModule: true, default: EntitlementUpload },
     '../features/employees/EmployeeScheduleAssignmentsPanel': { __esModule: true, default: ScheduleAssignmentsPanel },
     './ScheduleUploads': { ScheduleUploadPanel },
-    '../lib/employeeApi': { fetchEmployee: async (id) => ({ id, employee_no: '0001' }) },
+    '../lib/employeeApi': {
+      fetchEmployee: async (id) => ({ id, employee_no: '0001' }),
+      fetchEmployeePersonalDetails: async () => null,
+    },
     '../lib/employeeRelatedApi': {
       createEmploymentAssignmentsBatch: async (rows) => { calls.push(rows); return [{ id: 'assignment' }] },
       EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT: 'assignment-changed',
@@ -82,45 +106,59 @@ function harness(canManage = true, overrides = {}, canUploadSchedules = false, r
     localStorage: { getItem: () => role },
     window: { dispatchEvent: (event) => calls.push(event.type) },
     Event: class { constructor(type) { this.type = type } },
+    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail } },
   })
   return {
-    calls, states, ScheduleUploadPanel, ScheduleAssignmentsPanel,
+    calls, states, ScheduleUploadPanel, ScheduleAssignmentsPanel, EntitlementUpload,
     render() {
       index = 0
       const page = components.default({ employeeName: 'User' })
       const modal = find(page, (node) => node.type === FormModal)
-      const form = modal.props.children({ register: () => ({}), formState: { errors: {} } })
+      const form = modal.props.children({ register: () => ({}), watch: () => '', formState: { errors: {} } })
       const tab = find(form, (node) => node.props.id === 'employee-form-assignments-panel')
       const scheduleTab = find(form, (node) => node.props.id === 'employee-form-schedule-panel')
       const table = find(page, (node) => node.type === DataTable)
-      return { page, tab, form, modal, table, scheduleTab, panel: find(tab, (node) => node.type === AssignmentPanel) }
+      return { page, tab, form, modal, table, scheduleTab, nav: find(page, (node) => node.type === TopNav), panel: find(tab, (node) => node.type === AssignmentPanel) }
     },
   }
 }
 
-test('assignment import and template controls live inside the Assignments tab, not the page toolbar', () => {
-  const { page, tab, panel } = harness().render()
-  const main = find(page, (node) => node.type === 'main')
-  assert.equal(find(main, (node) => node.type === 'button' && node.props.children.includes?.('Import Assignments')), null)
+test('assignment import is offered in HR navigation rather than the Assignments tab', () => {
+  const { tab, panel, nav } = harness().render()
   assert.equal(tab.props.role, 'tabpanel')
-  const markup = renderToStaticMarkup(panel.props.importActions)
-  assert.match(markup, /Import Assignments/)
-  assert.match(markup, /Download template/)
-  assert.equal(panel.props.importPanel, false)
+  assert.ok(nav.props.employeeCsvActions.some((action) => action.label === 'Import employment assignments'))
+  assert.equal(panel.props.importActions, undefined)
+  assert.equal(panel.props.importPanel, undefined)
 })
 
-test('the relocated button toggles the existing CSV panel and retains its permission gate', () => {
+test('the navigation action toggles the CSV panel and requires HR Admin access', () => {
   const app = harness()
-  const button = find(app.render().panel.props.importActions, (node) => node.type === 'button' && node.props['aria-controls'])
-  assert.equal(button.props.type, 'button')
-  button.props.onClick()
-  const panel = app.render().panel
-  assert.equal(panel.props.importPanel.props.id, button.props['aria-controls'])
-  assert.equal(panel.props.importPanel.props['aria-label'], 'Import employment assignments from CSV')
-  assert.ok(find(panel.props.importPanel, (node) => node.type === 'input' && node.props.type === 'file'))
-  const restricted = harness(false, { isAssignmentCsvImportOpen: true }).render().panel
-  assert.equal(restricted.props.importActions, false)
-  assert.equal(restricted.props.importPanel, false)
+  const action = app.render().nav.props.employeeCsvActions.find((item) => item.label === 'Import employment assignments')
+  action.onSelect()
+  const panel = find(app.render().page, (node) => node.props['aria-label'] === 'Import employment assignments from CSV')
+  assert.ok(panel)
+  assert.ok(find(panel, (node) => node.type === 'input' && node.props.type === 'file'))
+  assert.match(renderToStaticMarkup(panel), /Download template/)
+  const restricted = harness(false, { isAssignmentCsvImportOpen: true }).render()
+  assert.equal(restricted.nav.props.employeeCsvActions, undefined)
+  assert.equal(find(restricted.page, (node) => node.props['aria-label'] === 'Import employment assignments from CSV'), null)
+})
+
+test('employee navigation opens profile, personal-information and entitlement imports with their existing permissions', async () => {
+  const app = harness(true, { leaveManage: true })
+  const action = (label) => app.render().nav.props.employeeCsvActions.find((item) => item.label === label)
+  action('Import employee profiles').onSelect()
+  assert.ok(find(app.render().page, (node) => node.props['aria-label'] === 'Import employees from CSV'))
+  action('Import personal information').onSelect()
+  assert.equal(app.states.isPersonalDetailsImportOpen, true)
+  action('Import leave entitlements').onSelect()
+  assert.equal(app.states.isEntitlementImportOpen, true)
+  const upload = find(app.render().page, (node) => node.type === app.EntitlementUpload)
+  assert.equal(upload.props.navigationControlled, true)
+  await upload.props.onUploaded({ entitlement_ids: ['entitlement'] })
+  assert.ok(app.calls.includes('entitlements-uploaded'))
+  assert.equal(harness().render().nav.props.employeeCsvActions.some((item) => item.label === 'Import leave entitlements'), false)
+  assert.equal(harness(true, {}, false, 'supervisor').render().nav.props.employeeCsvActions, undefined)
 })
 
 test('the relocated apply button still calls the existing batch API and refreshes visible assignments', async () => {
@@ -129,7 +167,8 @@ test('the relocated apply button still calls the existing batch API and refreshe
     isAssignmentCsvImportOpen: true,
     assignmentCsvPreviewRows: [{ rowNumber: 2, employeeNo: '0001', companyCode: 'COMPANY', errors: [], payload }],
   })
-  const button = find(app.render().panel.props.importPanel, (node) => node.type === 'button')
+  const panel = find(app.render().page, (node) => node.props['aria-label'] === 'Import employment assignments from CSV')
+  const button = find(panel, (node) => node.type === 'button' && node.props.children?.some?.((child) => typeof child === 'string' && child.includes('Import all')))
   assert.equal(button.props.disabled, false)
   button.props.onClick()
   await new Promise((resolve) => setImmediate(resolve))
@@ -140,18 +179,15 @@ test('the relocated apply button still calls the existing batch API and refreshe
   assert.match(app.states.assignmentCsvMessage, /imported successfully/)
 })
 
-test('the real Assignments panel renders header controls and CSV preview before the assignment table', () => {
+test('the real Assignments panel retains its assignment table', () => {
   const { EmploymentAssignmentsPanel } = loadComponent(join('features', 'employees', 'EmployeeRelatedPanels.tsx'), {
     '../../types/role': { hasPermission: () => false },
   })
   const markup = renderToStaticMarkup(React.createElement(EmploymentAssignmentsPanel, {
     employee: { id: 'employee' }, employees: [], companies: [], orgUnits: [],
-    importActions: React.createElement('button', { type: 'button' }, 'Import Assignments'),
-    importPanel: React.createElement('section', null, 'CSV preview'),
   }))
-  assert.ok(markup.indexOf('Employment assignments') < markup.indexOf('Import Assignments'))
-  assert.ok(markup.indexOf('Import Assignments') < markup.indexOf('CSV preview'))
-  assert.ok(markup.indexOf('CSV preview') < markup.indexOf('<table'))
+  assert.ok(markup.indexOf('Employment assignments') < markup.indexOf('<table'))
+  assert.doesNotMatch(markup, /Import Assignments/)
 })
 
   test('Team Schedule Upload toggles inside the Schedule tab and refreshes manual schedules after submission', () => {

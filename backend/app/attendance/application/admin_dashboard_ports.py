@@ -16,6 +16,12 @@ class AdminDashboardRepository(Protocol):
         """Valid attendance this month for employees currently supervised by the given employee."""
         ...
 
+    async def count_employees_punched_today(
+        self, today: date, approver_employee_id: UUID | None = None
+    ) -> int:
+        """Count active employees with a valid punch today, optionally limited to an org approver."""
+        ...
+
     async def list_pending_leaves(
         self, supervisor_employee_id: UUID | None = None, today: date | None = None
     ) -> list[PendingLeaveSummary]: ...

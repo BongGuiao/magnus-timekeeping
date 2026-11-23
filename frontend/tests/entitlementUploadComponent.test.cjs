@@ -92,7 +92,7 @@ function createHarness(overrides = {}) {
     calls,
     render() {
       hook = 0
-      return exports.default({ children: 'Employee entitlements', onUploaded })
+      return exports.default({ children: 'Employee entitlements', onUploaded, navigationControlled: overrides.navigationControlled })
     },
   }
 }
@@ -166,6 +166,13 @@ test('upload controls review a multi-employee file and refresh after applying', 
   assert.equal(harness.calls[1][2], 'a'.repeat(64))
   assert.equal(harness.calls[2][0], 'refresh')
   assert.equal(button(tree, 'Apply entitlements').props.disabled, true)
+})
+
+test('navigation-controlled entitlement upload opens directly and keeps its template and review flow', () => {
+  const tree = createHarness({ navigationControlled: true }).render()
+  assert.ok(find(tree, (element) => element.props['aria-label'] === 'Upload entitlements'))
+  assert.ok(find(tree, (element) => element.type === 'button' && text(element).includes('Download template')))
+  assert.equal(find(tree, (element) => element.type === 'button' && text(element).includes('Upload entitlements')), null)
 })
 
 test('changing the selected file invalidates the previous preview', async () => {

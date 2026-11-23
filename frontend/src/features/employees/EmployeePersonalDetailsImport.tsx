@@ -1,13 +1,12 @@
 import { useState } from 'react'
-import { Download, FileUp } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { fetchPersonalDetailsTemplateExample, importEmployeePersonalDetails } from '../../lib/employeeApi'
 import {
   parsePersonalDetailsCsv, personalDetailsCsvTemplate,
 } from '../../lib/employeePersonalDetails'
 import type { PersonalDetailsImportResult, PersonalDetailsImportRow } from '../../lib/employeePersonalDetails'
 
-export default function EmployeePersonalDetailsImport() {
-  const [isOpen, setIsOpen] = useState(false)
+export default function EmployeePersonalDetailsImport({ isOpen }: { isOpen: boolean }) {
   const [rows, setRows] = useState<PersonalDetailsImportRow[]>([])
   const [results, setResults] = useState<PersonalDetailsImportResult[]>([])
   const [isBusy, setIsBusy] = useState(false)
@@ -72,10 +71,7 @@ export default function EmployeePersonalDetailsImport() {
   }
 
   return (
-    <section className="mb-5">
-      <button type="button" disabled={isBusy} onClick={() => setIsOpen((current) => !current)} aria-expanded={isOpen} className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 disabled:opacity-50">
-        <FileUp className="h-4 w-4" />Import personal information
-      </button>
+    <section className="mb-5" hidden={!isOpen}>
       {isOpen && (
         <div className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-white p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">

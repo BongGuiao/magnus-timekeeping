@@ -30,7 +30,8 @@ import type { Location } from '../types/location'
 import { fetchPayrollGroups } from '../lib/payrollGroupApi'
 import type { PayrollGroup } from '../lib/payrollGroupApi'
 import { EmployeeSkillsPanel, EmploymentAssignmentsPanel } from '../features/employees/EmployeeRelatedPanels'
-import EmployeeEntitlementsPanel from '../features/employees/EmployeeEntitlementsPanel'
+import EmployeeEntitlementsPanel, { EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT } from '../features/employees/EmployeeEntitlementsPanel'
+import EntitlementUpload from '../features/employees/EntitlementUpload'
 import EmployeeScheduleAssignmentsPanel from '../features/employees/EmployeeScheduleAssignmentsPanel'
 import { ScheduleUploadPanel } from './ScheduleUploads'
 import EmployeeFaceEnrollmentPanel from '../features/employees/EmployeeFaceEnrollmentPanel'
@@ -199,6 +200,8 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const [successMessage, setSuccessMessage] = useState('')
   const [isExportingCsv, setIsExportingCsv] = useState(false)
   const [isCsvImportOpen, setIsCsvImportOpen] = useState(false)
+  const [isPersonalDetailsImportOpen, setIsPersonalDetailsImportOpen] = useState(false)
+  const [isEntitlementImportOpen, setIsEntitlementImportOpen] = useState(false)
   const [csvFileName, setCsvFileName] = useState('')
   const [csvPreviewRows, setCsvPreviewRows] = useState<EmployeeCsvPreviewRow[]>([])
   const [csvResults, setCsvResults] = useState<EmployeeCsvResult[]>([])
@@ -842,36 +845,19 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const inputClassName = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100'
   const labelClassName = 'text-xs font-semibold text-slate-700'
 
-  const assignmentImportActions = canManageEmployees && (
-    <div className="flex flex-wrap gap-2">
-      <button
-        type="button"
-        onClick={() => {
-          setIsAssignmentCsvImportOpen((current) => !current)
-          setAssignmentCsvError('')
-        }}
-        disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
-        className="inline-flex items-center justify-center gap-2 rounded-md border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
-        aria-expanded={isAssignmentCsvImportOpen}
-        aria-controls={`${tabId}-assignment-import`}
-      >
-        <FileUp className="h-3.5 w-3.5" />
-        Import Assignments
-      </button>
-      <button type="button" onClick={downloadEmploymentAssignmentCsvTemplate} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-        <Download className="h-3.5 w-3.5" />
-        Download template
-      </button>
-    </div>
-  )
-
-  const assignmentImportPanel = canManageEmployees && isAssignmentCsvImportOpen && (
-    <section id={`${tabId}-assignment-import`} aria-label="Import employment assignments from CSV" className="space-y-4 rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
-      <div>
-        <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
-          Imports assignments for existing employees. Rows that match an existing employee/company assignment override that assignment with the uploaded values. The whole file is rejected if a row is invalid or duplicates another row. No rows are imported unless every row passes validation.
-        </p>
+  const assignmentImportPanel = canExportEmployees && isAssignmentCsvImportOpen && (
+    <section id={`${tabId}-assignment-import`} aria-label="Import employment assignments from CSV" className="mb-5 space-y-4 rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">Import employment assignments</h2>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">
+            Imports assignments for existing employees. Rows that match an existing employee/company assignment override that assignment with the uploaded values. The whole file is rejected if a row is invalid or duplicates another row. No rows are imported unless every row passes validation.
+          </p>
+        </div>
+        <button type="button" onClick={downloadEmploymentAssignmentCsvTemplate} className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+          <Download className="h-3.5 w-3.5" />
+          Download template
+        </button>
       </div>
       <label className="block text-xs font-semibold text-slate-700">
         Assignment CSV file
@@ -937,7 +923,41 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
 
   return (
     <div className="min-h-svh bg-slate-100 pb-10">
-      <TopNav employeeName={employeeName} activeView="employees" onNavigate={onNavigate} onSignOut={logout} />
+      <TopNav
+        employeeName={employeeName}
+        activeView="employees"
+        onNavigate={onNavigate}
+        onSignOut={logout}
+        employeeCsvActions={canExportEmployees ? [
+          {
+            label: isExportingCsv ? 'Exporting employee CSV...' : 'Export employee CSV',
+            onSelect: () => { void downloadEmployeeExport() },
+            disabled: isLoading || isExportingCsv || isImportingCsv || isImportingAssignmentCsv,
+          },
+          {
+            label: 'Import employee profiles',
+            onSelect: () => { setIsCsvImportOpen((current) => !current); setCsvError('') },
+            disabled: isLoading || isImportingCsv || isImportingAssignmentCsv,
+            expanded: isCsvImportOpen,
+          },
+          {
+            label: 'Import personal information',
+            onSelect: () => setIsPersonalDetailsImportOpen((current) => !current),
+            expanded: isPersonalDetailsImportOpen,
+          },
+          {
+            label: 'Import employment assignments',
+            onSelect: () => { setIsAssignmentCsvImportOpen((current) => !current); setAssignmentCsvError('') },
+            disabled: isLoading || isImportingCsv || isImportingAssignmentCsv,
+            expanded: isAssignmentCsvImportOpen,
+          },
+          ...(hasPermission('leave.manage') ? [{
+            label: 'Import leave entitlements',
+            onSelect: () => setIsEntitlementImportOpen((current) => !current),
+            expanded: isEntitlementImportOpen,
+          }] : []),
+        ] : undefined}
+      />
       <main className="w-full px-4 py-6 sm:px-6 lg:px-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -950,29 +970,6 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             </p>
           </div>
           {canManageEmployees && <div className="flex flex-wrap gap-2">
-            {canExportEmployees && <button
-              type="button"
-              onClick={() => { void downloadEmployeeExport() }}
-              disabled={isLoading || isExportingCsv || isImportingCsv || isImportingAssignmentCsv}
-              title="Export all employee records, including confidential personal information and addresses"
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Download className="h-4 w-4" />
-              {isExportingCsv ? 'Exporting...' : 'Export CSV'}
-            </button>}
-            <button
-              type="button"
-              onClick={() => {
-                setIsCsvImportOpen((current) => !current)
-                setCsvError('')
-              }}
-              disabled={isLoading || isImportingCsv || isImportingAssignmentCsv}
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2.5 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-expanded={isCsvImportOpen}
-            >
-              <FileUp className="h-4 w-4" />
-              Import CSV
-            </button>
             <button type="button" onClick={openCreate} disabled={isLoading || isImportingCsv || isImportingAssignmentCsv} className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50">
               <Plus className="h-4 w-4" />
               New employee
@@ -983,9 +980,9 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
         {errorMessage && !isFormOpen && <p role="alert" className="mb-4 rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
         {successMessage && <p role="status" className="mb-4 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
 
-        {canManageEmployees && <EmployeePersonalDetailsImport />}
+        {canExportEmployees && <EmployeePersonalDetailsImport isOpen={isPersonalDetailsImportOpen} />}
 
-        {isCsvImportOpen && (
+        {canExportEmployees && isCsvImportOpen && (
           <section aria-label="Import employees from CSV" className="mb-5 space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
               <div>
@@ -1066,6 +1063,18 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                 </p>
               </>
             )}
+          </section>
+        )}
+
+        {assignmentImportPanel}
+
+        {canExportEmployees && hasPermission('leave.manage') && (
+          <section className="mb-5 rounded-lg border border-slate-200 bg-white p-4" hidden={!isEntitlementImportOpen}>
+            <EntitlementUpload navigationControlled onUploaded={async (result) => {
+              window.dispatchEvent(new CustomEvent(EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT, { detail: result.entitlement_ids }))
+            }}>
+              <h2 className="text-sm font-bold text-slate-900">Import employee entitlements</h2>
+            </EntitlementUpload>
           </section>
         )}
 
@@ -1247,7 +1256,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
             {visibleEmployeeTabs.slice(1).map((tab) => (
               <div key={tab.id} role="tabpanel" id={`${tabId}-${tab.id}-panel`} aria-labelledby={`${tabId}-${tab.id}-tab`} tabIndex={activeTab === tab.id ? 0 : -1} className={`[grid-area:1/1] ${activeTab === tab.id ? '' : 'invisible'}`}>
                 {visitedEmployeeTabs.has(tab.id) && (tab.id === 'assignments'
-                  ? <EmploymentAssignmentsPanel employee={editingEmployee} employees={employees} companies={companies} orgUnits={orgUnits} importActions={assignmentImportActions} importPanel={assignmentImportPanel} refreshVersion={assignmentRefreshVersion} />
+                  ? <EmploymentAssignmentsPanel employee={editingEmployee} employees={employees} companies={companies} orgUnits={orgUnits} refreshVersion={assignmentRefreshVersion} />
                   : tab.id === 'skills'
                     ? <EmployeeSkillsPanel employee={editingEmployee} employees={employees} />
                     : tab.id === 'entitlements'

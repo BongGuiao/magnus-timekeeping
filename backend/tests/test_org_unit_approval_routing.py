@@ -13,6 +13,7 @@ from app.auth.infrastructure.approval_routing import (
     OrgUnitApprover,
     approval_route_scope,
     resolve_org_unit_approver,
+    resolve_org_unit_approver_from_hierarchy,
     save_approval_route,
 )
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
@@ -89,6 +90,25 @@ class OrgUnitApproverTests(unittest.IsolatedAsyncioTestCase):
         permission_query = str(session.scalar.await_args.args[0].compile(dialect=postgresql.dialect()))
         self.assertIn("role_permissions.allowed", permission_query)
         self.assertIn("permissions.permission_code", permission_query)
+
+    def test_hierarchy_snapshot_uses_the_configured_org_chart_approver(self):
+        session = self.session(child_manager=self.manager_id, parent_manager=self.parent_manager_id)
+        resolve = lambda: resolve_org_unit_approver_from_hierarchy(
+            self.employee_id,
+            self.company_id,
+            self.unit_id,
+            TODAY,
+            session.units,
+        )
+
+        self.assertEqual(resolve(), OrgUnitApprover(self.manager_id, self.unit_id, self.unit_id))
+
+        session.units[self.unit_id].manager_is_approver = False
+        self.assertEqual(resolve(), OrgUnitApprover(self.parent_manager_id, self.unit_id, self.parent_id))
+
+        session.units[self.unit_id].manager_is_approver = True
+        session.units[self.parent_id].excluded_approval_org_unit_ids = [self.unit_id]
+        self.assertEqual(resolve(), OrgUnitApprover(self.manager_id, self.unit_id, self.unit_id))
 
     async def test_manager_assignment_grants_team_approvals_without_role_permission(self):
         for permission_code in sorted(ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS):

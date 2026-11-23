@@ -76,6 +76,7 @@ class AdminDashboardSnapshotSchema(BaseModel):
     no_logout: list[AdminAttendanceExceptionSchema]
     pending_leaves: list[AdminPendingLeaveSchema]
     weekly_hours: list[AdminWeeklyHoursSchema]
+    employees_punched_today: int = Field(ge=0)
     refreshed_at: datetime
 
 
@@ -177,6 +178,7 @@ def _dashboard_schema(dashboard: AdminDashboard) -> AdminDashboardSnapshotSchema
             )
             for total in dashboard.weekly_hours
         ],
+        employees_punched_today=dashboard.employees_punched_today,
         refreshed_at=dashboard.refreshed_at,
     )
 

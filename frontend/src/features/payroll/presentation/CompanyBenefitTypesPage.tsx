@@ -24,6 +24,7 @@ export default function CompanyBenefitTypesPage({
   const { companyId } = useCompanySetupSelection()
   const [groups, setGroups] = useState<PayrollGroupOption[]>([])
   const [selectedGroupId, setSelectedGroupId] = useState('')
+  const [groupsCompanyId, setGroupsCompanyId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -31,6 +32,7 @@ export default function CompanyBenefitTypesPage({
     let current = true
     setGroups([])
     setSelectedGroupId('')
+    setGroupsCompanyId('')
     setError('')
     if (!companyId) return () => { current = false }
 
@@ -39,6 +41,7 @@ export default function CompanyBenefitTypesPage({
       .then((nextGroups) => {
         if (!current) return
         setGroups(nextGroups)
+        setGroupsCompanyId(companyId)
         setSelectedGroupId(nextGroups[0]?.id ?? '')
       })
       .catch((cause: unknown) => {
@@ -59,6 +62,11 @@ export default function CompanyBenefitTypesPage({
         activeView={setupType === 'benefits' ? 'company-benefit-types' : 'company-deduction-types'}
         onNavigate={onNavigate}
         onSignOut={onLoggedOut}
+        settingsPayrollContext={{
+          companyId: groupsCompanyId,
+          payrollGroupId: selectedGroupId,
+          loadBenefitTypes: (groupId) => useCases.listBenefitTypes(groupId),
+        }}
       />
       <main className="w-full space-y-5 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-wrap items-start justify-between gap-4">

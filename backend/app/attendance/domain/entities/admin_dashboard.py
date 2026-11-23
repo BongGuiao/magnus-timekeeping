@@ -64,4 +64,5 @@ class AdminDashboard:
     no_logout: list[AttendanceException] = field(default_factory=list)
     pending_leaves: list[PendingLeaveSummary] = field(default_factory=list)
     weekly_hours: list[EmployeeWeeklyHours] = field(default_factory=list)
+    employees_punched_today: int = 0
     refreshed_at: Optional[datetime] = None

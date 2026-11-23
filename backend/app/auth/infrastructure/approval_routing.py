@@ -42,6 +42,51 @@ class OrgUnitApprover:
     approver_org_unit_id: UUID
 
 
+def resolve_org_unit_approver_from_hierarchy(
+    employee_id: UUID,
+    company_id: UUID,
+    source_unit_id: UUID | None,
+    on_date: date,
+    org_units_by_id: dict[UUID, OrgUnit],
+    *,
+    excluded_employee_ids: frozenset[UUID] = frozenset(),
+) -> OrgUnitApprover:
+    if source_unit_id is None:
+        raise ApprovalRoutingError("No organization unit is assigned. Contact HR.")
+
+    excluded = excluded_employee_ids | {employee_id}
+    visited: set[UUID] = set()
+    unit_id: UUID | None = source_unit_id
+    while unit_id is not None:
+        if unit_id in visited:
+            raise ApprovalRoutingError("The organization hierarchy contains a cycle. Contact HR.")
+        visited.add(unit_id)
+        unit = org_units_by_id.get(unit_id)
+        if unit is None or unit.company_id != company_id:
+            raise ApprovalRoutingError("The organization hierarchy has an invalid company or parent. Contact HR.")
+        if (
+            unit.deleted_at is not None
+            or not unit.is_active
+            or unit.status != "ACTIVE"
+            or unit.effective_from > on_date
+            or (unit.effective_to is not None and unit.effective_to < on_date)
+        ):
+            raise ApprovalRoutingError("An organization unit in the approval hierarchy is not active. Contact HR.")
+
+        manager_id = unit.manager_employee_id
+        if not unit.manager_is_approver or visited.intersection(unit.excluded_approval_org_unit_ids):
+            unit_id = unit.parent_org_unit_id
+            continue
+        if manager_id is None:
+            raise ApprovalRoutingError("The organization unit has no manager. HR must assign an independent approver.")
+        if manager_id in excluded:
+            unit_id = unit.parent_org_unit_id
+            continue
+        return OrgUnitApprover(manager_id, source_unit_id, unit.id)
+
+    raise ApprovalRoutingError("No eligible organization manager is configured. Contact HR.")
+
+
 def active_assignment_conditions(on_date: date | ColumnElement[date]) -> tuple[ColumnElement[bool], ...]:
     assignment = EmploymentAssignmentModel
     return (
@@ -110,91 +155,74 @@ async def resolve_org_unit_approver(
     if len(assignments) != 1:
         raise ApprovalRoutingError("Multiple current organization assignments exist. Contact HR.")
     company_id, source_unit_id = assignments[0]
-    if source_unit_id is None:
-        raise ApprovalRoutingError("No organization unit is assigned. Contact HR.")
-
-    excluded = excluded_employee_ids | {employee_id}
-    visited: set[UUID] = set()
+    org_units_by_id: dict[UUID, OrgUnit] = {}
     unit_id: UUID | None = source_unit_id
-    while unit_id is not None:
-        if unit_id in visited:
-            raise ApprovalRoutingError("The organization hierarchy contains a cycle. Contact HR.")
-        visited.add(unit_id)
+    while unit_id is not None and unit_id not in org_units_by_id:
         unit = await session.get(OrgUnit, unit_id)
-        if unit is None or unit.company_id != company_id:
-            raise ApprovalRoutingError("The organization hierarchy has an invalid company or parent. Contact HR.")
-        if (
-            unit.deleted_at is not None
-            or not unit.is_active
-            or unit.status != "ACTIVE"
-            or unit.effective_from > on_date
-            or (unit.effective_to is not None and unit.effective_to < on_date)
-        ):
-            raise ApprovalRoutingError("An organization unit in the approval hierarchy is not active. Contact HR.")
-
-        manager_id = unit.manager_employee_id
-        if not unit.manager_is_approver or visited.intersection(unit.excluded_approval_org_unit_ids):
-            unit_id = unit.parent_org_unit_id
-            continue
-        if manager_id is None:
-            raise ApprovalRoutingError("The organization unit has no manager. HR must assign an independent approver.")
-        if manager_id in excluded:
-            unit_id = unit.parent_org_unit_id
-            continue
-        if manager_id is not None and manager_id not in excluded:
-            if permission_code is None:
-                active_manager = await session.scalar(
-                    select(EmployeeModel.id).where(
-                        EmployeeModel.id == manager_id,
-                        EmployeeModel.is_active.is_(True),
-                        EmployeeModel.record_status == "ACTIVE",
-                    )
-                )
-                if active_manager is None:
-                    raise ApprovalRoutingError("The organization manager needs an active employee profile. Contact HR.")
-            else:
-                account = (
-                    await session.execute(
-                        select(UserModel.id)
-                        .join(EmployeeModel, EmployeeModel.id == UserModel.employee_id)
-                        .where(
-                            EmployeeModel.id == manager_id,
-                            EmployeeModel.is_active.is_(True),
-                            EmployeeModel.record_status == "ACTIVE",
-                            UserModel.is_active.is_(True),
-                            UserModel.account_status == "ACTIVE",
-                        )
-                    )
-                ).scalar_one_or_none()
-                if account is None:
-                    raise ApprovalRoutingError("The organization manager needs an active employee-linked account. Contact HR.")
-                has_permission = permission_code in ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS or await session.scalar(
-                    select(
-                        exists(
-                            select(UserRoleModel.id)
-                            .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
-                            .join(RolePermissionModel, RolePermissionModel.role_id == RoleModel.id)
-                            .join(PermissionModel, PermissionModel.id == RolePermissionModel.permission_id)
-                            .where(
-                                UserRoleModel.user_id == account,
-                                UserRoleModel.effective_from <= on_date,
-                                or_(UserRoleModel.effective_to.is_(None), UserRoleModel.effective_to >= on_date),
-                                RoleModel.is_active.is_(True),
-                                RolePermissionModel.allowed.is_(True),
-                                PermissionModel.is_active.is_(True),
-                                PermissionModel.permission_code == permission_code,
-                            )
-                        )
-                    )
-                )
-                if not has_permission:
-                    raise ApprovalRoutingError(
-                        "The organization manager does not have the required approval permission. Contact HR."
-                    )
-            return OrgUnitApprover(manager_id, source_unit_id, unit.id)
+        if unit is None:
+            break
+        org_units_by_id[unit_id] = unit
         unit_id = unit.parent_org_unit_id
 
-    raise ApprovalRoutingError("No eligible organization manager is configured. Contact HR.")
+    approver = resolve_org_unit_approver_from_hierarchy(
+        employee_id,
+        company_id,
+        source_unit_id,
+        on_date,
+        org_units_by_id,
+        excluded_employee_ids=excluded_employee_ids,
+    )
+    manager_id = approver.employee_id
+    if permission_code is None:
+        active_manager = await session.scalar(
+            select(EmployeeModel.id).where(
+                EmployeeModel.id == manager_id,
+                EmployeeModel.is_active.is_(True),
+                EmployeeModel.record_status == "ACTIVE",
+            )
+        )
+        if active_manager is None:
+            raise ApprovalRoutingError("The organization manager needs an active employee profile. Contact HR.")
+    else:
+        account = (
+            await session.execute(
+                select(UserModel.id)
+                .join(EmployeeModel, EmployeeModel.id == UserModel.employee_id)
+                .where(
+                    EmployeeModel.id == manager_id,
+                    EmployeeModel.is_active.is_(True),
+                    EmployeeModel.record_status == "ACTIVE",
+                    UserModel.is_active.is_(True),
+                    UserModel.account_status == "ACTIVE",
+                )
+            )
+        ).scalar_one_or_none()
+        if account is None:
+            raise ApprovalRoutingError("The organization manager needs an active employee-linked account. Contact HR.")
+        has_permission = permission_code in ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS or await session.scalar(
+            select(
+                exists(
+                    select(UserRoleModel.id)
+                    .join(RoleModel, RoleModel.id == UserRoleModel.role_id)
+                    .join(RolePermissionModel, RolePermissionModel.role_id == RoleModel.id)
+                    .join(PermissionModel, PermissionModel.id == RolePermissionModel.permission_id)
+                    .where(
+                        UserRoleModel.user_id == account,
+                        UserRoleModel.effective_from <= on_date,
+                        or_(UserRoleModel.effective_to.is_(None), UserRoleModel.effective_to >= on_date),
+                        RoleModel.is_active.is_(True),
+                        RolePermissionModel.allowed.is_(True),
+                        PermissionModel.is_active.is_(True),
+                        PermissionModel.permission_code == permission_code,
+                    )
+                )
+            )
+        )
+        if not has_permission:
+            raise ApprovalRoutingError(
+                "The organization manager does not have the required approval permission. Contact HR."
+            )
+    return approver
 
 
 async def save_approval_route(

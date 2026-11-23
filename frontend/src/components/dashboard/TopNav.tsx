@@ -33,6 +33,8 @@ import { useWorkspaceTabs } from './WorkspaceTabsContext'
 import { fetchCompanies, fetchPayrollParameterCompanies } from '../../lib/companyApi'
 import type { Company } from '../../types/company'
 import { useCompanySetupSelection } from '../../hooks/useCompanySetupSelection'
+import { downloadSettingsCsv, isSettingsCsvView, SETTINGS_CSV_PERMISSIONS } from '../../lib/settingsCsv'
+import type { BenefitType } from '../../features/payroll/domain/payroll'
 import {
   getAvailableRoleCodes,
   canPreviewDashboardRoles,
@@ -393,6 +395,61 @@ interface Props {
   activeView: NavView
   onNavigate?: (view: NavView) => void
   onSignOut?: () => void
+  employeeCsvActions?: EmployeeCsvAction[]
+  settingsPayrollContext?: {
+    companyId: string
+    payrollGroupId: string
+    loadBenefitTypes: (groupId: string) => Promise<BenefitType[]>
+  }
+}
+
+export interface EmployeeCsvAction {
+  label: string
+  onSelect: () => void
+  disabled?: boolean
+  expanded?: boolean
+}
+
+function EmployeeCsvMenuItems({ actions, closeMenu }: {
+  actions?: EmployeeCsvAction[]
+  closeMenu: () => void
+}) {
+  if (!actions?.length) return null
+  return (
+    <>
+      <p className="px-3 pt-2 text-xs font-bold uppercase text-slate-400">Employee CSV</p>
+      {actions.map((action) => (
+        <button
+          key={action.label}
+          type="button"
+          role="menuitem"
+          disabled={action.disabled}
+          aria-expanded={action.expanded}
+          onClick={() => { closeMenu(); action.onSelect() }}
+          className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {action.label}
+        </button>
+      ))}
+    </>
+  )
+}
+
+function SettingsCsvMenuItem({ onSelect, busy }: { onSelect: () => void; busy: boolean }) {
+  return (
+    <>
+      <p className="px-3 pt-2 text-xs font-bold uppercase text-slate-400">Settings CSV</p>
+      <button
+        type="button"
+        role="menuitem"
+        disabled={busy}
+        onClick={onSelect}
+        className="block w-full rounded-md px-3 py-2 text-left text-sm font-semibold text-slate-900 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {busy ? 'Downloading CSV...' : 'Download CSV'}
+      </button>
+    </>
+  )
 }
 
 function DashboardRoleSelect({
@@ -427,7 +484,7 @@ function DashboardRoleSelect({
   )
 }
 
-export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
+export default function TopNav({ activeView, onNavigate, onSignOut, employeeCsvActions, settingsPayrollContext }: Props) {
   const workspaceTabs = useWorkspaceTabs()
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
@@ -438,6 +495,8 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const mobileAccountMenuRef = useRef<HTMLDivElement>(null)
   const [companies, setCompanies] = useState<Company[]>([])
   const [companyLoadError, setCompanyLoadError] = useState('')
+  const [settingsCsvBusy, setSettingsCsvBusy] = useState(false)
+  const [settingsCsvMessage, setSettingsCsvMessage] = useState<{ error: boolean; text: string } | null>(null)
   const [roleCode, setRoleCode] = useState<string>(getSelectedDashboardRoleCode)
   useEffect(() => {
     const updateRoleCode = () => setRoleCode(getSelectedDashboardRoleCode())
@@ -453,6 +512,10 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
   const isAdmin = normalizeDashboardRole(localStorage.getItem('role')) === 'administrator'
   const canResetPasswords = isSystemAdmin()
   const { companyId, selectCompany } = useCompanySetupSelection()
+  const canDownloadSettingsCsv = isSettingsCsvView(activeView)
+    && roleCode === 'HR_ADMIN'
+    && roleCodes.includes('HR_ADMIN')
+    && hasPermission(SETTINGS_CSV_PERMISSIONS[activeView])
   const isCompanyContextView = companyContextViews.includes(activeView)
   const filterByPermission = (link: NavLink): NavLink | null => {
     if (link.adminOnly && !isAdmin) return null
@@ -574,6 +637,26 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
     localStorage.setItem('dashboard_role_code', nextRoleCode)
     window.dispatchEvent(new CustomEvent('dashboard-role-change'))
     navigateTo('dashboard')
+  }
+
+  async function downloadSettings() {
+    if (!isSettingsCsvView(activeView) || !canDownloadSettingsCsv || settingsCsvBusy) return
+    setIsAccountMenuOpen(false)
+    setIsMobileMenuOpen(false)
+    setSettingsCsvBusy(true)
+    setSettingsCsvMessage({ error: false, text: 'Preparing CSV download...' })
+    try {
+      await downloadSettingsCsv(activeView, {
+        companyId,
+        payrollGroupId: settingsPayrollContext?.companyId === companyId ? settingsPayrollContext.payrollGroupId : undefined,
+        loadBenefitTypes: settingsPayrollContext?.loadBenefitTypes,
+      })
+      setSettingsCsvMessage({ error: false, text: 'CSV download started.' })
+    } catch (error) {
+      setSettingsCsvMessage({ error: true, text: error instanceof Error ? error.message : 'Could not download CSV.' })
+    } finally {
+      setSettingsCsvBusy(false)
+    }
   }
 
   return (
@@ -790,6 +873,8 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                       Database Backup
                     </button>
                   )}
+                  <EmployeeCsvMenuItems actions={employeeCsvActions} closeMenu={() => setIsAccountMenuOpen(false)} />
+                  {canDownloadSettingsCsv && <SettingsCsvMenuItem busy={settingsCsvBusy} onSelect={() => { void downloadSettings() }} />}
                 </div>
               )}
             </div>
@@ -865,6 +950,8 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
                         Database Backup
                       </button>
                     )}
+                    <EmployeeCsvMenuItems actions={employeeCsvActions} closeMenu={() => { setIsAccountMenuOpen(false); setIsMobileMenuOpen(false) }} />
+                    {canDownloadSettingsCsv && <SettingsCsvMenuItem busy={settingsCsvBusy} onSelect={() => { void downloadSettings() }} />}
                   </div>
                 )}
               </div>
@@ -1092,6 +1179,12 @@ export default function TopNav({ activeView, onNavigate, onSignOut }: Props) {
         </div>
       )}
 
+      {settingsCsvMessage && (
+        <div role={settingsCsvMessage.error ? 'alert' : 'status'} className={`flex items-center justify-between gap-3 px-[2.5%] py-2 text-sm ${settingsCsvMessage.error ? 'bg-rose-50 text-rose-700' : 'bg-indigo-50 text-indigo-700'}`}>
+          <span>{settingsCsvMessage.text}</span>
+          <button type="button" aria-label="Dismiss CSV message" onClick={() => setSettingsCsvMessage(null)}>×</button>
+        </div>
+      )}
     </header>
     <div aria-hidden="true" style={{ height: `${navHeight}px` }} />
     {workspaceTabs && (

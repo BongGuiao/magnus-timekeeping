@@ -6,12 +6,13 @@ export interface TeamOverviewItem {
   value?: string | number
   open: boolean
   controls?: string
-  onClick: () => void
+  onClick?: () => void
 }
 
 const categoryColors: Record<string, string> = {
   'missing-in': 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100',
   'missing-out': 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
+  'punched-today': 'border-sky-200 bg-sky-50 text-sky-800',
   hours: 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
   leave: 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100',
   'apply-leave': 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100',
@@ -73,18 +74,40 @@ export default function TeamOverview({ role, metrics, reviews, employeeName }: {
       </header>
       {metrics.length > 0 && (
         <div className={`grid gap-2 p-3 ${isEmployee ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'}`}>
-          {metrics.map((item) => (
-            <button key={item.id} type="button" aria-expanded={item.open} aria-controls={item.controls} onClick={item.onClick}
-              className={`flex items-center justify-between gap-3 rounded-lg border border-l-4 px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${categoryColors[item.id] ?? 'border-slate-200 bg-slate-50 text-slate-800 hover:bg-slate-100'} ${item.open ? 'ring-2 ring-inset ring-current' : ''}`}>
+          {metrics.map((item) => {
+            const className = `flex items-center justify-between gap-3 rounded-lg border border-l-4 px-3 py-2.5 text-left ${
+              categoryColors[item.id] ?? 'border-slate-200 bg-slate-50 text-slate-800'
+            } ${item.onClick
+              ? `transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${item.open ? 'ring-2 ring-inset ring-current' : ''}`
+              : ''}`
+            const content = (
+              <>
               <span className="flex items-center gap-2 text-sm font-medium">
-                {item.id === 'hours' ? <Clock3 size={16} aria-hidden="true" />
+                {item.id === 'hours' || item.id === 'punched-today' ? <Clock3 size={16} aria-hidden="true" />
                   : item.id === 'leave' ? <ClipboardCheck size={16} aria-hidden="true" />
                     : <AlertTriangle size={16} aria-hidden="true" />}
                 {item.label}
               </span>
               <span className={`shrink-0 font-bold tabular-nums ${typeof item.value === 'string' && ['—', '…', 'Loading…', 'Unavailable'].includes(item.value) ? 'text-xs' : 'whitespace-nowrap text-lg'}`}>{displayValue(item.value)}</span>
-            </button>
-          ))}
+              </>
+            )
+            return item.onClick ? (
+              <button
+                key={item.id}
+                type="button"
+                aria-expanded={item.open}
+                aria-controls={item.controls}
+                onClick={item.onClick}
+                className={className}
+              >
+                {content}
+              </button>
+            ) : (
+              <div key={item.id} className={className}>
+                {content}
+              </div>
+            )
+          })}
         </div>
       )}
       {reviews.length > 0 && (

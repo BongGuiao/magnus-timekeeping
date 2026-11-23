@@ -852,6 +852,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
   const teamMetrics: TeamOverviewItem[] = canReviewTeamAttendance ? [
     {
+      id: 'punched-today',
+      label: 'Team punched today',
+      value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable'
+        : teamDashboardSnapshot?.employees_punched_today ?? '—',
+      open: false,
+    },
+    {
       id: 'missing-in', label: 'Recorded absences',
       value: isLoadingTeamDashboard ? '…' : teamDashboardError ? 'Unavailable' : teamDashboardSnapshot?.no_login.length ?? '—',
       open: teamAttendancePanel === 'no-login',
@@ -1007,6 +1014,15 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         onClick: () => { if (panel) toggleTeamReview(adminPanel === panel, () => setAdminPanel(panel)) },
       }
     })
+  if (canReadOrgAttendance) {
+    adminMetrics.unshift({
+      id: 'punched-today',
+      label: 'Employees punched today',
+      value: isLoadingAdminDashboard ? '…' : adminDashboardError ? 'Unavailable'
+        : adminDashboardSnapshot?.employees_punched_today ?? '—',
+      open: false,
+    })
+  }
   const adminReviews: TeamOverviewItem[] = []
   if (canReviewTeamLeave && canReadOrgAttendance) adminReviews.push({
     id: 'leave', label: 'All pending leave',

@@ -277,6 +277,7 @@ export interface AdminDashboardSnapshot {
   no_logout: AdminAttendanceException[]
   pending_leaves: AdminPendingLeave[]
   weekly_hours: AdminWeeklyHours[]
+  employees_punched_today: number
   refreshed_at: string
 }
 

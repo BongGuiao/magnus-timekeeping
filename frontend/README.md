@@ -13,9 +13,19 @@ Global assignments without a company keep their scope and allow date edits only.
 This does not change the employee's organizational placement or employment
 assignment. Existing role-management permissions and backend audit logging apply.
 
-## Employee CSV export
+## Employee CSV import and export
 
-In Employee Records, **Export CSV** downloads all employee profiles (including
+On **People > Employees**, HR Admins with `employees.manage` permission and
+the HR Admin dashboard role selected can open the account menu (three dots)
+and use **Employee CSV** to export employees or import employee profiles,
+personal information, employment assignments, and leave entitlements. Leave
+entitlement upload also requires `leave.manage`. Each import retains its own
+template, preview, and validation rules. Assignment and entitlement imports
+replace matching records; profile imports skip existing employees, and
+personal-information imports fill empty fields only. Team schedule uploads
+remain in the employee Schedule tab.
+
+**Export employee CSV** downloads all employee profiles (including
 archived/disabled records) with bank account, SSS, Pag-IBIG, PhilHealth, TIN,
 civil status, complete address components, and PSGC codes. Employees without
 saved personal details are included with empty cells. Authentication, face
@@ -33,7 +43,30 @@ identifier, postal-code, and PSGC columns **as Text** in spreadsheet software
 to retain leading zeroes. Formula-like cells receive an apostrophe prefix for
 spreadsheet safety, without modifying saved employee values. The file contains
 confidential personal information and must be stored securely.
+The export contains fields not supported by the profile-import template and is
+not a full database backup or a direct round-trip import file.
 No migration is required; deploy the frontend and reload the backend together.
+
+## Settings CSV downloads
+
+With the assigned HR Admin role selected and the relevant module permission,
+open the account menu (three dots) on Org Units, Locations, Geofences, Schedule
+Templates, Rest Day Patterns, Leave Management, Benefit Types, or Deduction Types
+and select **Download CSV**. Company-scoped records use the selected company;
+benefit and deduction types use the selected payroll group. Rest day patterns
+are global. Downloads include inactive records but exclude deleted org units,
+locations, and geofences, regardless of the table's Show deleted setting.
+
+The UTF-8 CSV contains column names and one row per record, including IDs for
+referenced records. Schedule `segments`, rest day pattern `days`, and org unit
+`excluded_approval_org_unit_ids` are JSON arrays inside CSV cells. An empty
+dataset still downloads the headers. Import identifiers and location codes as
+text in spreadsheet software to retain leading zeroes. Formula-like text
+causes the download to fail with an explanation rather than exporting unsafe
+spreadsheet cells. API errors are displayed. Downloads are refused when a
+list reaches its API limit (1,000 records, or 100 segments per schedule), since
+the list might be incomplete. Existing backend permissions still apply.
+These files are not database backups, and no Settings CSV upload is provided.
 
 ## Organizational chart
 

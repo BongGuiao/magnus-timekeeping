@@ -94,13 +94,10 @@ function useRelatedRecords<T extends { id: string }>(employeeId: string | null, 
   return { records, isLoading, errorMessage, setErrorMessage, successMessage, setSuccessMessage, upsert }
 }
 
-function PanelShell({ title, errorMessage, successMessage, actions, children }: { title: string; errorMessage: string; successMessage: string; actions?: ReactNode; children: ReactNode }) {
+function PanelShell({ title, errorMessage, successMessage, children }: { title: string; errorMessage: string; successMessage: string; children: ReactNode }) {
   return (
     <div className="space-y-4" onKeyDown={blockEnterSubmit}>
-      {actions ? <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>
-        {actions}
-      </div> : <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>}
+      <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{title}</h3>
       {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
       {successMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
       {children}
@@ -223,12 +220,10 @@ interface AssignmentsPanelProps {
   employees: Employee[]
   companies: Company[]
   orgUnits: OrgUnit[]
-  importActions?: ReactNode
-  importPanel?: ReactNode
   refreshVersion?: number
 }
 
-export function EmploymentAssignmentsPanel({ employee, employees, companies, orgUnits, importActions, importPanel, refreshVersion }: AssignmentsPanelProps) {
+export function EmploymentAssignmentsPanel({ employee, employees, companies, orgUnits, refreshVersion }: AssignmentsPanelProps) {
   const related = useRelatedRecords(employee?.id ?? null, fetchEmploymentAssignments, 'Could not load employment assignments.', refreshVersion)
   const [editingId, setEditingId] = useState<string | null>(null)
   const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm<AssignmentFormValues>({
@@ -466,8 +461,7 @@ export function EmploymentAssignmentsPanel({ employee, employees, companies, org
   }
 
   return (
-    <PanelShell title="Employment assignments" errorMessage={related.errorMessage} successMessage={related.successMessage} actions={importActions}>
-      {importPanel}
+    <PanelShell title="Employment assignments" errorMessage={related.errorMessage} successMessage={related.successMessage}>
       <div className="overflow-x-auto rounded-lg border border-slate-200">
         <table className="min-w-full text-left text-xs">
           <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">

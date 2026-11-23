@@ -43,6 +43,11 @@ test('employee CSV export is visible only with the HR_ADMIN role, selected mode,
         if (name === '../lib/employeePersonalDetails') return loadModule('employeePersonalDetails')
         if (name === '../hooks/useLogout') return { useLogout: () => ({ logout() {} }) }
         if (name === '../components/dashboard/WorkspaceTabsContext') return { useWorkspaceTabs: () => null }
+        if (name === '../components/dashboard/TopNav') {
+          return { __esModule: true, default: ({ employeeCsvActions }) => React.createElement(
+            'div', null, employeeCsvActions?.map((action) => React.createElement('button', { key: action.label }, action.label)),
+          ) }
+        }
         if (name.startsWith('../components/') || name === '../features/employees/EmployeePersonalDetailsImport') {
           return { __esModule: true, default: () => null }
         }
@@ -51,7 +56,10 @@ test('employee CSV export is visible only with the HR_ADMIN role, selected mode,
       },
     })
     const html = renderToStaticMarkup(React.createElement(exports.default, { employeeName: 'Test Admin' }))
-    assert.equal(html.includes('Export CSV'), expected, `${roles}/${selected}/${manage}`)
+    assert.equal(html.includes('Export employee CSV'), expected, `${roles}/${selected}/${manage}`)
+    assert.equal(html.includes('Import employee profiles'), expected, `${roles}/${selected}/${manage}`)
+    assert.equal(html.includes('Import personal information'), expected, `${roles}/${selected}/${manage}`)
+    assert.equal(html.includes('Import employment assignments'), expected, `${roles}/${selected}/${manage}`)
   }
 })
 

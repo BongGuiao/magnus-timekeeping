@@ -16,6 +16,7 @@ import type { LeaveUnitType } from '../../lib/leaveApi'
 interface Props {
   children: ReactNode
   onUploaded: (result: EntitlementUploadResult) => Promise<void>
+  navigationControlled?: boolean
 }
 
 const BALANCE_FIELDS: { key: keyof EntitlementUploadBalances; label: string }[] = [
@@ -114,10 +115,10 @@ function PreviewTable({ preview }: { preview: EntitlementUploadPreview }) {
   )
 }
 
-export default function EntitlementUpload({ children, onUploaded }: Props) {
+export default function EntitlementUpload({ children, onUploaded, navigationControlled = false }: Props) {
   const panelId = useId()
   const fileInput = useRef<HTMLInputElement>(null)
-  const [isOpen, setIsOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(navigationControlled)
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<EntitlementUploadPreview | null>(null)
   const [operation, setOperation] = useState<'download' | 'check' | 'apply' | null>(null)
@@ -197,7 +198,7 @@ export default function EntitlementUpload({ children, onUploaded }: Props) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>{children}</div>
         <div className="flex flex-wrap gap-2">
-          <button
+          {!navigationControlled && <button
             type="button"
             onClick={() => setIsOpen((current) => !current)}
             disabled={busy}
@@ -206,7 +207,7 @@ export default function EntitlementUpload({ children, onUploaded }: Props) {
             className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             <Upload className="h-3.5 w-3.5" aria-hidden="true" /> Upload entitlements
-          </button>
+          </button>}
           <button
             type="button"
             onClick={() => void downloadTemplate()}

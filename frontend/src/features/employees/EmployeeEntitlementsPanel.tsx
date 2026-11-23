@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Pencil, Plus, X } from 'lucide-react'
 import SearchableSelect from '../../components/common/SearchableSelect'
-import EntitlementUpload from './EntitlementUpload'
 import {
   EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
   fetchEmploymentAssignments,
@@ -27,6 +26,8 @@ interface Props {
   employee: Employee | null
   isActive: boolean
 }
+
+export const EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT = 'employee-entitlements-uploaded'
 
 const emptyEntitlement = (employeeId: string): EmployeeEntitlementPayload => ({
   employee_id: employeeId,
@@ -68,6 +69,11 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const refreshInFlight = useRef(false)
+  const editingRef = useRef(editing)
+
+  useEffect(() => {
+    editingRef.current = editing
+  }, [editing])
 
   useEffect(() => {
     if (!employeeId) {
@@ -81,8 +87,12 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
     if (!isActive) return
 
     let isCurrent = true
+    let refreshQueued = false
     const refreshPanel = async () => {
-      if (refreshInFlight.current) return
+      if (refreshInFlight.current) {
+        refreshQueued = true
+        return
+      }
       refreshInFlight.current = true
       setIsLoading(true)
       setErrorMessage('')
@@ -110,18 +120,34 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
         if (isCurrent) setErrorMessage(errorText(error))
       } finally {
         refreshInFlight.current = false
-        if (isCurrent) setIsLoading(false)
+        if (isCurrent) {
+          setIsLoading(false)
+          if (refreshQueued) {
+            refreshQueued = false
+            void refreshPanel()
+          }
+        }
       }
     }
     void refreshPanel()
     const refreshTimer = window.setInterval(() => void refreshPanel(), 30 * 1000)
     window.addEventListener('focus', refreshPanel)
     window.addEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
+    const handleUpload = (event: Event) => {
+      if (event instanceof CustomEvent && Array.isArray(event.detail)
+        && editingRef.current && event.detail.includes(editingRef.current.id)) {
+        setEditing(null)
+        setForm(emptyEntitlement(employeeId))
+      }
+      void refreshPanel()
+    }
+    window.addEventListener(EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT, handleUpload)
     return () => {
       isCurrent = false
       window.clearInterval(refreshTimer)
       window.removeEventListener('focus', refreshPanel)
       window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
+      window.removeEventListener(EMPLOYEE_ENTITLEMENTS_UPLOADED_EVENT, handleUpload)
     }
   }, [employeeId, isActive])
 
@@ -211,13 +237,10 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
 
   return (
     <div className="space-y-4">
-      <EntitlementUpload onUploaded={async (result) => {
-        if (editing && result.entitlement_ids.includes(editing.id)) resetForm()
-        setEntitlements(await fetchEmployeeEntitlements(employeeId))
-      }}>
+      <div>
         <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Employee entitlements</h3>
         <p className="mt-1 text-xs text-slate-500">Leave balances for {employee.employee_no} based on the unit configured for each leave type.</p>
-      </EntitlementUpload>
+      </div>
       {errorMessage && <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{errorMessage}</p>}
       {successMessage && <p role="status" className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{successMessage}</p>}
 

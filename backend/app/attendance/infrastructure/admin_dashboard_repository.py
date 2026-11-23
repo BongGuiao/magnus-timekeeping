@@ -1,7 +1,8 @@
+import logging
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -13,11 +14,20 @@ from app.attendance.domain.entities.admin_dashboard import (
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
+from app.auth.infrastructure.approval_routing import (
+    ApprovalRoutingError,
+    active_assignment_conditions,
+    approval_route_scope,
+    legacy_supervisor_scope,
+    resolve_org_unit_approver_from_hierarchy,
+)
 from app.auth.infrastructure.db_model import UserModel
-from app.auth.infrastructure.approval_routing import approval_route_scope, legacy_supervisor_scope
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
+from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
+
+logger = logging.getLogger(__name__)
 
 
 def _employee_columns(model, prefix: str):
@@ -48,6 +58,88 @@ def _employee_from(row, prefix: str) -> AttendanceEmployee:
 class SqlAlchemyAdminDashboardRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def count_employees_punched_today(
+        self, today: date, approver_employee_id: UUID | None = None
+    ) -> int:
+        conditions = [
+            EmployeeModel.is_active.is_(True),
+            EmployeeModel.record_status == "ACTIVE",
+            UserModel.is_active.is_(True),
+            UserModel.account_status == "ACTIVE",
+            AttendanceModel.record_status == "VALID",
+            not_merged_source(),
+            AttendanceModel.work_date == today,
+            or_(
+                AttendanceModel.clock_in_at.is_not(None),
+                AttendanceModel.clock_out_at.is_not(None),
+            ),
+        ]
+        if approver_employee_id is None:
+            count = await self._session.scalar(
+                select(func.count(func.distinct(EmployeeModel.id)))
+                .select_from(EmployeeModel)
+                .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+                .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
+                .where(*conditions)
+            )
+            return int(count or 0)
+
+        punch_rows = (
+            await self._session.execute(
+                select(
+                    EmployeeModel.id,
+                    EmploymentAssignmentModel.company_id,
+                    EmploymentAssignmentModel.org_unit_id,
+                )
+                .select_from(EmployeeModel)
+                .join(UserModel, UserModel.employee_id == EmployeeModel.id)
+                .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
+                .join(EmploymentAssignmentModel, EmploymentAssignmentModel.employee_id == EmployeeModel.id)
+                .where(*conditions, *active_assignment_conditions(today))
+                .distinct()
+            )
+        ).all()
+        assignments_by_employee: dict[UUID, set[tuple[UUID, UUID | None]]] = {}
+        company_ids: set[UUID] = set()
+        for employee_id, company_id, source_unit_id in punch_rows:
+            assignments_by_employee.setdefault(employee_id, set()).add((company_id, source_unit_id))
+            company_ids.add(company_id)
+
+        org_units = (
+            await self._session.scalars(
+                select(OrgUnit).where(OrgUnit.company_id.in_(company_ids))
+            )
+        ).all() if company_ids else []
+        org_units_by_id = {unit.id: unit for unit in org_units}
+
+        count = 0
+        unresolved_count = 0
+        for employee_id, assignments in assignments_by_employee.items():
+            if len(assignments) != 1:
+                unresolved_count += 1
+                continue
+            company_id, source_unit_id = next(iter(assignments))
+            try:
+                approver = resolve_org_unit_approver_from_hierarchy(
+                    employee_id,
+                    company_id,
+                    source_unit_id,
+                    today,
+                    org_units_by_id,
+                )
+            except ApprovalRoutingError:
+                unresolved_count += 1
+                continue
+            if approver.employee_id == approver_employee_id:
+                count += 1
+
+        if unresolved_count:
+            logger.warning(
+                "Skipped %s punched employee(s) with unresolved Org Chart approval assignments.",
+                unresolved_count,
+            )
+        return count
 
     async def list_team_attendance(
         self, supervisor_employee_id: UUID, today: date, month_start: date

@@ -68,3 +68,51 @@ test('backup navigation is gated for system administrators in both menus and App
   const app = readFileSync(join(__dirname, '..', 'src', 'App.tsx'), 'utf8')
   assert.match(app, /view === 'database-backup'[\s\S]*?return isSystemAdmin\(\)/)
 })
+
+test('employee CSV actions appear and invoke callbacks in both account menus', () => {
+  let stateIndex = 0
+  let selected = 0
+  const TopNav = load(join('components', 'dashboard', 'TopNav.tsx'), {
+    react: {
+      useEffect() {}, useLayoutEffect() {}, useRef: () => ({ current: null }),
+      useState(initial) {
+        const index = stateIndex++
+        return [index < 2 ? true : typeof initial === 'function' ? initial() : initial, () => {}]
+      },
+    },
+    './WorkspaceTabsContext': { useWorkspaceTabs: () => null },
+    '../../lib/companyApi': {},
+    '../../lib/settingsCsv': { isSettingsCsvView: () => false, SETTINGS_CSV_PERMISSIONS: {} },
+    '../../hooks/useCompanySetupSelection': { useCompanySetupSelection: () => ({ companyId: '', selectCompany() {} }) },
+    '../../types/role': {
+      getAvailableRoleCodes: () => ['HR_ADMIN'],
+      getSelectedDashboardRoleCode: () => 'HR_ADMIN',
+      canPreviewDashboardRoles: () => false,
+      hasPermission: () => true,
+      hasAnyPermission: () => true,
+      isSystemAdmin: () => false,
+      normalizeDashboardRole: () => 'administrator',
+    },
+  }, { localStorage: { getItem: () => 'admin' } }).default
+  const tree = TopNav({
+    employeeName: 'HR', activeView: 'employees',
+    employeeCsvActions: [{ label: 'Import employee profiles', onSelect: () => { selected += 1 }, expanded: false }],
+  })
+  const menus = []
+  function collect(node) {
+    if (Array.isArray(node)) return node.forEach(collect)
+    if (!React.isValidElement(node)) return
+    if (typeof node.type === 'function' && node.type.name === 'EmployeeCsvMenuItems') menus.push(node)
+    collect(node.props.children)
+  }
+  collect(tree)
+  assert.equal(menus.length, 2)
+  for (const menu of menus) {
+    const items = menu.type(menu.props).props.children
+    const item = items[1][0]
+    assert.equal(item.props.role, 'menuitem')
+    assert.equal(item.props.children, 'Import employee profiles')
+    item.props.onClick()
+  }
+  assert.equal(selected, 2)
+})
