@@ -13,7 +13,7 @@ from app.attendance.application.admin_dashboard_use_cases import (
     GetPunchedEmployeesUseCase,
     total_weekly_minutes,
 )
-from app.attendance.domain.admin_dashboard_rules import NO_LOGOUT_GRACE, classify_attendance_exceptions
+from app.attendance.domain.admin_dashboard_rules import classify_attendance_exceptions
 from app.attendance.domain.entities.admin_dashboard import (
     AdminDashboard,
     EmployeeWeeklyHours,
@@ -76,30 +76,32 @@ class ClassifyAttendanceExceptionsTests(unittest.TestCase):
         self.assertEqual([item.employee for item in no_login], [absent.employee])
         self.assertEqual(no_logout, [])
 
-    def test_no_logout_starts_six_hours_after_the_expected_time_out(self):
-        expected = NOW - timedelta(days=1)
-        boundary = expected + NO_LOGOUT_GRACE
+    def test_no_logout_starts_22_hours_after_clock_in(self):
+        clock_in = NOW - timedelta(days=1)
+        boundary = clock_in + timedelta(hours=22)
         for now, flagged in (
             (boundary - timedelta(seconds=1), False),
             (boundary, True),
             (boundary + timedelta(seconds=1), True),
         ):
             with self.subTest(now=now):
-                _, no_logout = classify_attendance_exceptions([day(expected_clock_out_at=expected)], now)
+                _, no_logout = classify_attendance_exceptions([day(clock_in_at=clock_in)], now)
                 self.assertEqual(len(no_logout), 1 if flagged else 0)
 
     def test_missing_clock_out_is_excluded_before_and_at_scheduled_clock_out(self):
         expected = NOW.astimezone(timezone(timedelta(hours=8)))
-        attendance = day(expected_clock_out_at=expected)
+        attendance = day(clock_in_at=NOW - timedelta(hours=2), expected_clock_out_at=expected)
         for now in (NOW - timedelta(seconds=1), NOW, NOW + timedelta(seconds=1)):
             with self.subTest(now=now):
                 self.assertEqual(classify_attendance_exceptions([attendance], now), ([], []))
 
-    def test_completed_or_unscheduled_days_are_not_missing_a_logout(self):
+    def test_completed_days_are_not_missing_a_logout_but_unscheduled_days_are(self):
         done = day(clock_out_at=NOW)
         unscheduled = day(expected_clock_out_at=None)
         never_in = day(clock_in_at=None)
-        self.assertEqual(classify_attendance_exceptions([done, unscheduled, never_in], NOW), ([], []))
+        no_login, no_logout = classify_attendance_exceptions([done, unscheduled, never_in], NOW)
+        self.assertEqual(no_login, [])
+        self.assertEqual([item.employee for item in no_logout], [unscheduled.employee])
 
     def test_exception_keeps_the_effective_punches_and_supervisor(self):
         item = classify_attendance_exceptions([day()], NOW)[1][0]

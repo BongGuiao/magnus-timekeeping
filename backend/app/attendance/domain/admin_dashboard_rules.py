@@ -1,9 +1,8 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 from app.attendance.domain.entities.admin_dashboard import AttendanceException, TeamAttendanceDay
-
-NO_LOGOUT_GRACE = timedelta(hours=6)
+from app.attendance.domain.shift import open_shift_expired
 
 
 def classify_attendance_exceptions(
@@ -28,8 +27,7 @@ def classify_attendance_exceptions(
         elif (
             day.clock_in_at is not None
             and day.clock_out_at is None
-            and day.expected_clock_out_at is not None
-            and now >= day.expected_clock_out_at + NO_LOGOUT_GRACE
+            and open_shift_expired(day.clock_in_at, now)
         ):
             no_logout.append(exception)
     return no_login, no_logout

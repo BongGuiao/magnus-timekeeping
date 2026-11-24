@@ -291,6 +291,12 @@ class FlexibleBreakPunchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.record.second_break_out_at, self.now)
         self.attendance_repo.update.assert_awaited_once()
 
+    async def test_break_is_rejected_at_22_hour_shift_expiry(self):
+        self.record.clock_in_at = self.now - timedelta(hours=22)
+        with self.assertRaisesRegex(ValueError, "No active shift"):
+            await self.punch("second_break_out_at")
+        self.attendance_repo.update.assert_not_awaited()
+
     async def test_break_start_outside_work_window_is_rejected(self):
         self.rules[0]["start_at"] = (self.now + timedelta(minutes=1)).isoformat()
         with self.assertRaisesRegex(ValueError, "within its linked WORK"):

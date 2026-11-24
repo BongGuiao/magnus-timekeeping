@@ -121,7 +121,7 @@ async def clock(
     await service.employee(device, user_id=user_id)
     result = await use_case.execute(ClockAttendanceInputDTO(
         user_id=user_id, image_bytes=image, requested_action=action,
-        kiosk_action=True, actor_id=user_id,
+        actor_id=user_id,
         clock_out_confirmed=action == "clock_out", device_approved=True, enforce_geofence=False,
         clock_channel={
             "channel": "kiosk", "kiosk_device_id": str(device.id), "client_ip": get_client_ip(request),

@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     ATTENDANCE_KIOSK_ALLOWED_IPS: str = ""
     ATTENDANCE_KIOSK_REQUIRED_ROLES: str = "admin"
 
+    # Optional app update notices; set version and HTTPS URL together.
+    MOBILE_ANDROID_LATEST_VERSION: str = ""
+    MOBILE_ANDROID_UPDATE_URL: str = ""
+    MOBILE_ANDROID_RELEASE_NOTES: str = ""
+    MOBILE_IOS_LATEST_VERSION: str = ""
+    MOBILE_IOS_UPDATE_URL: str = ""
+    MOBILE_IOS_RELEASE_NOTES: str = ""
+
     # Face recognition: maximum embedding distance accepted as the same person (lower is stricter)
     FACE_MATCH_THRESHOLD: float = 0.5
     # A face punch is rejected when another employee is within this distance of the best match.

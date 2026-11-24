@@ -53,7 +53,7 @@ class AttendanceActionResolutionTests(unittest.TestCase):
         )
         self.assertTrue(attendance_allows_clock_out(record, now))
 
-    def test_previous_date_day_shift_does_not_block_a_new_clock_in(self):
+    def test_previous_date_day_shift_remains_active_before_22_hours(self):
         expected_in = datetime(2026, 10, 12, 9, tzinfo=ZoneInfo("Asia/Manila"))
         record = self.attendance(
             self.today - timedelta(days=1),
@@ -61,10 +61,10 @@ class AttendanceActionResolutionTests(unittest.TestCase):
             expected_in,
             expected_in + timedelta(hours=9),
         )
-        now = datetime(2026, 10, 13, 8, tzinfo=ZoneInfo("Asia/Manila"))
-        self.assertFalse(attendance_allows_clock_out(record, now))
+        now = expected_in + timedelta(hours=22) - timedelta(seconds=1)
+        self.assertTrue(attendance_allows_clock_out(record, now))
 
-    def test_open_attendance_at_24_hours_is_stale(self):
+    def test_open_attendance_at_22_hours_is_stale(self):
         expected_in = datetime(2026, 10, 12, 22, tzinfo=ZoneInfo("Asia/Manila"))
         record = self.attendance(
             self.today - timedelta(days=1),
@@ -72,8 +72,15 @@ class AttendanceActionResolutionTests(unittest.TestCase):
             expected_in,
             datetime(2026, 10, 13, 6, tzinfo=ZoneInfo("Asia/Manila")),
         )
-        now = expected_in + timedelta(hours=24)
+        now = expected_in + timedelta(hours=22)
         self.assertFalse(attendance_allows_clock_out(record, now))
+
+    def test_corrected_clock_in_sets_the_22_hour_boundary(self):
+        now = datetime(2026, 10, 13, 8, tzinfo=ZoneInfo("Asia/Manila"))
+        record = self.attendance(self.today - timedelta(days=1), now - timedelta(hours=23))
+        record.corrected_clock_in_at = now - timedelta(hours=21)
+        self.assertTrue(attendance_allows_clock_out(record, now))
+        self.assertFalse(attendance_allows_clock_out(record, now + timedelta(hours=1)))
 
     def test_early_punch_for_tomorrow_is_still_an_open_shift(self):
         now = datetime(2026, 10, 12, 23, 45, tzinfo=ZoneInfo("Asia/Manila"))
@@ -139,7 +146,7 @@ class KioskAttendanceStateTests(unittest.IsolatedAsyncioTestCase):
         result, _ = await self.resolve([record], [record])
         self.assertEqual(result.next_action, "clock_out")
 
-    async def test_prior_day_non_overnight_open_record_resolves_to_clock_in(self):
+    async def test_prior_day_non_overnight_open_record_resolves_to_clock_out_before_22_hours(self):
         expected_in = self.now.replace(day=12, hour=9)
         record = self.attendance(
             self.now.date() - timedelta(days=1),
@@ -148,10 +155,10 @@ class KioskAttendanceStateTests(unittest.IsolatedAsyncioTestCase):
             expected_in + timedelta(hours=9),
         )
         result, _ = await self.resolve([record], [record])
-        self.assertEqual(result.next_action, "clock_in")
+        self.assertEqual(result.next_action, "clock_out")
 
-    async def test_24_hour_open_record_resolves_to_clock_in(self):
-        clock_in = self.now - timedelta(hours=24)
+    async def test_22_hour_open_record_resolves_to_clock_in(self):
+        clock_in = self.now - timedelta(hours=22)
         record = self.attendance(
             self.now.date() - timedelta(days=1),
             clock_in,
@@ -279,13 +286,12 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.use_case._resolve_schedule_day = AsyncMock(return_value=self.schedule)
         self.use_case._resolve_day_type = AsyncMock(return_value="REG")
 
-    async def clock_in(self, device_approved=True, requested_action=None, kiosk_action=False):
+    async def clock_in(self, device_approved=True, requested_action=None):
         with patch("app.attendance.application.use_case.datetime", wraps=datetime) as clock:
             clock.now.return_value = self.now.astimezone(timezone.utc)
             return await self.use_case._execute(ClockAttendanceInputDTO(
                 user_id=self.user_id, image_bytes=b"image", enforce_geofence=False,
                 device_approved=device_approved, requested_action=requested_action,
-                kiosk_action=kiosk_action,
             ))
 
     async def test_rejected_punch_does_not_create_attendance(self):
@@ -381,11 +387,11 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.work_date, date(2026, 10, 13))
         self.assertEqual(record.expected_clock_in_at, next_start)
 
-    async def test_open_attendance_at_24_hours_does_not_block_new_clock_in(self):
+    async def test_open_attendance_at_22_hours_does_not_block_new_clock_in(self):
         stale_attendance = AttendanceEntity(
             user_id=self.user_id,
             work_date=self.start.date() - timedelta(days=1),
-            clock_in_at=self.now - timedelta(hours=24),
+            clock_in_at=self.now - timedelta(hours=22),
         )
         self.attendance.find_all.side_effect = [[stale_attendance], []]
 
@@ -396,20 +402,32 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_attendance.work_date, self.start.date())
         self.assertIsNone(stale_attendance.clock_out_at)
 
-    async def test_previous_date_day_shift_does_not_block_a_new_clock_in(self):
+    async def test_kiosk_new_clock_in_at_22_hours_leaves_old_record_open(self):
+        old = AttendanceEntity(
+            user_id=self.user_id,
+            work_date=(self.now - timedelta(days=1)).date(),
+            clock_in_at=self.now - timedelta(hours=22),
+        )
+        self.attendance.find_all.side_effect = [[old], []]
+        result = await self.clock_in(requested_action="clock_in")
+        self.assertEqual(result.action, "clock_in")
+        self.assertIsNone(old.clock_out_at)
+        self.attendance.add.assert_awaited_once()
+
+    async def test_kiosk_previous_date_day_shift_remains_open_before_22_hours(self):
         previous_day = self.start - timedelta(days=1)
         stale_attendance = AttendanceEntity(
             user_id=self.user_id,
             work_date=previous_day.date(),
             expected_clock_in_at=previous_day,
             expected_clock_out_at=previous_day + timedelta(hours=9),
-            clock_in_at=previous_day,
+            clock_in_at=self.now - timedelta(hours=21),
         )
-        self.attendance.find_all.side_effect = [[stale_attendance], []]
+        self.attendance.find_all.return_value = [stale_attendance]
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            await self.clock_in(requested_action="clock_in")
 
-        await self.clock_in(requested_action="clock_in", kiosk_action=True)
-
-        self.attendance.add.assert_awaited_once()
+        self.attendance.add.assert_not_awaited()
         self.assertIsNone(stale_attendance.clock_out_at)
 
     async def test_mobile_keeps_a_recent_open_previous_day_record_as_clock_out(self):
@@ -419,7 +437,7 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
             work_date=previous_day.date(),
             expected_clock_in_at=previous_day,
             expected_clock_out_at=previous_day + timedelta(hours=9),
-            clock_in_at=previous_day,
+            clock_in_at=self.now - timedelta(hours=21),
         )
         self.attendance.find_all.return_value = [open_attendance]
         self.attendance.update = AsyncMock(side_effect=lambda record: record)

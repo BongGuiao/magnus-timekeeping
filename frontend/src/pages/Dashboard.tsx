@@ -1312,7 +1312,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 <p className="mt-1 text-sm text-slate-500">
                   {teamAttendancePanel === 'no-login'
                     ? 'Attendance records marked absent this month, excluding leave days and shifts whose expected clock-in time has not been reached. Days without an attendance record are not included.'
-                    : 'Clocked-in attendance records this month with no clock-out, shown only six hours after the expected clock-out time.'}
+                    : 'Clocked-in attendance records this month with no clock-out, shown 22 hours after clock-in.'}
                 </p>
                 {teamDashboardSnapshot && (
                   <p className="mt-1 text-xs text-slate-400">
@@ -1401,7 +1401,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                     : adminPanel === 'no-login'
                       ? 'Attendance records marked absent this month, excluding leave days and shifts whose expected clock-in time has not been reached. Days without an attendance record are not included.'
                     : adminPanel === 'no-logout'
-                      ? 'Clocked-in attendance records this month with no clock-out, shown only six hours after the expected clock-out time.'
+                      ? 'Clocked-in attendance records this month with no clock-out, shown 22 hours after clock-in.'
                     : adminPanel === 'pending-leaves'
                       ? 'Organization-wide overview. Use Assigned leave approvals to review requests assigned to you.'
                       : 'Recorded hours from Monday through today.'}

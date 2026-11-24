@@ -16,6 +16,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.attendance.domain.entities.attendance import AttendanceEntity
+from app.attendance.domain.shift import open_shift_expired, to_utc
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.punch_exceptions import PunchRuleViolation
@@ -71,7 +72,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXPECTED_CLOCK_IN = time(9, 0)
 DEFAULT_EXPECTED_CLOCK_OUT = time(18, 0)
-MAX_OPEN_ATTENDANCE_AGE = timedelta(hours=24)
 MAX_FACE_MATCH_CANDIDATES = 10000
 FACE_EXTRACTION_LIMITER = CapacityLimiter(1)
 
@@ -138,12 +138,6 @@ def to_ph_iso(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(PH_TIMEZONE).isoformat()
 
 
-def to_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def open_attendance_conditions(user_id: UUID) -> tuple[ColumnElement[bool], ...]:
     return (
         AttendanceModel.user_id == user_id,
@@ -158,31 +152,12 @@ def open_attendance_conditions(user_id: UUID) -> tuple[ColumnElement[bool], ...]
 
 
 def attendance_allows_clock_out(record: AttendanceEntity, now_utc: datetime) -> bool:
-    """Whether an open record belongs to today's active shift or a qualifying overnight shift."""
+    """Whether a record remains open within the maximum shift age."""
     clock_in_at = record.corrected_clock_in_at or record.clock_in_at
     if clock_in_at is None or record.corrected_clock_out_at or record.clock_out_at:
         return False
 
-    now_utc = to_utc(now_utc)
-    if now_utc - to_utc(clock_in_at) >= MAX_OPEN_ATTENDANCE_AGE:
-        return False
-
-    today = now_utc.astimezone(PH_TIMEZONE).date()
-    if record.work_date == today:
-        return True
-
-    clock_in_date = to_utc(clock_in_at).astimezone(PH_TIMEZONE).date()
-    if record.work_date > today and clock_in_date == today:
-        return True
-
-    expected_clock_in = record.expected_clock_in_at
-    expected_clock_out = record.expected_clock_out_at
-    if record.work_date < today and expected_clock_in and expected_clock_out:
-        expected_start_date = to_utc(expected_clock_in).astimezone(PH_TIMEZONE).date()
-        expected_end_date = to_utc(expected_clock_out).astimezone(PH_TIMEZONE).date()
-        return expected_end_date > expected_start_date and expected_end_date >= today
-
-    return False
+    return not open_shift_expired(clock_in_at, now_utc)
 
 
 def validate_early_clock_in(
@@ -605,7 +580,6 @@ class ClockAttendanceInputDTO:
     allow_wfh: bool = False
     captured_at: datetime | None = None
     requested_action: str | None = None
-    kiosk_action: bool = False
     actor_id: UUID | None = None
 
 
@@ -1408,21 +1382,11 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
             )
  
             candidate = records[0] if records else None
-            if input_dto.kiosk_action:
-                existing = (
-                    candidate
-                    if candidate is not None and attendance_allows_clock_out(candidate, now_utc)
-                    else None
-                )
-            else:
-                existing = candidate
-                if existing is not None:
-                    existing_clock_in = existing.corrected_clock_in_at or existing.clock_in_at
-                    if (
-                        existing_clock_in is not None
-                        and now_utc - to_utc(existing_clock_in) >= MAX_OPEN_ATTENDANCE_AGE
-                    ):
-                        existing = None
+            existing = (
+                candidate
+                if candidate is not None and attendance_allows_clock_out(candidate, now_utc)
+                else None
+            )
             approval_required = False
             schedule_template_id: UUID | None = None
             if input_dto.requested_action is not None:
@@ -1846,6 +1810,9 @@ class RecordBreakUseCase(BaseUseCase[RecordBreakOutputDTO]):
                 raise ValueError("No active shift found. Please Clock In first.")
 
             existing = records[0]
+
+            if not attendance_allows_clock_out(existing, now_utc):
+                raise ValueError("No active shift found. Please Clock In first.")
 
             # 4. Check if record is locked for payroll
             if existing.is_locked:

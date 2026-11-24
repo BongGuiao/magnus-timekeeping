@@ -5,6 +5,7 @@ from elasticsearch import AsyncElasticsearch
 from app.core.config import settings
 from app.core.request_logging import RequestLoggingMiddleware, configure_audit_logger
 from app.core.exception_handlers import register_exception_handlers
+from app.core.mobile_update import router as mobile_update_router
 from app.auth.infrastructure.router import router as auth_router
 from app.backup.router import router as backup_router
 from app.enrollment.infrastructure.router import router as enrollment_router
@@ -103,6 +104,7 @@ if settings.REQUEST_LOGGING_ENABLED:
     )
 
 app.include_router(auth_router)
+app.include_router(mobile_update_router)
 app.include_router(backup_router)
 app.include_router(enrollment_router)
 app.include_router(official_business_router)

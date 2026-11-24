@@ -359,6 +359,27 @@ class OfflineCaptureUseCaseTests(unittest.IsolatedAsyncioTestCase):
             ))
         fixture.attendance.add.assert_not_awaited()
 
+    async def test_stale_offline_clock_out_conflicts_instead_of_starting_a_new_shift(self):
+        from backend.tests.test_early_clock_in import EarlyClockInUseCaseTests
+        from app.attendance.application.use_case import ClockAttendanceInputDTO
+        from app.attendance.domain.entities.attendance import AttendanceEntity
+
+        fixture = EarlyClockInUseCaseTests()
+        fixture.setUp()
+        record = AttendanceEntity(
+            user_id=fixture.user_id,
+            work_date=(fixture.now - timedelta(days=1)).date(),
+            clock_in_at=fixture.now - timedelta(hours=22),
+        )
+        fixture.attendance.find_all.return_value = [record]
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            await fixture.use_case._execute(ClockAttendanceInputDTO(
+                user_id=fixture.user_id, image_bytes=b"photo",
+                captured_at=fixture.now.astimezone(timezone.utc), requested_action="clock_out",
+            ))
+        self.assertIsNone(record.clock_out_at)
+        fixture.attendance.add.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

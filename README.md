@@ -1012,9 +1012,10 @@ this month, excluding leave days and shifts before their expected clock-in time;
 dates without an attendance record are not
 included. It is not a count of clock-out-only records.
 Records without an expected clock-in time retain the existing absence treatment.
-**Missing clock-out** excludes shifts before their expected clock-out time and
-retains the existing six-hour grace period after that time before flagging an
-incomplete clocked-in record.
+**Missing clock-out** flags eligible incomplete clocked-in records from this
+month at 22 hours after the effective clock-in, even without a scheduled
+clock-out. At the same boundary, a new punch starts a new shift instead of
+closing the old one; the missing clock-out remains available for correction.
 
 Filing follows the employee filing deadline; decisions follow the supervisor
 approval deadline. Finalization and payroll locking close both windows.
