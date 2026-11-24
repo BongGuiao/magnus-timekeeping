@@ -1,7 +1,12 @@
 import unittest
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
+
+from sqlalchemy import create_engine, literal, select
+from sqlalchemy.orm import Session
 
 from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     ApproveScheduleUploadBatchUseCase,
@@ -34,6 +39,7 @@ from app.filemaintenance.schedule.domain.schedule_upload_exceptions import (
     ScheduleUploadRejectedFileError,
 )
 from app.filemaintenance.schedule.infrastructure.schedule_upload_csv import CsvScheduleUploadReader
+from app.filemaintenance.schedule.infrastructure.schedule_upload_repository import SqlAlchemyScheduleUploadRepository
 from app.filemaintenance.schedule.infrastructure.schedule_upload_router import (
     _schedule_review_supervisor_id,
 )
@@ -45,6 +51,29 @@ UPLOADER_ID = uuid4()
 APPROVER_ID = uuid4()
 APPROVER_EMPLOYEE_ID = uuid4()
 HEADER = "employee_code,schedule_code,assignment_type,effective_from,effective_to,rest_day_pattern_code,reason\n"
+
+
+class ScheduleApprovalSettingsRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_checks_approval_settings_from_sqlalchemy_result(self):
+        approval_company = uuid4()
+        missing_company = uuid4()
+        statement = select(literal(COMPANY_ID), literal(False)).union_all(
+            select(literal(approval_company), literal(True))
+        )
+        engine = create_engine("sqlite://")
+        try:
+            with Session(engine) as sql_session:
+                for company_ids, expected in (
+                    ({COMPANY_ID}, False),
+                    ({COMPANY_ID, approval_company}, True),
+                    ({COMPANY_ID, missing_company}, True),
+                ):
+                    with self.subTest(company_ids=company_ids):
+                        session = SimpleNamespace(execute=AsyncMock(return_value=sql_session.execute(statement)))
+                        result = await SqlAlchemyScheduleUploadRepository(session).schedule_approval_required(company_ids)
+                        self.assertEqual(result, expected)
+        finally:
+            engine.dispose()
 
 
 class FakeScheduleUploadRepository:

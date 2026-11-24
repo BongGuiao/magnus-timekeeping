@@ -158,7 +158,7 @@ class SqlAlchemyScheduleUploadRepository:
                 PayrollSystemParametersModel.schedule_assignment_approval_required,
             ).where(PayrollSystemParametersModel.company_id.in_(ids))
         )
-        settings = dict(rows.tuples())
+        settings = {company_id: required for company_id, required in rows}
         return any(settings.get(company_id, True) for company_id in ids)
 
     async def find_team_employees(
