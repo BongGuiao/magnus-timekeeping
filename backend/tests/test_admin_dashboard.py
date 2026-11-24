@@ -381,7 +381,7 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             use_case.execute.await_args.args[0],
-            GetPunchedEmployeesInput(work_date, employee_id),
+            GetPunchedEmployeesInput(work_date, None),
         )
         self.assertEqual(response.data[0].employee_name, "Ana")
         self.assertEqual(response.data[0].clock_in_location, "Main Office")

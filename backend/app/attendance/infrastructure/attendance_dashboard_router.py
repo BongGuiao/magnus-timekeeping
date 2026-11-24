@@ -244,18 +244,11 @@ async def get_admin_punched_employees(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Future attendance dates cannot be viewed.",
         )
-    try:
-        supervisor_employee_id = UUID(str(claims["employee_id"]))
-    except (KeyError, TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account is not linked to an employee profile.",
-        ) from error
 
     employees = await use_case.execute(
         GetPunchedEmployeesInput(
             work_date=work_date,
-            approver_employee_id=supervisor_employee_id,
+            approver_employee_id=None,
         )
     )
     return ResponseEnvelope(

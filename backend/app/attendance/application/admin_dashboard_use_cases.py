@@ -37,7 +37,7 @@ class GetAdminDashboardInput:
 @dataclass
 class GetPunchedEmployeesInput:
     work_date: date
-    approver_employee_id: UUID
+    approver_employee_id: UUID | None
 
 
 class GetPunchedEmployeesUseCase(BaseUseCase[list[PunchedEmployeeToday]]):
