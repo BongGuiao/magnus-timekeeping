@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-from sqlalchemy import create_engine, literal, select
+from sqlalchemy import create_engine, literal, select, text
 from sqlalchemy.orm import Session
 
 from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
@@ -20,6 +20,7 @@ from app.filemaintenance.schedule.application.schedule_upload_use_cases import (
     RejectScheduleUploadBatchUseCase,
     ReviewScheduleUploadBatchInput,
     ScheduleUploadFileInput,
+    SubmitHrScheduleUploadUseCase,
     SubmitScheduleUploadUseCase,
 )
 from app.filemaintenance.schedule.domain.entities.schedule_upload import (
@@ -30,6 +31,7 @@ from app.filemaintenance.schedule.domain.entities.schedule_upload import (
     ScheduleTemplateRef,
     ScheduleUploadBatch,
     ScheduleUploadBatchStatus,
+    SupervisorEmployee,
     TeamEmployee,
 )
 from app.filemaintenance.schedule.domain.schedule_upload_exceptions import (
@@ -317,10 +319,66 @@ class ScheduleUploadUseCaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(batch.batch_no, "SCH-2026-000001")
         self.assertEqual(batch.status, ScheduleUploadBatchStatus.APPROVED)
-        self.assertEqual(batch.reviewed_by, UPLOADER_ID)
+        self.assertIsNone(batch.reviewed_by)
+        self.assertEqual(batch.reviewed_at, NOW)
+        self.assertEqual(batch.uploaded_by, UPLOADER_ID)
+        self.assertIn("Automatically approved", batch.review_remarks)
         self.assertEqual(batch.rows[0].employee_id, self.repository.employee.employee_id)
         self.assertEqual(batch.rows[0].assignment_type, "REGULAR")
         self.assertIsNotNone(batch.rows[0].assignment_id)
+        self.assertEqual(len(self.repository.added), 1)
+
+    async def test_auto_approval_satisfies_production_batch_constraints(self):
+        self.repository.approval_required = False
+        batch = await self._submit("E001,DAY,regular,2026-11-01,,SAT_SUN,Rotation")
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("""
+                    CREATE TABLE batches (
+                        status TEXT NOT NULL,
+                        uploaded_by TEXT NOT NULL,
+                        reviewed_by TEXT,
+                        reviewed_at TEXT,
+                        CHECK (status <> 'APPROVED' OR reviewed_by <> uploaded_by),
+                        CHECK ((status = 'PENDING_APPROVAL') = (reviewed_by IS NULL AND reviewed_at IS NULL))
+                    )
+                """))
+                connection.execute(
+                    text("INSERT INTO batches VALUES (:status, :uploaded_by, :reviewed_by, :reviewed_at)"),
+                    {
+                        "status": batch.status.value,
+                        "uploaded_by": str(batch.uploaded_by),
+                        "reviewed_by": str(batch.reviewed_by) if batch.reviewed_by else None,
+                        "reviewed_at": batch.reviewed_at.isoformat() if batch.reviewed_at else None,
+                    },
+                )
+        finally:
+            engine.dispose()
+
+    async def test_hr_upload_auto_approval_records_system_review(self):
+        self.repository.approval_required = False
+        self.repository.find_supervisors = AsyncMock(
+            return_value=[SupervisorEmployee(SUPERVISOR_ID, "S001")]
+        )
+        upload = ScheduleUploadFileInput(
+            supervisor_employee_id=None,
+            uploaded_by=UPLOADER_ID,
+            file_name="hr.csv",
+            content=(
+                "supervisor_employee_code," + HEADER
+                + "S001,E001,DAY,REGULAR,2026-11-01,,SAT_SUN,Rotation\n"
+            ).encode(),
+        )
+        batches = await SubmitHrScheduleUploadUseCase(
+            self.uow, CsvScheduleUploadReader(include_supervisor=True), self._clock(),
+        ).execute(upload)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0].status, ScheduleUploadBatchStatus.APPROVED)
+        self.assertEqual(batches[0].uploaded_by, UPLOADER_ID)
+        self.assertIsNone(batches[0].reviewed_by)
+        self.assertEqual(batches[0].reviewed_at, NOW)
+        self.assertIn("HR submission", batches[0].review_remarks)
         self.assertEqual(len(self.repository.added), 1)
 
     async def test_legacy_approval_applies_plan_and_creates_approved_assignments(self):

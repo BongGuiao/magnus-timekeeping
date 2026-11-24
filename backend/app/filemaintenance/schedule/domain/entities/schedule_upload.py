@@ -244,7 +244,7 @@ class ScheduleUploadBatch:
         return replace(
             self,
             status=ScheduleUploadBatchStatus.APPROVED,
-            reviewed_by=self.uploaded_by,
+            reviewed_by=None,
             reviewed_at=at,
             review_remarks="Automatically approved when submitted by the supervisor.",
         )
