@@ -3,7 +3,7 @@ import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
 import DataTable, { type DataTableColumn } from '../components/common/DataTable'
 import AttendanceCorrectionsPanel from '../components/dashboard/AttendanceCorrectionsPanel'
 import TeamOverview, { type TeamOverviewItem } from '../components/dashboard/TeamOverview'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { mockDashboardData } from '../data/mockDashboard'
 import { useLogout } from '../hooks/useLogout'
 import {
@@ -13,6 +13,7 @@ import {
   fetchTeamDashboardSnapshot,
   fetchSupervisorInvalidAttendance,
   fetchAdminDashboardSnapshot,
+  fetchAdminPunchedEmployees,
   fetchRecentAttendanceSnapshot,
   type AdminAttendanceException,
   type AdminDashboardSnapshot,
@@ -22,6 +23,7 @@ import {
 } from '../lib/attendanceApi'
 import { fetchPendingDeviceSnapshot, type DeviceRecord, updateDeviceRegistration } from '../lib/deviceApi'
 import { fetchAnnouncements, fetchUpcomingHolidays } from '../lib/dashboardContentApi'
+import { getManilaDate } from '../lib/employeeRelatedApi'
 import {
   decideSupervisorPendingLeave,
   fetchLeaveDashboardSnapshot,
@@ -87,6 +89,21 @@ function formatPunchTime(timestamp: string | null): string {
     : '—'
 }
 
+function shiftDate(workDate: string, days: number): string {
+  const [year, month, day] = workDate.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
+}
+
+function formatManilaDate(workDate: string): string {
+  return new Date(`${workDate}T00:00:00+08:00`).toLocaleDateString('en-PH', {
+    timeZone: 'Asia/Manila',
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
 const punchedEmployeeColumns: DataTableColumn<AdminPunchedEmployee>[] = [
   {
     key: 'employee',
@@ -98,11 +115,6 @@ const punchedEmployeeColumns: DataTableColumn<AdminPunchedEmployee>[] = [
         <p className="text-xs text-slate-500">{record.employee_code}</p>
       </div>
     ),
-  },
-  {
-    key: 'employee-number',
-    header: 'Employee number',
-    value: (record) => record.employee_code,
   },
   {
     key: 'clock-in',
@@ -117,6 +129,15 @@ const punchedEmployeeColumns: DataTableColumn<AdminPunchedEmployee>[] = [
     value: (record) => record.clock_out_at ? Date.parse(record.clock_out_at) : -1,
     searchable: false,
     render: (record) => formatPunchTime(record.clock_out_at),
+  },
+  {
+    key: 'clock-in-location',
+    header: 'Clock-in location',
+    value: (record) => record.clock_in_location ?? 'Location not captured',
+    render: (record) => {
+      const location = record.clock_in_location || 'Location not captured'
+      return <span className="block max-w-56 truncate" title={location}>{location}</span>
+    },
   },
 ]
 
@@ -181,6 +202,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isOfflineReviewOpen, setIsOfflineReviewOpen] = useState(false)
   const [isAttendanceExceptionsOpen, setIsAttendanceExceptionsOpen] = useState(false)
   const [isPunchedEmployeesOpen, setIsPunchedEmployeesOpen] = useState(false)
+  const [punchedEmployeesDate, setPunchedEmployeesDate] = useState(() => getManilaDate())
+  const [punchedEmployees, setPunchedEmployees] = useState<AdminPunchedEmployee[]>([])
+  const [isLoadingPunchedEmployees, setIsLoadingPunchedEmployees] = useState(false)
+  const [punchedEmployeesError, setPunchedEmployeesError] = useState<string | null>(null)
+  const [punchedEmployeesRefreshedAt, setPunchedEmployeesRefreshedAt] = useState<string | null>(null)
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
   const [missedClockInsThisMonth, setMissedClockInsThisMonth] = useState<number | null>(null)
@@ -629,6 +655,50 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       window.clearInterval(refreshTimer)
     }
   }, [isAdmin])
+
+  useEffect(() => {
+    if (!isPunchedEmployeesOpen || !canResolveAttendanceExceptions) return
+
+    let isCurrent = true
+    void fetchAdminPunchedEmployees(punchedEmployeesDate)
+      .then((employees) => {
+        if (isCurrent) {
+          setPunchedEmployees(employees)
+          setPunchedEmployeesRefreshedAt(new Date().toISOString())
+        }
+      })
+      .catch((error: unknown) => {
+        if (isCurrent) {
+          setPunchedEmployeesError(
+            error instanceof Error ? error.message : 'Could not load employees who punched on this date.',
+          )
+        }
+      })
+      .finally(() => {
+        if (isCurrent) setIsLoadingPunchedEmployees(false)
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [canResolveAttendanceExceptions, isPunchedEmployeesOpen, punchedEmployeesDate])
+
+  function openPunchedEmployees() {
+    setPunchedEmployeesDate(getManilaDate())
+    setIsLoadingPunchedEmployees(true)
+    setPunchedEmployeesError(null)
+    setPunchedEmployees([])
+    setPunchedEmployeesRefreshedAt(null)
+    setIsPunchedEmployeesOpen(true)
+  }
+
+  function changePunchedEmployeesDate(workDate: string) {
+    setPunchedEmployeesDate(workDate)
+    setIsLoadingPunchedEmployees(true)
+    setPunchedEmployeesError(null)
+    setPunchedEmployees([])
+    setPunchedEmployeesRefreshedAt(null)
+  }
 
   useEffect(() => {
     if (!isAdmin) return
@@ -1090,7 +1160,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         controls: 'admin-punched-employees',
         onClick: () => toggleTeamReview(
           isPunchedEmployeesOpen,
-          () => setIsPunchedEmployeesOpen(true),
+          openPunchedEmployees,
         ),
       })
     }
@@ -1128,16 +1198,28 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           >
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>
-                <h2 className="text-lg font-extrabold text-slate-900">Employees punched today</h2>
+                <h2 className="text-lg font-extrabold text-slate-900">
+                  {punchedEmployeesDate === getManilaDate()
+                    ? 'Employees punched today'
+                    : `Employees punched on ${formatManilaDate(punchedEmployeesDate)}`}
+                </h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Active employees with a valid raw clock-in or clock-out today.
+                  Active employees with a valid raw clock-in or clock-out on {formatManilaDate(punchedEmployeesDate)}.
                 </p>
-                {adminDashboardSnapshot && (
+                {punchedEmployeesRefreshedAt && (
                   <p className="mt-1 text-xs text-slate-400">
-                    Snapshot refreshed {new Date(adminDashboardSnapshot.refreshed_at).toLocaleString()}
+                    Records loaded {new Date(punchedEmployeesRefreshedAt).toLocaleString()}
                   </p>
                 )}
               </div>
+              {punchedEmployeesError && (
+                <p
+                  role="alert"
+                  className="w-full rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 sm:mx-4 sm:w-auto sm:flex-1 sm:text-center"
+                >
+                  {punchedEmployeesError}
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => setIsPunchedEmployeesOpen(false)}
@@ -1146,30 +1228,47 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                 Close
               </button>
             </div>
-            {adminDashboardError && (
-              <p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-                {adminDashboardError}
-              </p>
-            )}
-            {isLoadingAdminDashboard && !adminDashboardSnapshot ? (
-              <p className="mt-5 text-sm text-slate-500">Loading employees who punched today…</p>
-            ) : adminDashboardError && !adminDashboardSnapshot ? null
-            : (adminDashboardSnapshot?.punched_employees_today.length ?? 0) === 0 ? (
-              <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No employees have punched in or out today.
-              </p>
-            ) : (
-              <div className="mt-5">
-                <DataTable
-                  rows={adminDashboardSnapshot?.punched_employees_today ?? []}
-                  columns={punchedEmployeeColumns}
-                  getRowKey={(record) => record.employee_id}
-                  searchPlaceholder="Search employee name or number"
-                  emptyMessage="No employees have punched in or out today."
-                  pageSize={10}
-                />
-              </div>
-            )}
+            <div className="mt-5">
+              <DataTable
+                rows={punchedEmployees}
+                columns={punchedEmployeeColumns}
+                getRowKey={(record) => record.employee_id}
+                searchPlaceholder="Search employee name, number, or location"
+                emptyMessage={
+                  isLoadingPunchedEmployees
+                    ? 'Loading employees who punched on this date…'
+                    : punchedEmployeesError
+                      ? 'Punch records could not be loaded.'
+                      : 'No employees have punched in or out on this date.'
+                }
+                pageSize={10}
+                toolbar={
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => changePunchedEmployeesDate(shiftDate(punchedEmployeesDate, -1))}
+                      aria-label="Previous day"
+                      title="Previous day"
+                      className="inline-flex h-9 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => changePunchedEmployeesDate(shiftDate(punchedEmployeesDate, 1))}
+                      disabled={punchedEmployeesDate >= getManilaDate()}
+                      aria-label="Next day"
+                      title="Next day"
+                      className="inline-flex h-9 items-center gap-1 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Next
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                }
+              />
+            </div>
           </section>
         )}
 

@@ -63,6 +63,7 @@ class PunchedEmployeeToday:
     employee: AttendanceEmployee
     clock_in_at: Optional[datetime]
     clock_out_at: Optional[datetime]
+    clock_in_location: Optional[str] = None
 
 
 @dataclass

@@ -278,6 +278,7 @@ export interface AdminPunchedEmployee {
   employee_name: string
   clock_in_at: string | null
   clock_out_at: string | null
+  clock_in_location: string | null
 }
 
 export interface AdminDashboardSnapshot {
@@ -551,6 +552,18 @@ export async function fetchAdminDashboardSnapshot(): Promise<AdminDashboardSnaps
     return response.data.data
   } catch (err) {
     throw new Error(getAttendanceErrorMessage(err, 'Could not load administrator dashboard details.'))
+  }
+}
+
+export async function fetchAdminPunchedEmployees(workDate: string): Promise<AdminPunchedEmployee[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<AdminPunchedEmployee[]>>(
+      '/attendance/admin-dashboard/punched-employees',
+      { params: { work_date: workDate } },
+    )
+    return response.data.data
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not load employees who punched on this date.'))
   }
 }
 

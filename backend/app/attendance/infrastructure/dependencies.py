@@ -3,7 +3,10 @@ from fastapi import Depends
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.core.generics.uow import get_unit_of_work, GenUnitOfWork
-from app.attendance.application.admin_dashboard_use_cases import GetAdminDashboardUseCase
+from app.attendance.application.admin_dashboard_use_cases import (
+    GetAdminDashboardUseCase,
+    GetPunchedEmployeesUseCase,
+)
 from app.attendance.application.attendance_review_use_cases import (
     ApproveInvalidAttendanceUseCase,
     ListInvalidAttendanceUseCase,
@@ -181,6 +184,12 @@ def get_admin_dashboard_use_case(
     uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
 ) -> GetAdminDashboardUseCase:
     return GetAdminDashboardUseCase(uow)
+
+
+def get_punched_employees_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> GetPunchedEmployeesUseCase:
+    return GetPunchedEmployeesUseCase(uow)
 
 
 def get_supervisor_attendance_locations_use_case(

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Callable, Iterable
 from uuid import UUID
 
@@ -10,6 +10,7 @@ from app.attendance.domain.entities.admin_dashboard import (
     AdminDashboard,
     EmployeeWeeklyHours,
     WeeklyAttendanceSample,
+    PunchedEmployeeToday,
 )
 from app.attendance.domain.worked_minutes import net_worked_minutes
 from app.core.generics.uc_base import BaseUseCase
@@ -31,6 +32,24 @@ def total_weekly_minutes(samples: Iterable[WeeklyAttendanceSample]) -> list[Empl
 class GetAdminDashboardInput:
     supervisor_employee_id: UUID
     team_scope: bool = False
+
+
+@dataclass
+class GetPunchedEmployeesInput:
+    work_date: date
+    approver_employee_id: UUID
+
+
+class GetPunchedEmployeesUseCase(BaseUseCase[list[PunchedEmployeeToday]]):
+    def __init__(self, uow: AdminDashboardUnitOfWork):
+        self._uow = uow
+
+    async def _execute(self, data: GetPunchedEmployeesInput) -> list[PunchedEmployeeToday]:
+        async with self._uow as uow:
+            return await uow.dashboard.list_employees_punched_on_day(
+                data.work_date,
+                approver_employee_id=data.approver_employee_id,
+            )
 
 
 class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
@@ -57,7 +76,7 @@ class GetAdminDashboardUseCase(BaseUseCase[AdminDashboard]):
                 today,
                 supervisor_employee_id=supervisor_employee_id,
             )
-            punched_employees_today = await uow.dashboard.list_employees_punched_today(
+            punched_employees_today = await uow.dashboard.list_employees_punched_on_day(
                 today,
                 approver_employee_id=supervisor_employee_id,
             )

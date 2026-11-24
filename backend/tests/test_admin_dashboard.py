@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from app.attendance.application.admin_dashboard_use_cases import (
     GetAdminDashboardInput,
     GetAdminDashboardUseCase,
+    GetPunchedEmployeesInput,
+    GetPunchedEmployeesUseCase,
     total_weekly_minutes,
 )
 from app.attendance.domain.admin_dashboard_rules import NO_LOGOUT_GRACE, classify_attendance_exceptions
@@ -22,6 +24,7 @@ from app.attendance.domain.entities.admin_dashboard import (
 )
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
 from app.attendance.infrastructure.attendance_dashboard_router import (
+    get_admin_punched_employees,
     get_admin_dashboard_snapshot,
     get_team_dashboard_snapshot,
 )
@@ -150,8 +153,8 @@ class FakeDashboardRepository:
         self.calls.append(("weekly", week_start, today, supervisor_employee_id))
         return self.weekly
 
-    async def list_employees_punched_today(self, today, approver_employee_id=None):
-        self.calls.append(("punched_today", today, approver_employee_id))
+    async def list_employees_punched_on_day(self, work_date, approver_employee_id=None):
+        self.calls.append(("punched_today", work_date, approver_employee_id))
         return self.punched_today
 
 
@@ -232,6 +235,11 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
                 "org_unit_id": org_unit_id,
                 "clock_in_at": clock_in_at,
                 "clock_out_at": None,
+                "clock_in_metadata": {
+                    "clock_in": {
+                        "geofence_validation": {"location_name": "Main Office"},
+                    },
+                },
             })
 
         class FakePunchSession:
@@ -257,7 +265,7 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ])
 
-        punched = await SqlAlchemyAdminDashboardRepository(FakePunchSession()).list_employees_punched_today(
+        punched = await SqlAlchemyAdminDashboardRepository(FakePunchSession()).list_employees_punched_on_day(
             date(2026, 10, 14),
             approver_employee_id=manager_id,
         )
@@ -266,6 +274,19 @@ class GetAdminDashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(punched[0].employee.id, fallback_employee_id)
         self.assertEqual(punched[0].employee.employee_no, "FALLBACK")
         self.assertEqual(punched[0].clock_in_at, fallback_clock_in)
+        self.assertEqual(punched[0].clock_in_location, "Main Office")
+
+    async def test_punched_employee_query_uses_the_requested_work_date(self):
+        repository = FakeDashboardRepository(punched_today=1)
+        supervisor = uuid4()
+        work_date = date(2026, 10, 10)
+
+        result = await GetPunchedEmployeesUseCase(FakeUnitOfWork(repository)).execute(
+            GetPunchedEmployeesInput(work_date, supervisor)
+        )
+
+        self.assertEqual(result, repository.punched_today)
+        self.assertEqual(repository.calls, [("punched_today", work_date, supervisor)])
 
     async def test_punched_today_details_are_only_returned_for_organization_scope(self):
         organization_repository = FakeDashboardRepository(punched_today=12)
@@ -323,7 +344,7 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
             pending_leaves=[leave], weekly_hours=[EmployeeWeeklyHours(subject, 481)],
             employees_punched_today=1,
             punched_employees_today=[
-                PunchedEmployeeToday(subject, NOW - timedelta(hours=8), NOW)
+                PunchedEmployeeToday(subject, NOW - timedelta(hours=8), NOW, "Main Office")
             ],
             refreshed_at=NOW,
         )
@@ -342,6 +363,39 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data.employees_punched_today, 1)
         self.assertEqual(data.punched_employees_today[0].employee_name, "Ana")
         self.assertEqual(data.punched_employees_today[0].clock_out_at, NOW)
+        self.assertEqual(data.punched_employees_today[0].clock_in_location, "Main Office")
+
+    async def test_punched_employees_route_returns_the_selected_day_and_location(self):
+        subject = employee("E1", preferred_name="Ana")
+        use_case = MagicMock(execute=AsyncMock(return_value=[
+            PunchedEmployeeToday(subject, NOW - timedelta(hours=8), NOW, "Main Office"),
+        ]))
+        employee_id = uuid4()
+        work_date = date(2026, 10, 14)
+
+        response = await get_admin_punched_employees(
+            work_date=work_date,
+            claims={"employee_id": str(employee_id)},
+            use_case=use_case,
+        )
+
+        self.assertEqual(
+            use_case.execute.await_args.args[0],
+            GetPunchedEmployeesInput(work_date, employee_id),
+        )
+        self.assertEqual(response.data[0].employee_name, "Ana")
+        self.assertEqual(response.data[0].clock_in_location, "Main Office")
+
+    async def test_punched_employees_route_rejects_future_dates(self):
+        use_case = MagicMock(execute=AsyncMock())
+        with self.assertRaises(HTTPException) as error:
+            await get_admin_punched_employees(
+                work_date=date.max,
+                claims={"employee_id": str(uuid4())},
+                use_case=use_case,
+            )
+        self.assertEqual(error.exception.status_code, 422)
+        use_case.execute.assert_not_awaited()
 
     async def test_non_admin_or_unlinked_accounts_are_forbidden(self):
         use_case = MagicMock(execute=AsyncMock())

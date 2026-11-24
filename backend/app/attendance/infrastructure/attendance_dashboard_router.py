@@ -8,7 +8,10 @@ from pydantic import BaseModel, Field
 from app.attendance.application.admin_dashboard_use_cases import (
     GetAdminDashboardInput,
     GetAdminDashboardUseCase,
+    GetPunchedEmployeesInput,
+    GetPunchedEmployeesUseCase,
 )
+from app.attendance.application.clock import ph_today, utc_now
 from app.attendance.application.recent_attendance_snapshot import RecentAttendanceSnapshot
 from app.attendance.application.recent_attendance_use_cases import (
     GetRecentAttendanceSnapshotInput,
@@ -23,6 +26,7 @@ from app.attendance.application.supervisor_attendance_location_use_cases import 
 from app.attendance.domain.entities.admin_dashboard import AdminDashboard, AttendanceException
 from app.attendance.infrastructure.dependencies import (
     get_admin_dashboard_use_case,
+    get_punched_employees_use_case,
     get_recent_attendance_snapshot_use_case,
     get_supervisor_attendance_locations_use_case,
     get_supervisor_team_employees_use_case,
@@ -77,6 +81,7 @@ class AdminPunchedEmployeeSchema(BaseModel):
     employee_name: str
     clock_in_at: datetime | None
     clock_out_at: datetime | None
+    clock_in_location: str | None = None
 
 
 class AdminDashboardSnapshotSchema(BaseModel):
@@ -195,6 +200,7 @@ def _dashboard_schema(dashboard: AdminDashboard) -> AdminDashboardSnapshotSchema
                 employee_name=punched.employee.display_name,
                 clock_in_at=punched.clock_in_at,
                 clock_out_at=punched.clock_out_at,
+                clock_in_location=punched.clock_in_location,
             )
             for punched in dashboard.punched_employees_today
         ],
@@ -221,6 +227,51 @@ async def get_admin_dashboard_snapshot(
 
     dashboard = await use_case.execute(GetAdminDashboardInput(supervisor_employee_id=supervisor_employee_id))
     return ResponseEnvelope(status="success", data=_dashboard_schema(dashboard))
+
+
+@router.get(
+    "/admin-dashboard/punched-employees",
+    response_model=ResponseEnvelope[list[AdminPunchedEmployeeSchema]],
+    dependencies=[Depends(require_permission("leave.approve_team"))],
+)
+async def get_admin_punched_employees(
+    work_date: date = Query(),
+    claims: dict = Depends(require_approval_permission("attendance.read_org")),
+    use_case: GetPunchedEmployeesUseCase = Depends(get_punched_employees_use_case),
+):
+    if work_date > ph_today(utc_now()):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Future attendance dates cannot be viewed.",
+        )
+    try:
+        supervisor_employee_id = UUID(str(claims["employee_id"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not linked to an employee profile.",
+        ) from error
+
+    employees = await use_case.execute(
+        GetPunchedEmployeesInput(
+            work_date=work_date,
+            approver_employee_id=supervisor_employee_id,
+        )
+    )
+    return ResponseEnvelope(
+        status="success",
+        data=[
+            AdminPunchedEmployeeSchema(
+                employee_id=punched.employee.id,
+                employee_code=punched.employee.employee_no,
+                employee_name=punched.employee.display_name,
+                clock_in_at=punched.clock_in_at,
+                clock_out_at=punched.clock_out_at,
+                clock_in_location=punched.clock_in_location,
+            )
+            for punched in employees
+        ],
+    )
 
 
 @router.get(

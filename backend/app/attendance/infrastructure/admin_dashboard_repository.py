@@ -68,13 +68,50 @@ def _employee_from(row, prefix: str) -> AttendanceEmployee:
     )
 
 
+def _clock_in_location(punch_metadata) -> str | None:
+    if not isinstance(punch_metadata, dict):
+        return None
+    clock_in = punch_metadata.get("clock_in")
+    if not isinstance(clock_in, dict):
+        return None
+    geofence = clock_in.get("geofence_validation")
+    if not isinstance(geofence, dict):
+        return None
+    location_name = geofence.get("location_name")
+    if isinstance(location_name, str) and location_name.strip():
+        return location_name.strip()
+    if geofence.get("work_location_type") == "WFH":
+        return "Registered WFH location"
+    return None
+
+
 class SqlAlchemyAdminDashboardRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def list_employees_punched_today(
-        self, today: date, approver_employee_id: UUID | None = None
+    async def list_employees_punched_on_day(
+        self, work_date: date, approver_employee_id: UUID | None = None
     ) -> list[PunchedEmployeeToday]:
+        ClockInAttendance = aliased(AttendanceModel)
+        ClockInUser = aliased(UserModel)
+        clock_in_metadata = (
+            select(ClockInAttendance.punch_metadata)
+            .select_from(ClockInAttendance)
+            .join(ClockInUser, ClockInUser.id == ClockInAttendance.user_id)
+            .where(
+                ClockInUser.employee_id == EmployeeModel.id,
+                ClockInUser.is_active.is_(True),
+                ClockInUser.account_status == "ACTIVE",
+                ClockInAttendance.work_date == work_date,
+                ClockInAttendance.record_status == "VALID",
+                ClockInAttendance.clock_in_at.is_not(None),
+                not_merged_source(ClockInAttendance),
+            )
+            .order_by(ClockInAttendance.clock_in_at.asc(), ClockInAttendance.id.asc())
+            .limit(1)
+            .correlate(EmployeeModel)
+            .scalar_subquery()
+        )
         conditions = [
             EmployeeModel.is_active.is_(True),
             EmployeeModel.record_status == "ACTIVE",
@@ -82,7 +119,7 @@ class SqlAlchemyAdminDashboardRepository:
             UserModel.account_status == "ACTIVE",
             AttendanceModel.record_status == "VALID",
             not_merged_source(),
-            AttendanceModel.work_date == today,
+            AttendanceModel.work_date == work_date,
             or_(
                 AttendanceModel.clock_in_at.is_not(None),
                 AttendanceModel.clock_out_at.is_not(None),
@@ -95,6 +132,7 @@ class SqlAlchemyAdminDashboardRepository:
                         *_employee_columns(EmployeeModel, "employee_"),
                         func.min(AttendanceModel.clock_in_at).label("clock_in_at"),
                         func.max(AttendanceModel.clock_out_at).label("clock_out_at"),
+                        clock_in_metadata.label("clock_in_metadata"),
                     )
                     .select_from(EmployeeModel)
                     .join(UserModel, UserModel.employee_id == EmployeeModel.id)
@@ -109,6 +147,7 @@ class SqlAlchemyAdminDashboardRepository:
                     employee=_employee_from(row, "employee_"),
                     clock_in_at=row._mapping["clock_in_at"],
                     clock_out_at=row._mapping["clock_out_at"],
+                    clock_in_location=_clock_in_location(row._mapping["clock_in_metadata"]),
                 )
                 for row in rows
             ]
@@ -121,12 +160,13 @@ class SqlAlchemyAdminDashboardRepository:
                     EmploymentAssignmentModel.org_unit_id.label("org_unit_id"),
                     func.min(AttendanceModel.clock_in_at).label("clock_in_at"),
                     func.max(AttendanceModel.clock_out_at).label("clock_out_at"),
+                    clock_in_metadata.label("clock_in_metadata"),
                 )
                 .select_from(EmployeeModel)
                 .join(UserModel, UserModel.employee_id == EmployeeModel.id)
                 .join(AttendanceModel, AttendanceModel.user_id == UserModel.id)
                 .join(EmploymentAssignmentModel, EmploymentAssignmentModel.employee_id == EmployeeModel.id)
-                .where(*conditions, *active_assignment_conditions(today))
+                .where(*conditions, *active_assignment_conditions(work_date))
                 .group_by(
                     *_employee_group_columns(EmployeeModel),
                     EmploymentAssignmentModel.company_id,
@@ -150,6 +190,7 @@ class SqlAlchemyAdminDashboardRepository:
                 employee=employee,
                 clock_in_at=values["clock_in_at"],
                 clock_out_at=values["clock_out_at"],
+                clock_in_location=_clock_in_location(values["clock_in_metadata"]),
             )
 
         org_units = (
@@ -171,7 +212,7 @@ class SqlAlchemyAdminDashboardRepository:
                     employee_id,
                     company_id,
                     source_unit_id,
-                    today,
+                    work_date,
                     org_units_by_id,
                 )
             except ApprovalRoutingError:
