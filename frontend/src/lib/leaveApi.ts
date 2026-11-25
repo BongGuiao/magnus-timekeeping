@@ -427,3 +427,11 @@ export async function updateEmployeeEntitlement(
     return rethrowApiError(error, 'Could not update the employee entitlement.')
   }
 }
+
+export async function deleteEmployeeEntitlement(id: string): Promise<void> {
+  try {
+    await apiClient.delete(`/employee-entitlements/${encodeURIComponent(id)}`)
+  } catch (error) {
+    return rethrowApiError(error, 'Could not delete the employee entitlement.')
+  }
+}

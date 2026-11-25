@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Pencil, Plus, X } from 'lucide-react'
+import { Pencil, Plus, Trash2, X } from 'lucide-react'
 import SearchableSelect from '../../components/common/SearchableSelect'
 import {
   EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT,
@@ -11,6 +11,7 @@ import {
 import {
   calculateAvailableMinutes,
   createEmployeeEntitlement,
+  deleteEmployeeEntitlement,
   fetchEmployeeEntitlements,
   fetchLeaveTypes,
   formatLeaveBalance,
@@ -69,6 +70,7 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
   const [errorMessage, setErrorMessage] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
   const refreshInFlight = useRef(false)
+  const refreshVersion = useRef(0)
   const editingRef = useRef(editing)
 
   useEffect(() => {
@@ -94,6 +96,7 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
         return
       }
       refreshInFlight.current = true
+      const version = refreshVersion.current
       setIsLoading(true)
       setErrorMessage('')
       try {
@@ -101,7 +104,7 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
           fetchEmploymentAssignments(employeeId),
           fetchEmployeeEntitlements(employeeId),
         ])
-        if (!isCurrent) return
+        if (!isCurrent || version !== refreshVersion.current) return
 
         const currentAssignment = assignments.find((item) => isCurrentEmploymentAssignment(item)) ?? null
         setAssignment(currentAssignment)
@@ -117,7 +120,7 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
         if (!isCurrent) return
         setLeaveTypes(types.filter((type) => type.is_active && type.status === 'ACTIVE'))
       } catch (error) {
-        if (isCurrent) setErrorMessage(errorText(error))
+        if (isCurrent && version === refreshVersion.current) setErrorMessage(errorText(error))
       } finally {
         refreshInFlight.current = false
         if (isCurrent) {
@@ -235,6 +238,25 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
     }
   }
 
+  async function remove(item: EmployeeEntitlement) {
+    const leaveName = leaveTypes.find((type) => type.id === item.leave_type_id)?.leave_name ?? 'this leave type'
+    if (!window.confirm(`Delete the ${item.entitlement_year} entitlement for ${leaveName}?`)) return
+    setErrorMessage('')
+    setSuccessMessage('')
+    setIsSaving(true)
+    try {
+      await deleteEmployeeEntitlement(item.id)
+      refreshVersion.current += 1
+      setEntitlements((current) => current.filter((row) => row.id !== item.id))
+      if (editing?.id === item.id) resetForm()
+      setSuccessMessage('Entitlement deleted.')
+    } catch (error) {
+      setErrorMessage(errorText(error))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -273,8 +295,11 @@ export default function EmployeeEntitlementsPanel({ employee, isActive }: Props)
                   leaveTypes.find((type) => type.id === item.leave_type_id)?.unit_type ?? 'DAYS',
                 )}</td>
                 <td className="px-3 py-2 text-right">
-                  <button type="button" onClick={() => beginEdit(item)} aria-label="Edit entitlement" className="rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700">
+                  <button type="button" onClick={() => beginEdit(item)} disabled={isSaving} aria-label="Edit entitlement" className="rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700 disabled:opacity-50">
                     <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button type="button" onClick={() => void remove(item)} disabled={isSaving} aria-label="Delete entitlement" className="rounded-md p-1.5 text-slate-500 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50">
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </td>
               </tr>

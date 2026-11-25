@@ -531,6 +531,26 @@ async def list_employee_entitlements(
     return ResponseEnvelope(status="success", data=result)
 
 
+@entitlements_router.delete("/{entitlement_id}", response_model=ResponseEnvelope[EmployeeEntitlementEntity])
+async def delete_employee_entitlement(
+    entitlement_id: UUID,
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
+    use_case: EmployeeEntitlementUseCase = Depends(get_employee_entitlement_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    actor_id = _actor_id(claims)
+    try:
+        deleted = _require_record(await use_case.delete(entitlement_id), "Employee entitlement not found.")
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    await log_entity_action(
+        es_client, user_id=actor_id, action="DELETE", resource="employee_entitlement",
+        resource_id=entitlement_id, before=deleted,
+    )
+    _queue_leave_dashboard_refresh(deleted.employee_id)
+    return ResponseEnvelope(status="success", data=deleted)
+
+
 @entitlements_router.get("/{entitlement_id}", response_model=ResponseEnvelope[EmployeeEntitlementEntity])
 async def get_employee_entitlement(
     entitlement_id: UUID,

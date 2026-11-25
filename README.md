@@ -203,6 +203,12 @@ docker exec -w /app/backend celery_worker celery -A celery_app:app inspect ping 
 
 ### Uploading leave entitlements
 
+In an employee's Entitlements tab, users with `leave.manage` can delete an
+entitlement after confirmation. Deletion is blocked when that employee and
+leave type have any application overlapping the entitlement year, any ledger
+entry dated in that year, or a nonzero used, reserved, expired, or converted
+balance. This preserves leave activity and history.
+
 Users with `leave.manage` can download a CSV template and upload balances from
 either the Entitlements tab of an employee record or the Employee Entitlements
 page. A file can include multiple employees, including employees other than the

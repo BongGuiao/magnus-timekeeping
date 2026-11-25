@@ -98,6 +98,19 @@ def _with_calculated_balance(entity: EmployeeEntitlementEntity) -> EmployeeEntit
     return replace(entity, available_minutes=calculate_available_minutes(entity.__dict__))
 
 
+async def _lock_matching_entitlements(
+    session: Any, employee_id: UUID, leave_type_id: UUID, start_year: int, end_year: int,
+) -> None:
+    # Serialize leave activity writes with deletion's entitlement row lock.
+    await session.scalars(
+        select(EmployeeEntitlementModel.id).where(
+            EmployeeEntitlementModel.employee_id == employee_id,
+            EmployeeEntitlementModel.leave_type_id == leave_type_id,
+            EmployeeEntitlementModel.entitlement_year.between(start_year, end_year),
+        ).order_by(EmployeeEntitlementModel.entitlement_year).with_for_update()
+    )
+
+
 def _entitlement_assignment_query(
     employee_ids: Collection[UUID],
     today: date,
@@ -231,20 +244,6 @@ async def _post_approved_leave_charge(session: Any, application: LeaveApplicatio
 
 def _to_entity(model: Any, entity_type: type[EntityT]) -> EntityT:
     return GenericMapper.to_entity(model, entity_type)
-
-
-async def _create(
-    uow: GenUnitOfWork,
-    model_type: type[ModelT],
-    entity_type: type[EntityT],
-    values: dict[str, Any],
-) -> EntityT:
-    async with uow as active_uow:
-        model = model_type(**values)
-        active_uow.session.add(model)
-        await active_uow.session.flush()
-        await active_uow.session.refresh(model)
-        return _to_entity(model, entity_type)
 
 
 async def _get(
@@ -395,6 +394,40 @@ class EmployeeEntitlementUseCase:
             await active_uow.session.refresh(model)
             return _with_calculated_balance(_to_entity(model, EmployeeEntitlementEntity))
 
+    async def delete(self, record_id: UUID) -> EmployeeEntitlementEntity | None:
+        async with self.uow as active_uow:
+            session = active_uow.session
+            model = await session.scalar(
+                select(EmployeeEntitlementModel)
+                .where(EmployeeEntitlementModel.id == record_id)
+                .with_for_update()
+            )
+            if model is None:
+                return None
+            year_start = datetime(model.entitlement_year, 1, 1, tzinfo=ZoneInfo("Asia/Manila"))
+            year_end = datetime(model.entitlement_year + 1, 1, 1, tzinfo=ZoneInfo("Asia/Manila"))
+            application = await session.scalar(select(LeaveApplicationModel.id).where(
+                LeaveApplicationModel.employee_id == model.employee_id,
+                LeaveApplicationModel.leave_type_id == model.leave_type_id,
+                LeaveApplicationModel.start_at < year_end,
+                LeaveApplicationModel.end_at > year_start,
+            ).limit(1))
+            ledger = await session.scalar(select(LeaveLedgerModel.id).where(
+                LeaveLedgerModel.employee_id == model.employee_id,
+                LeaveLedgerModel.leave_type_id == model.leave_type_id,
+                LeaveLedgerModel.transaction_date >= year_start.date(),
+                LeaveLedgerModel.transaction_date < year_end.date(),
+            ).limit(1))
+            if application is not None or ledger is not None or any(
+                getattr(model, field) != 0
+                for field in ("used_minutes", "reserved_minutes", "expired_minutes", "converted_minutes")
+            ):
+                raise ValueError("This entitlement cannot be deleted because it has leave activity.")
+            entity = _with_calculated_balance(_to_entity(model, EmployeeEntitlementEntity))
+            await session.delete(model)
+            await session.flush()
+            return entity
+
 
 async def _require_leave_open(
     session: Any, employee_id: UUID, start_at: datetime, end_at: datetime,
@@ -429,6 +462,10 @@ class LeaveApplicationUseCase:
             await _require_leave_open(
                 session, values["employee_id"], values["start_at"], values["end_at"],
                 stage="APPROVAL" if values.get("status") == "APPROVED" else "FILING",
+            )
+            await _lock_matching_entitlements(
+                session, values["employee_id"], values["leave_type_id"], local_start.year,
+                (values["end_at"] - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).year,
             )
             model = LeaveApplicationModel(**values)
             session.add(model)
@@ -738,6 +775,18 @@ class LeaveApplicationUseCase:
                 next_leave_type_id,
                 next_start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
             )
+            next_year = next_start_at.astimezone(ZoneInfo("Asia/Manila")).year
+            next_end_at = values.get("end_at", model.end_at)
+            next_end_year = (next_end_at - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).year
+            if (
+                next_employee_id != model.employee_id
+                or next_leave_type_id != model.leave_type_id
+                or next_year != model.start_at.astimezone(ZoneInfo("Asia/Manila")).year
+                or next_end_year != (model.end_at - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).year
+            ):
+                await _lock_matching_entitlements(
+                    active_uow.session, next_employee_id, next_leave_type_id, next_year, next_end_year,
+                )
             was_approved = model.status == "APPROVED"
             if was_approved and next_status != "APPROVED":
                 raise ValueError("An approved leave application cannot be moved back to another status.")
@@ -873,7 +922,17 @@ class LeaveLedgerUseCase:
         self.uow = uow
 
     async def create(self, values: dict[str, Any]) -> LeaveLedgerEntity:
-        return await _create(self.uow, LeaveLedgerModel, LeaveLedgerEntity, values)
+        async with self.uow as active_uow:
+            session = active_uow.session
+            await _lock_matching_entitlements(
+                session, values["employee_id"], values["leave_type_id"],
+                values["transaction_date"].year, values["transaction_date"].year,
+            )
+            model = LeaveLedgerModel(**values)
+            session.add(model)
+            await session.flush()
+            await session.refresh(model)
+            return _to_entity(model, LeaveLedgerEntity)
 
     async def get(self, record_id: UUID) -> LeaveLedgerEntity | None:
         return await _get(self.uow, LeaveLedgerModel, LeaveLedgerEntity, record_id)

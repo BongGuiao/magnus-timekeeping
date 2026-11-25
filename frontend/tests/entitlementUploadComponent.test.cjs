@@ -226,3 +226,144 @@ test('a failed refresh reports that the upload was saved rather than reporting a
   assert.match(html, /Upload completed: 0 created and 1 updated/)
   assert.match(html, /displayed balances could not be refreshed: Network unavailable/)
 })
+
+function createEntitlementPanelHarness(deleteEntitlement = async () => {}) {
+  const cells = []
+  let hook = 0
+  let confirmed = false
+  let deferRefresh = false
+  let resolveRefresh
+  const listeners = {}
+  const calls = []
+  const hooks = {
+    useState(initial) {
+      const index = hook++
+      if (!(index in cells)) cells[index] = typeof initial === 'function' ? initial() : initial
+      return [cells[index], (next) => {
+        cells[index] = typeof next === 'function' ? next(cells[index]) : next
+      }]
+    },
+    useRef(initial) {
+      const index = hook++
+      if (!(index in cells)) cells[index] = { current: initial }
+      return cells[index]
+    },
+    useEffect(effect) {
+      const index = hook++
+      if (!(index in cells)) {
+        cells[index] = true
+        effect()
+      }
+    },
+  }
+  const entitlement = {
+    id: 'entitlement', employee_id: 'employee', leave_type_id: 'leave',
+    entitlement_year: 2026, ...balances, last_calculated_at: null,
+  }
+  const leaveType = {
+    id: 'leave', leave_name: 'Vacation', leave_code: 'VL', unit_type: 'DAYS',
+    is_active: true, status: 'ACTIVE', effective_from: '2020-01-01', effective_to: null,
+    minimum_service_months: 0,
+  }
+  const api = {
+    fetchEmployeeEntitlements: async () => {
+      if (deferRefresh) {
+        deferRefresh = false
+        return new Promise((resolve) => { resolveRefresh = resolve })
+      }
+      return [entitlement]
+    },
+    fetchLeaveTypes: async () => [leaveType],
+    deleteEmployeeEntitlement: async (id) => {
+      calls.push(id)
+      return deleteEntitlement(id)
+    },
+    formatLeaveBalance: (value) => String(value),
+    calculateAvailableMinutes: () => 0,
+    minutesToLeaveUnits: (value) => value,
+    leaveUnitsToMinutes: (value) => value,
+  }
+  const related = {
+    fetchEmploymentAssignments: async () => [{ company_id: 'company', hire_date: '2020-01-01' }],
+    isCurrentEmploymentAssignment: () => true,
+    getCompletedServiceMonths: () => 12,
+    getManilaDate: () => '2026-11-25',
+  }
+  const source = readFileSync(join(__dirname, '..', 'src', 'features', 'employees', 'EmployeeEntitlementsPanel.tsx'), 'utf8')
+  const code = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
+  const exports = {}
+  runInNewContext(code, {
+    exports, Error,
+    window: {
+      confirm: () => confirmed,
+      setInterval: () => 1,
+      addEventListener: (name, callback) => { listeners[name] = callback },
+      removeEventListener: () => {},
+    },
+    require(name) {
+      if (name === 'react') return hooks
+      if (name === 'lucide-react') return { Pencil: () => null, Plus: () => null, Trash2: () => null, X: () => null }
+      if (name === '../../components/common/SearchableSelect') return { __esModule: true, default: () => null }
+      if (name === '../../lib/employeeRelatedApi') return related
+      if (name === '../../lib/leaveApi') return api
+      return require(name)
+    },
+  })
+  return {
+    calls,
+    confirm(value) { confirmed = value },
+    startStaleRefresh() {
+      deferRefresh = true
+      listeners.focus()
+    },
+    finishStaleRefresh() { resolveRefresh([entitlement]) },
+    render() {
+      hook = 0
+      return exports.default({ employee: { id: 'employee', employee_no: '0001' }, isActive: true })
+    },
+  }
+}
+
+test('entitlement deletion requires confirmation and removes the deleted row', async () => {
+  const harness = createEntitlementPanelHarness()
+  harness.render()
+  await settle()
+  let tree = harness.render()
+  find(tree, (element) => element.props['aria-label'] === 'Delete entitlement').props.onClick()
+  assert.deepEqual(harness.calls, [])
+  harness.confirm(true)
+  tree = harness.render()
+  find(tree, (element) => element.props['aria-label'] === 'Delete entitlement').props.onClick()
+  await settle()
+  tree = harness.render()
+  assert.deepEqual(harness.calls, ['entitlement'])
+  assert.equal(find(tree, (element) => element.props['aria-label'] === 'Delete entitlement'), null)
+  assert.match(text(tree), /Entitlement deleted/)
+})
+
+test('a protected entitlement remains visible and shows the server error', async () => {
+  const harness = createEntitlementPanelHarness(async () => { throw new Error('This entitlement has leave activity.') })
+  harness.render()
+  await settle()
+  harness.confirm(true)
+  find(harness.render(), (element) => element.props['aria-label'] === 'Delete entitlement').props.onClick()
+  await settle()
+  const tree = harness.render()
+  assert.ok(find(tree, (element) => element.props['aria-label'] === 'Delete entitlement'))
+  assert.match(text(tree), /This entitlement has leave activity/)
+})
+
+test('a refresh started before deletion cannot restore the removed entitlement', async () => {
+  const harness = createEntitlementPanelHarness()
+  harness.render()
+  await settle()
+  harness.startStaleRefresh()
+  harness.confirm(true)
+  find(harness.render(), (element) => element.props['aria-label'] === 'Delete entitlement').props.onClick()
+  await settle()
+  harness.finishStaleRefresh()
+  await settle()
+  assert.equal(find(harness.render(), (element) => element.props['aria-label'] === 'Delete entitlement'), null)
+})
