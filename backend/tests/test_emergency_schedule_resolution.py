@@ -35,6 +35,7 @@ class EmergencyScheduleResolutionTests(unittest.IsolatedAsyncioTestCase):
             effective_from=date(2026, 10, 1),
             rest_day_pattern_id=uuid4(),
             schedule_template_id=uuid4(),
+            attendance_mode="PUNCH_REQUIRED",
         )
         work_segment = SimpleNamespace(
             start_time=datetime.strptime("17:00", "%H:%M").time(),

@@ -7,6 +7,51 @@ exactly one environment overlay when starting the stack: the development
 overlay provides the HTTP proxy, while the production overlay configures the
 production runtime, HTTPS proxy, and certificates.
 
+### Automatic absences
+
+The automatic absence worker is disabled unless `AUTO_ABSENCE_ENABLED=true` is
+set in the worker's environment. Every five minutes it checks today and
+yesterday in Philippine time. It records an absence once an approved,
+punch-required work schedule has started at least 60 minutes ago without a
+valid clock-in. It skips rest days, nonworking holidays, schedule-credited
+days, employees without an approved schedule, and days with approved leave or
+official business, including partial-day approvals.
+
+An approved clock-in updates the generated record and removes the absence;
+an unapproved punch clears it only after approval. Later approved leave or
+official business clears the generated record on the next check. Employees can
+request corrections for both missing punches on generated absence records after
+the shift ends. Existing punches cannot be overwritten. Cleared records are
+retained for audit when they cannot be reused. The supervisor team dashboard
+still requires both `attendance.read_team` and `leave.approve_team`; this
+feature does not grant permissions.
+
+The worker skips locked or finalized attendance, closed cutoffs, and employees
+whose cutoff results have already been calculated. Review these cases with HR;
+the worker does not recalculate payroll. A pending correction on a subsequently
+cleared absence may need to be rejected by its reviewer.
+
+Deploy the backend, frontend, Celery worker and beat before enabling the
+worker. The following production Bash commands preview, then explicitly apply,
+the requested backfill while the worker is disabled. Review the counts and
+payroll state before running the second command; the preview rolls its changes
+back. The backfill commits each employee-day independently, so a failed run may
+be partially applied; inspect the errors and rerun it after fixing them. The
+end date is the current Philippine date.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web \
+  python -m app.tasks.automatic_absence_tasks --start 2026-11-24 --end "$(TZ=Asia/Manila date +%F)"
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web \
+  python -m app.tasks.automatic_absence_tasks --start 2026-11-24 --end "$(TZ=Asia/Manila date +%F)" --apply
+```
+
+After review, add `AUTO_ABSENCE_ENABLED=true` to the production environment
+file and recreate the Celery worker and beat so the worker receives it.
+Monitor worker logs for failures. The backfill uses currently active accounts
+and currently active, approved assignments covering each date; it cannot
+reconstruct missing or deactivated historical assignments.
+
 ### Tardiness review preview
 
 **Timekeeping → Tardiness Review** and `GET /attendance/tardiness-review` provide

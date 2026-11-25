@@ -16,6 +16,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.core.generics.uc_base import BaseUseCase
 from app.core.generics.uow import GenUnitOfWork
 from app.attendance.domain.entities.attendance import AttendanceEntity
+from app.attendance.domain.automatic_absence import AUTO_ABSENCE_KEY, has_automatic_absence_marker
 from app.attendance.domain.shift import open_shift_expired, to_utc
 from app.attendance.infrastructure.db_model import AttendanceModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
@@ -639,7 +640,10 @@ class GetLastAttendanceUseCase(BaseUseCase[Optional[LastAttendanceOutputDTO]]):
             records = await repo.find_all(
                 AttendanceModel.user_id == input_dto.user_id,
                 not_merged_source(),
-                order_by=[AttendanceModel.work_date.desc(), AttendanceModel.clock_in_at.desc()],
+                order_by=[
+                    AttendanceModel.work_date.desc(),
+                    func.coalesce(AttendanceModel.corrected_clock_in_at, AttendanceModel.clock_in_at).desc().nullslast(),
+                ],
                 limit=1,
             )
 
@@ -1411,6 +1415,31 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                     )
 
                 # CLOCK IN
+                automatic_absences = await attendance_repo.find_all(
+                    AttendanceModel.user_id == input_dto.user_id,
+                    AttendanceModel.work_date.in_((today - timedelta(days=1), today, today + timedelta(days=1))),
+                    AttendanceModel.record_status == "VALID",
+                    AttendanceModel.is_absent.is_(True),
+                    not_merged_source(),
+                    limit=100,
+                )
+                automatic_absences = [
+                    record for record in automatic_absences
+                    if has_automatic_absence_marker(record.punch_metadata)
+                    and not record.clock_in_at and not record.corrected_clock_in_at
+                ]
+                previous_shift = next(
+                    (
+                        record for record in automatic_absences
+                        if record.work_date == today - timedelta(days=1)
+                        and record.expected_clock_in_at is not None
+                        and record.expected_clock_out_at is not None
+                        and to_utc(record.expected_clock_in_at) <= now_utc < to_utc(record.expected_clock_out_at)
+                    ),
+                    None,
+                )
+                if previous_shift is not None:
+                    today = previous_shift.work_date
                 schedule = await self._resolve_schedule_day(
                     uow,
                     employee.id,
@@ -1480,8 +1509,39 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                 if not input_dto.device_approved:
                     initial_metadata["clock_in"]["approval_required"] = "Browser approval is required."
 
-                created = await attendance_repo.add(
-                    AttendanceEntity(
+                automatic_absence = next(
+                    (record for record in automatic_absences if record.work_date == today),
+                    None,
+                )
+                if sum(record.work_date == today for record in automatic_absences) > 1:
+                    raise ValueError("Multiple automatic absences exist for this work date. Contact HR.")
+                if automatic_absence is not None and input_dto.device_approved:
+                    from app.attendance.application.automatic_absence import _payroll_is_open
+
+                    if automatic_absence.is_locked or not await _payroll_is_open(
+                        uow.session, employee.id, today, datetime.now(timezone.utc),
+                    ):
+                        raise ValueError("This absence is locked or payroll has already been processed. Contact HR.")
+                    metadata = dict(automatic_absence.punch_metadata or {})
+                    metadata[AUTO_ABSENCE_KEY] = {
+                        **metadata[AUTO_ABSENCE_KEY],
+                        "cleared_at": datetime.now(timezone.utc).isoformat(),
+                        "clear_reason": "clock_in",
+                    }
+                    metadata.update(initial_metadata)
+                    automatic_absence.clock_in_at = now_utc
+                    automatic_absence.expected_clock_in_at = schedule.expected_clock_in_at
+                    automatic_absence.expected_clock_out_at = schedule.expected_clock_out_at
+                    automatic_absence.schedule_template_id = schedule.schedule_template_id
+                    automatic_absence.work_type = schedule.work_type
+                    automatic_absence.day_type = await self._resolve_day_type(uow, employee.id, today)
+                    automatic_absence.late_minutes = late_minutes
+                    automatic_absence.is_absent = False
+                    automatic_absence.updated_by = input_dto.actor_id
+                    automatic_absence.punch_metadata = metadata
+                    created = await attendance_repo.update(automatic_absence)
+                else:
+                    created = await attendance_repo.add(AttendanceEntity(
                         user_id=input_dto.user_id,
                         work_date=today,
                         created_by=input_dto.actor_id,
@@ -1495,8 +1555,7 @@ class ClockAttendanceUseCase(BaseUseCase[ClockAttendanceOutputDTO]):
                         late_minutes=late_minutes,
                         record_status="VALID" if input_dto.device_approved else "INVALID",
                         punch_metadata=initial_metadata
-                    )
-                )
+                    ))
                 if created.record_status == "INVALID":
                     if created.id is None:
                         raise RuntimeError("The invalid attendance record was saved without an ID.")

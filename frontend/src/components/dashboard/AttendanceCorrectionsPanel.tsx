@@ -89,7 +89,6 @@ export default function AttendanceCorrectionsPanel({ scope, onPendingCountChange
   }
 
   const complete = Boolean(day?.clock_in_at && day?.clock_out_at)
-  const noPunches = Boolean(day && !day.clock_in_at && !day.clock_out_at)
   return (
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <h2 className="text-lg font-bold text-slate-900">
@@ -98,7 +97,7 @@ export default function AttendanceCorrectionsPanel({ scope, onPendingCountChange
       <p className="mt-1 mb-4 text-sm text-slate-500">
         {scope === 'team'
           ? 'Verify the actual working times and reason before deciding. Approval fills missing punches only; overtime requires its own approval.'
-          : 'At least one clock-in or clock-out must already exist on the work date. File only the missing punch after the shift ends; existing punches cannot be overwritten.'}
+          : 'File missing punches after the shift ends. Both punches can be corrected for an automatically recorded absence; existing punches cannot be overwritten.'}
       </p>
       <AttendanceDeadlines scope={scope} />
       {!loading && !error && scope === 'team' && <p className="mb-3 text-sm text-slate-500">{requests.length} pending requests shown (up to 200). Refresh after reviewing to load remaining requests.</p>}
@@ -129,8 +128,7 @@ export default function AttendanceCorrectionsPanel({ scope, onPendingCountChange
                 Scheduled: {formatPunch(day.expected_clock_in_at)} to {formatPunch(day.expected_clock_out_at)}.
                 Recorded: {formatPunch(day.clock_in_at)} to {formatPunch(day.clock_out_at)}.
               </p>
-              {noPunches ? <p role="alert" className="text-sm text-rose-700">At least one existing clock-in or clock-out is required for this work date. Contact HR.</p>
-                : complete ? <p role="status" className="text-sm">Both punches exist. No missing-punch correction is needed.</p> : (
+              {complete ? <p role="status" className="text-sm">Both punches exist. No missing-punch correction is needed.</p> : (
                 <form onSubmit={(event) => void submit(event)} className="grid gap-3 sm:grid-cols-2">
                   <label className="text-sm font-semibold">Actual clock-in (Philippine time)
                     <input type="datetime-local" required value={clockIn} readOnly={Boolean(day.clock_in_at)}

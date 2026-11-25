@@ -4,9 +4,11 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.attendance.application.clock import ph_today, utc_now
+from app.attendance.domain.automatic_absence import AUTO_ABSENCE_KEY
 from app.attendance.application.use_case import (
     PH_TIMEZONE,
     calculate_attendance_metrics,
@@ -42,6 +44,18 @@ from app.filemaintenance.schedule.infrastructure.db_model import (
 from app.filemaintenance.schedule.infrastructure.emergency_schedule_db_model import (
     EmergencyScheduleRequestModel,
 )
+
+
+def _blocks_emergency_schedule():
+    return or_(
+        AttendanceModel.is_absent.is_(False),
+        AttendanceModel.is_locked.is_(True),
+        AttendanceModel.clock_in_at.is_not(None),
+        AttendanceModel.corrected_clock_in_at.is_not(None),
+        AttendanceModel.clock_out_at.is_not(None),
+        AttendanceModel.corrected_clock_out_at.is_not(None),
+        ~func.coalesce(cast(AttendanceModel.punch_metadata, JSONB).has_key(AUTO_ABSENCE_KEY), False),
+    )
 
 
 @dataclass(frozen=True)
@@ -535,6 +549,7 @@ class SubmitEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
                     AttendanceModel.user_id == data.user_id,
                     AttendanceModel.work_date == data.work_date,
                     not_merged_source(),
+                    *(() if is_retroactive else (_blocks_emergency_schedule(),)),
                 )
             )
             if is_retroactive and attendance_id is None:
@@ -727,6 +742,7 @@ class ReviewEmergencyScheduleRequestUseCase(BaseUseCase[EmergencyScheduleRequest
                             AttendanceModel.user_id == request.requested_by,
                             AttendanceModel.work_date == request.work_date,
                             not_merged_source(),
+                            _blocks_emergency_schedule(),
                         )
                     )
                     if attendance_id is not None:

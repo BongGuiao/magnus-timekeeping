@@ -4,8 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
+from app.attendance.infrastructure import attendance_dashboard_router
 from app.attendance.application.admin_dashboard_use_cases import (
     GetAdminDashboardInput,
     GetAdminDashboardUseCase,
@@ -31,6 +32,8 @@ from app.attendance.infrastructure.attendance_dashboard_router import (
 from app.attendance.infrastructure.admin_dashboard_repository import (
     SqlAlchemyAdminDashboardRepository,
 )
+from app.auth.application.authorization import CurrentAuthorization
+from app.auth.infrastructure.dependencies import get_current_authorization_use_case, get_current_user_claims
 
 # Wednesday 2026-10-14 in Manila (UTC+8).
 NOW = datetime(2026, 10, 14, 4, tzinfo=timezone.utc)
@@ -399,13 +402,55 @@ class AdminDashboardRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.status_code, 422)
         use_case.execute.assert_not_awaited()
 
-    async def test_non_admin_or_unlinked_accounts_are_forbidden(self):
-        use_case = MagicMock(execute=AsyncMock())
-        for claims in ({"role": "user", "employee_id": str(uuid4())}, {"role": "admin"}):
-            with self.subTest(claims=claims), self.assertRaises(HTTPException) as error:
-                await get_admin_dashboard_snapshot(claims=claims, use_case=use_case)
-            self.assertEqual(error.exception.status_code, 403)
+    async def test_dashboard_requires_live_permissions_and_linked_employee(self):
+        user_id, employee_id = uuid4(), uuid4()
+        claims = {"sub": str(user_id), "employee_id": str(employee_id)}
+        authorization = MagicMock(execute=AsyncMock())
+        use_case = MagicMock(execute=AsyncMock(return_value=AdminDashboard(refreshed_at=NOW)))
+        app = FastAPI()
+        app.include_router(attendance_dashboard_router.router)
+        app.dependency_overrides.update({
+            get_current_user_claims: lambda: claims,
+            get_current_authorization_use_case: lambda: authorization,
+            attendance_dashboard_router.get_admin_dashboard_use_case: lambda: use_case,
+        })
+
+        async def request():
+            messages = []
+            delivered = False
+
+            async def receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                messages.append(message)
+
+            await app({
+                "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                "method": "GET", "scheme": "http", "path": "/admin-dashboard",
+                "raw_path": b"/admin-dashboard", "query_string": b"", "headers": [],
+                "server": ("test", 80), "client": ("test", 1234), "root_path": "",
+            }, receive, send)
+            return next(message["status"] for message in messages if message["type"] == "http.response.start")
+
+        permissions = ("leave.approve_team", "attendance.read_org")
+        for granted in ([], [permissions[0]], [permissions[1]]):
+            with self.subTest(granted=granted):
+                authorization.execute.return_value = CurrentAuthorization(["HR_ADMIN"], granted, None, employee_id)
+                self.assertEqual(await request(), 403)
+        claims.pop("employee_id")
+        authorization.execute.return_value = CurrentAuthorization(["HR_ADMIN"], list(permissions), None, None)
+        self.assertEqual(await request(), 403)
         use_case.execute.assert_not_awaited()
+
+        claims["employee_id"] = str(employee_id)
+        authorization.execute.return_value = CurrentAuthorization(["HR_ADMIN"], list(permissions), None, employee_id)
+        self.assertEqual(await request(), 200)
+        use_case.execute.assert_awaited_once()
 
     async def test_team_dashboard_requests_team_scoped_data(self):
         dashboard = AdminDashboard(refreshed_at=NOW)

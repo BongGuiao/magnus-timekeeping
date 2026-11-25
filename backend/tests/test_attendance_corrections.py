@@ -15,6 +15,7 @@ from app.attendance.domain.entities.overtime import OvertimeAttendance
 from app.attendance.infrastructure import correction_router as corrections
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel
+from app.auth.infrastructure.approval_routing_model import ApprovalRouteModel
 from app.core.database import AsyncSessionLocal, engine, init_db_models
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import EmployeeCutoffResultModel
@@ -69,6 +70,14 @@ class CorrectionValidationTests(unittest.TestCase):
             corrections._validate_missing(day(), payload())
         self.assertEqual(error.exception.status_code, 409)
         self.assertIn("At least one existing", error.exception.detail)
+
+    def test_both_missing_punches_allowed_for_automatic_absence(self):
+        record = day(punch_metadata={
+            "automatic_absence": {"recorded_at": START.isoformat()},
+            "schedule_context": {"ot_eligible": True},
+        })
+        corrections._validate_missing(record, payload())
+        self.assertFalse(recalculate_corrected_attendance(record, START, END)["is_absent"])
 
     def test_recalculation_keeps_ot_separate_and_uses_schedule_metrics(self):
         values = recalculate_corrected_attendance(day(), START + timedelta(minutes=30), END + timedelta(hours=2))
@@ -359,6 +368,10 @@ class CorrectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.session.add(request)
         await self.session.flush()
         await self.session.refresh(request)
+        self.session.add(ApprovalRouteModel(
+            resource_type="attendance_correction", resource_id=request.id, routing_mode="LEGACY",
+        ))
+        await self.session.flush()
         employee = await self.session.get(corrections.EmployeeModel, self.employee_id)
         output = corrections._output(request, employee)
         with self.assertRaises(HTTPException) as missing:
@@ -395,6 +408,23 @@ class CorrectionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         result = await self.session.scalar(select(EmployeeCutoffResultModel).where(EmployeeCutoffResultModel.cutoff_id == self.cutoff.id))
         self.assertEqual(result.payroll_status, "HOLD")
         self.assertIsNone(self.cutoff.calculation_version)
+
+    async def test_automatic_absence_allows_correction_of_both_punches(self):
+        record = AttendanceModel(
+            user_id=self.user_id, work_date=self.work_date, is_absent=True,
+            expected_clock_in_at=self.start, expected_clock_out_at=self.end,
+            punch_metadata={
+                "automatic_absence": {"recorded_at": self.start.isoformat()},
+                "schedule_context": {"ot_eligible": True},
+            },
+        )
+        self.session.add(record)
+        await self.session.flush()
+        request = await self.create()
+        await self.decide(request)
+        self.assertFalse(record.is_absent)
+        self.assertEqual(record.corrected_clock_in_at, self.start)
+        self.assertEqual(record.corrected_clock_out_at, self.end)
 
     async def test_existing_clock_out_is_preserved_when_clock_in_is_missing(self):
         record = AttendanceModel(

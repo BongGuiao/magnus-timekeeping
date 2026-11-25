@@ -308,6 +308,55 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.punch_metadata["schedule_context"]["early_clock_in_allowance_minutes"], 30)
         self.assertEqual(record.late_minutes, 0)
 
+    async def test_late_clock_in_clears_automatic_absence_on_same_record(self):
+        self.now = self.start + timedelta(minutes=75)
+        record = AttendanceEntity(
+            id=uuid4(), user_id=self.user_id, work_date=self.start.date(), is_absent=True,
+            expected_clock_in_at=self.start, expected_clock_out_at=self.start + timedelta(hours=9),
+            punch_metadata={"automatic_absence": {"recorded_at": self.now.isoformat()}},
+        )
+        self.attendance.find_all.side_effect = [[], [], [record]]
+        self.attendance.update = AsyncMock(side_effect=lambda updated: updated)
+        with patch(
+            "app.attendance.application.automatic_absence._payroll_is_open",
+            new=AsyncMock(return_value=True),
+        ):
+            result = await self.clock_in()
+        self.assertEqual(result.action, "clock_in")
+        self.assertFalse(record.is_absent)
+        self.assertEqual(record.clock_in_at, self.now.astimezone(timezone.utc))
+        self.assertEqual(record.late_minutes, 75)
+        self.assertEqual(record.punch_metadata["automatic_absence"]["clear_reason"], "clock_in")
+        self.attendance.add.assert_not_awaited()
+        self.attendance.update.assert_awaited_once()
+
+    async def test_overnight_late_clock_in_clears_previous_days_absence(self):
+        self.start = self.start.replace(hour=22)
+        self.now = self.start + timedelta(hours=3)
+        self.schedule = ScheduleDayConfiguration(
+            work_type="REG", expected_clock_in_at=self.start,
+            expected_clock_out_at=self.start + timedelta(hours=8),
+            schedule_template_id=self.template_id,
+            schedule_context={"ot_eligible": False},
+        )
+        self.use_case._resolve_schedule_day.return_value = self.schedule
+        record = AttendanceEntity(
+            id=uuid4(), user_id=self.user_id, work_date=self.start.date(), is_absent=True,
+            expected_clock_in_at=self.start, expected_clock_out_at=self.start + timedelta(hours=8),
+            punch_metadata={"automatic_absence": {"recorded_at": self.now.isoformat()}},
+        )
+        self.attendance.find_all.side_effect = [[], [], [record]]
+        self.attendance.update = AsyncMock(side_effect=lambda updated: updated)
+        with patch(
+            "app.attendance.application.automatic_absence._payroll_is_open",
+            new=AsyncMock(return_value=True),
+        ):
+            await self.clock_in()
+        self.assertEqual(record.work_date, self.start.date())
+        self.assertFalse(record.is_absent)
+        self.assertEqual(record.late_minutes, 180)
+        self.attendance.add.assert_not_awaited()
+
     async def test_flagged_clock_in_is_recorded_when_org_approver_is_missing(self):
         attendance_id = uuid4()
 
@@ -393,7 +442,7 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
             work_date=self.start.date() - timedelta(days=1),
             clock_in_at=self.now - timedelta(hours=22),
         )
-        self.attendance.find_all.side_effect = [[stale_attendance], []]
+        self.attendance.find_all.side_effect = [[stale_attendance], [], []]
 
         await self.clock_in()
 
@@ -408,7 +457,7 @@ class EarlyClockInUseCaseTests(unittest.IsolatedAsyncioTestCase):
             work_date=(self.now - timedelta(days=1)).date(),
             clock_in_at=self.now - timedelta(hours=22),
         )
-        self.attendance.find_all.side_effect = [[old], []]
+        self.attendance.find_all.side_effect = [[old], [], []]
         result = await self.clock_in(requested_action="clock_in")
         self.assertEqual(result.action, "clock_in")
         self.assertIsNone(old.clock_out_at)

@@ -17,6 +17,7 @@ from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.attendance.application.correction_calculation import recalculate_corrected_attendance
 from app.attendance.application.use_case import resolve_schedule_day
+from app.attendance.domain.automatic_absence import has_automatic_absence_marker
 from app.attendance.domain.entities.overtime import OvertimeAttendance
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
@@ -192,7 +193,10 @@ async def _day(session: AsyncSession, account: CorrectionAccount, work_date: dat
 
 
 def _require_existing_punch(day: OvertimeAttendance) -> None:
-    if day.effective_clock_in is None and day.effective_clock_out is None:
+    if (
+        day.effective_clock_in is None and day.effective_clock_out is None
+        and not has_automatic_absence_marker(day.punch_metadata)
+    ):
         raise HTTPException(status_code=409, detail="At least one existing clock-in or clock-out is required for this work date; contact HR.")
 
 
