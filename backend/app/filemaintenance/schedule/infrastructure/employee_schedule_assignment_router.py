@@ -1,6 +1,8 @@
-from datetime import date
+from datetime import date, datetime
+from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,9 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import get_current_user_claims, require_permission
+from app.auth.application.authorization import CurrentAuthorization, GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case, get_current_user_claims, require_any_permission, require_permission,
+)
 from app.core.audit_logging import stamp_audit_fields
 from app.core.generics.mapper import ResponseEnvelope
+from app.filemaintenance.employees.application.related_use_case import ListEmploymentAssignmentsUseCase
+from app.filemaintenance.employees.application.use_case import GetEmployeeUseCase
+from app.filemaintenance.employees.infrastructure.dependencies import (
+    get_employee_use_case, get_list_assignments_use_case,
+)
 from app.filemaintenance.schedule.application.employee_schedule_assignment_use_case import (
     ApproveEmployeeScheduleAssignmentUseCase,
     CreateEmployeeScheduleAssignmentUseCase,
@@ -22,23 +32,128 @@ from app.filemaintenance.schedule.application.employee_schedule_assignment_use_c
     ListEmployeeScheduleAssignmentsUseCase,
     UpdateEmployeeScheduleAssignmentUseCase,
 )
+from app.filemaintenance.schedule.application.rest_day_pattern_use_case import ListRestDayPatternsUseCase
+from app.filemaintenance.schedule.application.use_case import ListScheduleTemplatesUseCase
 from app.filemaintenance.schedule.domain.entities.employee_schedule_assignment import (
     EmployeeScheduleAssignmentEntity,
 )
+from app.filemaintenance.schedule.domain.entities.rest_day_pattern import RestDayPatternEntity
+from app.filemaintenance.schedule.domain.entities.schedule_template import ScheduleTemplateEntity
 from app.filemaintenance.schedule.infrastructure.dependencies import (
     get_approve_employee_schedule_assignment_use_case,
     get_create_employee_schedule_assignment_use_case,
     get_deactivate_employee_schedule_assignment_use_case,
     get_employee_schedule_assignment_use_case,
     get_list_employee_schedule_assignments_use_case,
+    get_list_rest_day_patterns_use_case,
+    get_list_schedule_templates_use_case,
     get_update_employee_schedule_assignment_use_case,
 )
 
 router = APIRouter(
     prefix="/employee-schedule-assignments",
     tags=["Employee Schedule Assignments"],
-    dependencies=[Depends(require_permission("schedule.manage"))],
+    dependencies=[Depends(require_any_permission("schedule.manage", "schedule.manage_team"))],
 )
+
+
+class TeamScheduleOptions(BaseModel):
+    has_current_assignment: bool
+    templates: list[ScheduleTemplateEntity]
+    patterns: list[RestDayPatternEntity]
+
+
+async def _schedule_authorization(
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> CurrentAuthorization:
+    return await use_case.execute(_actor_id(claims))
+
+
+async def _require_employee_scope(
+    employee_id: UUID,
+    claims: dict[str, Any],
+    authorization: CurrentAuthorization,
+    employees: GetEmployeeUseCase,
+) -> bool:
+    if "schedule.manage" in authorization.permission_codes and claims.get("role") == "admin":
+        return False
+    if (
+        "schedule.manage_team" not in authorization.permission_codes
+        or authorization.employee_id is None
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied.")
+    if await employees.execute(employee_id, authorization.employee_id) is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Employee is not a current direct report.")
+    return True
+
+
+async def _team_options(
+    employee_id: UUID,
+    employment: ListEmploymentAssignmentsUseCase,
+    assignments: ListEmployeeScheduleAssignmentsUseCase,
+    templates: ListScheduleTemplatesUseCase,
+    patterns: ListRestDayPatternsUseCase,
+) -> TeamScheduleOptions:
+    today = datetime.now(ZoneInfo("Asia/Manila")).date()
+    employment_rows = await employment.execute(employee_id)
+    current = next((row for row in employment_rows if row.is_active and row.status == "ACTIVE"
+                    and row.effective_from <= today
+                    and (row.effective_to is None or row.effective_to >= today)
+                    and (row.separation_date is None or row.separation_date >= today)), None)
+    if current is None:
+        return TeamScheduleOptions(has_current_assignment=False, templates=[], patterns=[])
+    existing = await assignments.execute(employee_id)
+    assigned_template_ids = {row.schedule_template_id for row in existing}
+    assigned_pattern_ids = {row.rest_day_pattern_id for row in existing if row.rest_day_pattern_id}
+    all_templates = await templates.execute(company_id=current.company_id, limit=1000)
+    allowed_templates = [row for row in all_templates
+                         if (row.is_active and row.status == "ACTIVE") or row.id in assigned_template_ids]
+    template_ids = {row.id for row in allowed_templates}
+    all_patterns = await patterns.execute(True)
+    allowed_patterns = [row for row in all_patterns if row.id in assigned_pattern_ids
+                        or all(day.schedule_template_id is None or day.schedule_template_id in template_ids
+                               for day in row.days)]
+    return TeamScheduleOptions(
+        has_current_assignment=True, templates=allowed_templates, patterns=allowed_patterns,
+    )
+
+
+@dataclass
+class TeamOptionsDependencies:
+    employment: ListEmploymentAssignmentsUseCase
+    assignments: ListEmployeeScheduleAssignmentsUseCase
+    templates: ListScheduleTemplatesUseCase
+    patterns: ListRestDayPatternsUseCase
+
+    async def get(self, employee_id: UUID) -> TeamScheduleOptions:
+        return await _team_options(
+            employee_id, self.employment, self.assignments, self.templates, self.patterns,
+        )
+
+
+def _options_dependencies(
+    employment: ListEmploymentAssignmentsUseCase = Depends(get_list_assignments_use_case),
+    assignments: ListEmployeeScheduleAssignmentsUseCase = Depends(get_list_employee_schedule_assignments_use_case),
+    templates: ListScheduleTemplatesUseCase = Depends(get_list_schedule_templates_use_case),
+    patterns: ListRestDayPatternsUseCase = Depends(get_list_rest_day_patterns_use_case),
+) -> TeamOptionsDependencies:
+    return TeamOptionsDependencies(employment, assignments, templates, patterns)
+
+
+async def _validate_team_options(
+    employee_id: UUID,
+    template_id: UUID | None,
+    pattern_id: UUID | None,
+    options: TeamOptionsDependencies,
+) -> None:
+    available = await options.get(employee_id)
+    if not available.has_current_assignment:
+        raise HTTPException(status_code=422, detail="No active employment assignment was found.")
+    if template_id is not None and template_id not in {item.id for item in available.templates}:
+        raise HTTPException(status_code=422, detail="Schedule template is not available for this employee.")
+    if pattern_id is not None and pattern_id not in {item.id for item in available.patterns}:
+        raise HTTPException(status_code=422, detail="Rest-day pattern is not available for this employee.")
 
 
 class CreateEmployeeScheduleAssignmentSchema(BaseModel):
@@ -146,9 +261,14 @@ async def create_employee_schedule_assignment(
         get_create_employee_schedule_assignment_use_case
     ),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
+    options: TeamOptionsDependencies = Depends(_options_dependencies),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
+    team = await _require_employee_scope(payload.employee_id, claims, authorization, employees)
+    if team:
+        await _validate_team_options(payload.employee_id, payload.schedule_template_id, payload.rest_day_pattern_id, options)
     values = stamp_audit_fields(payload.model_dump(mode="python"), actor_id, creating=True)
     try:
         result = await use_case.execute(values)
@@ -187,9 +307,16 @@ async def list_employee_schedule_assignments(
     use_case: ListEmployeeScheduleAssignmentsUseCase = Depends(
         get_list_employee_schedule_assignments_use_case
     ),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
+    if employee_id is None:
+        _require_admin(claims)
+        if "schedule.manage" not in authorization.permission_codes:
+            raise HTTPException(status_code=403, detail="Permission denied.")
+    else:
+        await _require_employee_scope(employee_id, claims, authorization, employees)
     result = await use_case.execute(
         employee_id,
         schedule_template_id,
@@ -203,6 +330,18 @@ async def list_employee_schedule_assignments(
     return ResponseEnvelope(status="success", data=result)
 
 
+@router.get("/team-options/{employee_id}", response_model=ResponseEnvelope[TeamScheduleOptions])
+async def get_team_schedule_options(
+    employee_id: UUID,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
+    options: TeamOptionsDependencies = Depends(_options_dependencies),
+):
+    await _require_employee_scope(employee_id, claims, authorization, employees)
+    return ResponseEnvelope(status="success", data=await options.get(employee_id))
+
+
 @router.get(
     "/{assignment_id}",
     response_model=ResponseEnvelope[EmployeeScheduleAssignmentEntity],
@@ -214,15 +353,17 @@ async def get_employee_schedule_assignment(
     use_case: GetEmployeeScheduleAssignmentUseCase = Depends(
         get_employee_schedule_assignment_use_case
     ),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
 ):
     _actor_id(claims)
-    _require_admin(claims)
     result = await use_case.execute(assignment_id)
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee schedule assignment not found.",
         )
+    await _require_employee_scope(result.employee_id, claims, authorization, employees)
     return ResponseEnvelope(status="success", data=result)
 
 
@@ -242,15 +383,22 @@ async def update_employee_schedule_assignment(
         get_employee_schedule_assignment_use_case
     ),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
+    options: TeamOptionsDependencies = Depends(_options_dependencies),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
     before = await get_use_case.execute(assignment_id)
     if before is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee schedule assignment not found.",
         )
+    team = await _require_employee_scope(before.employee_id, claims, authorization, employees)
+    if team:
+        if payload.employee_id is not None and payload.employee_id != before.employee_id:
+            raise HTTPException(status_code=403, detail="Cannot transfer a schedule assignment.")
+        await _validate_team_options(before.employee_id, payload.schedule_template_id, payload.rest_day_pattern_id, options)
     values = payload.model_dump(mode="python", exclude_unset=True)
     stamp_audit_fields(values, actor_id, creating=False)
     try:
@@ -282,6 +430,7 @@ async def update_employee_schedule_assignment(
     "/{assignment_id}/approve",
     response_model=ResponseEnvelope[EmployeeScheduleAssignmentEntity],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("schedule.manage"))],
 )
 async def approve_employee_schedule_assignment(
     assignment_id: UUID,
@@ -338,15 +487,17 @@ async def deactivate_employee_schedule_assignment(
         get_employee_schedule_assignment_use_case
     ),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+    authorization: CurrentAuthorization = Depends(_schedule_authorization),
+    employees: GetEmployeeUseCase = Depends(get_employee_use_case),
 ):
     actor_id = _actor_id(claims)
-    _require_admin(claims)
     before = await get_use_case.execute(assignment_id)
     if before is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Employee schedule assignment not found.",
         )
+    await _require_employee_scope(before.employee_id, claims, authorization, employees)
     result = await use_case.execute(assignment_id, actor_id)
     if result is None:
         raise HTTPException(

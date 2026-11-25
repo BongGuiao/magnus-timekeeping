@@ -229,12 +229,14 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
   const canManageRoles = hasPermission('system.manage')
   const canManagePayroll = hasPermission('payroll.manage')
   const canUploadSchedules = hasPermission('schedule.upload_team')
+  const canManageTeamSchedules = hasPermission('schedule.manage_team')
+  const canManageAllSchedules = localStorage.getItem('role') === 'admin' && hasPermission('schedule.manage')
   const visibleEmployeeTabs = employeeTabs.filter((tab) =>
-    (canManageEmployees || !canUploadSchedules || tab.id === 'details' || tab.id === 'schedule')
+    (canManageEmployees || !(canUploadSchedules || canManageTeamSchedules) || tab.id === 'details' || tab.id === 'schedule')
     && (tab.id !== 'entitlements' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'wfh' || localStorage.getItem('role') === 'admin')
     && (tab.id !== 'role' || (canManageRoles && Boolean(editingEmployee)))
-    && (tab.id !== 'schedule' || ((localStorage.getItem('role') === 'admin' || canUploadSchedules) && Boolean(editingEmployee))),
+    && (tab.id !== 'schedule' || ((canManageAllSchedules || canUploadSchedules || canManageTeamSchedules) && Boolean(editingEmployee))),
   )
 
   useEffect(() => {
@@ -335,7 +337,7 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
       }
       setEditingEmployee(fullEmployee)
       setEditingPersonalDetails(personalDetailsFormValues(personalDetails))
-      const initialTab = !canManageEmployees && canUploadSchedules ? 'schedule' : 'details'
+      const initialTab = !canManageEmployees && (canUploadSchedules || canManageTeamSchedules) ? 'schedule' : 'details'
       setActiveTab(initialTab)
       setVisitedEmployeeTabs(new Set(['details', initialTab]))
       setIsFormOpen(true)
@@ -1290,7 +1292,13 @@ export default function Employees({ employeeName, onNavigate, onLoggedOut }: Pro
                                 )}
                               </>
                             )}
-                            {localStorage.getItem('role') === 'admin' && <EmployeeScheduleAssignmentsPanel employee={editingEmployee} refreshVersion={scheduleRefreshVersion} />}
+                            {(canManageAllSchedules || canManageTeamSchedules) && (
+                              <EmployeeScheduleAssignmentsPanel
+                                employee={editingEmployee}
+                                refreshVersion={scheduleRefreshVersion}
+                                teamOnly={!canManageAllSchedules}
+                              />
+                            )}
                           </div>
                         )
                         : tab.id === 'wfh'

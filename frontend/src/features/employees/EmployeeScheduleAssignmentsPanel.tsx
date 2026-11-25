@@ -6,6 +6,7 @@ import {
   createEmployeeScheduleAssignment,
   deactivateEmployeeScheduleAssignment,
   fetchEmployeeScheduleAssignments,
+  fetchTeamScheduleOptions,
   updateEmployeeScheduleAssignment,
 } from '../../lib/employeeScheduleAssignmentApi'
 import type {
@@ -27,6 +28,7 @@ import type { Employee } from '../../types/employee'
 interface Props {
   employee: Employee | null
   refreshVersion?: number
+  teamOnly?: boolean
 }
 
 type AssignmentForm = Omit<EmployeeScheduleAssignmentPayload, 'employee_id'>
@@ -50,7 +52,7 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : 'Could not load employee schedule assignments.'
 }
 
-export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVersion = 0 }: Props) {
+export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVersion = 0, teamOnly = false }: Props) {
   const employeeId = employee?.id ?? ''
   const [assignments, setAssignments] = useState<EmployeeScheduleAssignment[]>([])
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([])
@@ -76,9 +78,31 @@ export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVers
     let current = true
     setIsLoading(true)
     setErrorMessage('')
+    if (teamOnly) {
+      setAssignments([])
+      setTemplates([])
+      setPatterns([])
+      setEditingId(null)
+      setForm(emptyAssignment())
+    }
     const refreshPanel = async () => {
       setIsLoading(true)
       try {
+        if (teamOnly) {
+          const [nextAssignments, options] = await Promise.all([
+            fetchEmployeeScheduleAssignments(employeeId),
+            fetchTeamScheduleOptions(employeeId),
+          ])
+          if (!current) return
+          setAssignments(nextAssignments)
+          setTemplates(options.templates)
+          setPatterns(options.patterns)
+          setHasCurrentEmploymentAssignment(options.has_current_assignment)
+          setErrorMessage(options.has_current_assignment
+            ? ''
+            : 'No active employment assignment was found. Contact HR before assigning a schedule.')
+          return
+        }
         const employmentAssignments = await fetchEmploymentAssignments(employeeId)
         const currentAssignment = employmentAssignments.find((assignment) => isCurrentEmploymentAssignment(assignment)) ?? null
         const [nextAssignments, nextTemplates, nextPatterns] = await Promise.all([
@@ -136,7 +160,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVers
       current = false
       window.removeEventListener(EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, refreshPanel)
     }
-  }, [employeeId, refreshVersion])
+  }, [employeeId, refreshVersion, teamOnly])
 
   if (!employee) {
     return (
@@ -285,7 +309,7 @@ export default function EmployeeScheduleAssignmentsPanel({ employee, refreshVers
                   </span>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right">
-                  {item.status !== 'APPROVED' && item.is_active && (
+                  {!teamOnly && item.status !== 'APPROVED' && item.is_active && (
                     <button type="button" disabled={workingId === item.id} onClick={() => void approve(item)} aria-label="Approve schedule assignment" className="rounded-md p-1.5 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
                       <Check className="h-3.5 w-3.5" />
                     </button>

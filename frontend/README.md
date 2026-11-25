@@ -1,5 +1,22 @@
 # React + TypeScript + Vite
 
+## Supervisor schedule assignments
+
+Supervisors with `schedule.manage_team` can open **People > Employees**, select
+a current direct report, and use **Schedule** to add, edit, or deactivate that
+employee's schedule assignments. The backend checks the current direct-report
+relationship for every operation; this permission does not grant access to
+other employees or schedule-template administration. Supervisors cannot use
+the assignment approval action. Company approval settings still govern new
+and edited assignments, while deactivation takes effect immediately.
+
+Deploy the backend and frontend together. For Alembic-managed installations,
+apply revision `e8f0a2b4c6d8` through `alembic upgrade head`; for installations
+using SQL scripts instead, apply
+[`20261125_supervisor_team_schedule_management.sql`](../backend/sql/20261125_supervisor_team_schedule_management.sql).
+Use the installation's existing migration mechanism, not both. Supervisors may
+need to sign in again to refresh their displayed permissions.
+
 ## Editing employee role assignments
 
 Under an employee's **Role** tab, **Edit assignment** allows changing org-unit

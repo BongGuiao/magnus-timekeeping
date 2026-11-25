@@ -1,6 +1,8 @@
 import { AxiosError } from 'axios'
 import { apiClient } from './apiClient'
 import type { ApiErrorEnvelope, ApiSuccessEnvelope } from '../types/auth'
+import type { RestDayPattern } from './restDayPatternApi'
+import type { ScheduleTemplate } from './scheduleTemplateApi'
 
 export interface EmployeeScheduleAssignment {
   id: string
@@ -32,6 +34,23 @@ export interface EmployeeScheduleAssignmentPayload {
   effective_from: string
   effective_to: string | null
   reason: string | null
+}
+
+export interface TeamScheduleOptions {
+  has_current_assignment: boolean
+  templates: ScheduleTemplate[]
+  patterns: RestDayPattern[]
+}
+
+export async function fetchTeamScheduleOptions(employeeId: string): Promise<TeamScheduleOptions> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<TeamScheduleOptions>>(
+      `/employee-schedule-assignments/team-options/${encodeURIComponent(employeeId)}`,
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load team schedule options.')
+  }
 }
 
 function rethrowApiError(error: unknown, fallback: string): never {
