@@ -955,6 +955,33 @@ locks the completed payroll. Apply
 The migration treats cutoffs already locked or past their attendance deadline as
 finalized to preserve existing cutoff behavior.
 
+## Rest-day work filing
+
+Employees can file **Rest-Day Work** on the web dashboard or in the mobile app
+after completing both punches. The request covers the whole elapsed interval
+without break deductions. One assigned approver may approve fewer minutes;
+approved minutes start at clock-in. The first 480 approved minutes are rest-day
+work and the remainder is rest-day overtime. Late and undertime do not apply.
+Night differential is calculated only for the approved interval. Only one
+pending or approved rest-day request is allowed per employee and work date;
+merge multiple attendance records before filing.
+
+Only approved rest-day requests contribute rest-day work, overtime, and night
+differential to recalculated cutoff totals. This also applies to existing
+attendance in open cutoffs, including previously calculated time totals.
+Finalized, locked, exported, and deadline-closed cutoffs cannot be filed or
+approved. Review existing open cutoffs and legacy rest-day overtime applications
+before deployment and recalculate affected time totals after approval. Closed
+cutoff results are not recalculated by this change.
+
+Configure the regular-holiday, double-holiday, and special-holiday rest-day
+work and overtime multipliers for each payroll group in **Earning Rules**.
+No rates are assumed or seeded; payroll holds when an applicable combined rate
+is missing. Existing night differential rates remain premium-only add-ons.
+Apply `backend/sql/20261125_rest_day_payroll.sql` before deploying, or upgrade
+Alembic through revision `f5b7d9e1a3c5` for Alembic-managed installations.
+Do not run both migration paths without coordinating the Alembic revision.
+
 ## Missing-punch attendance corrections
 
 ### Manual database backups

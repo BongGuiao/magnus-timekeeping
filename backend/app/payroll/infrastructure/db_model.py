@@ -82,7 +82,9 @@ class PayrollEarningRuleModel(Base):
             "component_code IN ("
             "'REGULAR', 'PAID_LEAVE', 'OFFICIAL_BUSINESS', 'REST_DAY', 'SPECIAL_DAY', "
             "'HOLIDAY', 'ORDINARY_OT', 'REST_DAY_OT', 'SPECIAL_DAY_OT', 'HOLIDAY_OT', "
-            "'NIGHT_REGULAR', 'NIGHT_OT', 'UNWORKED_HOLIDAY', 'UNWORKED_DOUBLE_HOLIDAY')",
+            "'NIGHT_REGULAR', 'NIGHT_OT', 'UNWORKED_HOLIDAY', 'UNWORKED_DOUBLE_HOLIDAY', "
+            "'HOLIDAY_REST', 'HOLIDAY_REST_OT', 'DOUBLE_HOLIDAY_REST', "
+            "'DOUBLE_HOLIDAY_REST_OT', 'SPECIAL_REST', 'SPECIAL_REST_OT')",
             name="ck_payroll_earning_rules_component",
         ),
         CheckConstraint("multiplier >= 0", name="ck_payroll_earning_rules_multiplier"),

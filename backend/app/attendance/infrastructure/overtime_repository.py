@@ -3,7 +3,7 @@ from datetime import date
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, true
+from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attendance.domain.entities.attendance_employee import AttendanceEmployee
@@ -167,10 +167,13 @@ class SqlAlchemyOvertimeRepository:
         self,
         employee_id: UUID,
         work_date: date,
+        *,
+        lock_for_update: bool = False,
     ) -> Optional[OvertimeCutoff]:
-        cutoff = await self._session.scalar(
-            current_overtime_cutoff_statement(employee_id, work_date)
-        )
+        statement = current_overtime_cutoff_statement(employee_id, work_date)
+        if lock_for_update:
+            statement = statement.with_for_update(of=PayrollCutoffModel)
+        cutoff = await self._session.scalar(statement)
         return _copy_fields(cutoff, OvertimeCutoff) if cutoff is not None else None
 
     async def list_completed_attendance_in_period(
@@ -193,6 +196,40 @@ class SqlAlchemyOvertimeRepository:
             )
         ).scalars().all()
         return [_copy_fields(row, OvertimeAttendance) for row in rows]
+
+    async def list_rest_day_attendance(self, user_id: UUID, employee_id: UUID) -> list[OvertimeAttendance]:
+        statement = (
+            select(AttendanceModel)
+            .where(
+                AttendanceModel.user_id == user_id,
+                AttendanceModel.work_type == "REST",
+                AttendanceModel.is_absent.is_(False),
+                AttendanceModel.record_status == "VALID",
+                AttendanceModel.is_locked.is_(False),
+                not_merged_source(),
+                exists(
+                    select(1)
+                    .select_from(EmploymentAssignmentModel)
+                    .join(PayrollCutoffModel, PayrollCutoffModel.payroll_group_id == EmploymentAssignmentModel.payroll_group_id)
+                    .where(
+                        EmploymentAssignmentModel.employee_id == employee_id,
+                        EmploymentAssignmentModel.is_active.is_(True),
+                        EmploymentAssignmentModel.status == "ACTIVE",
+                        EmploymentAssignmentModel.effective_from <= AttendanceModel.work_date,
+                        or_(EmploymentAssignmentModel.effective_to.is_(None), EmploymentAssignmentModel.effective_to >= AttendanceModel.work_date),
+                        or_(EmploymentAssignmentModel.separation_date.is_(None), EmploymentAssignmentModel.separation_date >= AttendanceModel.work_date),
+                        PayrollCutoffModel.is_active.is_(True),
+                        PayrollCutoffModel.period_start <= AttendanceModel.work_date,
+                        PayrollCutoffModel.period_end >= AttendanceModel.work_date,
+                    )
+                ),
+                func.coalesce(AttendanceModel.corrected_clock_in_at, AttendanceModel.clock_in_at).is_not(None),
+                func.coalesce(AttendanceModel.corrected_clock_out_at, AttendanceModel.clock_out_at)
+                > func.coalesce(AttendanceModel.corrected_clock_in_at, AttendanceModel.clock_in_at),
+            )
+            .order_by(AttendanceModel.work_date.desc(), AttendanceModel.id)
+        )
+        return [_copy_fields(row, OvertimeAttendance) for row in (await self._session.scalars(statement)).all()]
 
     async def list_employee_attendance_in_range(
         self,
@@ -300,6 +337,20 @@ class SqlAlchemyOvertimeRepository:
         await self._session.flush()
         await self._session.refresh(model)
         return _copy_fields(model, OvertimeApplication)
+
+    async def has_open_rest_day_application(
+        self, employee_id: UUID, work_date: date, exclude_application_id: Optional[UUID] = None
+    ) -> bool:
+        statement = select(OvertimeApplicationModel.id).where(
+            OvertimeApplicationModel.employee_id == employee_id,
+            OvertimeApplicationModel.attendance_date == work_date,
+            OvertimeApplicationModel.overtime_type == "REST_DAY_WORK",
+            OvertimeApplicationModel.is_active.is_(True),
+            OvertimeApplicationModel.status.in_(OPEN_APPLICATION_STATUSES),
+        )
+        if exclude_application_id is not None:
+            statement = statement.where(OvertimeApplicationModel.id != exclude_application_id)
+        return await self._session.scalar(statement.limit(1)) is not None
 
     async def assign_approver(
         self, application_id: UUID, employee_id: UUID, actor_id: UUID, on_date: date

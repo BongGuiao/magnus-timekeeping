@@ -10,6 +10,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    Index,
     JSON,
     Numeric,
     String,
@@ -238,6 +239,13 @@ class OvertimeApplicationModel(Base):
             name="ck_overtime_applications_final_not_above_approved",
         ),
         UniqueConstraint("application_no", name="uq_overtime_applications_application_no"),
+        Index(
+            "uq_rest_day_open_application", "employee_id", "attendance_date",
+            unique=True,
+            postgresql_where=text(
+                "is_active AND overtime_type = 'REST_DAY_WORK' AND status IN ('PENDING', 'APPROVED')"
+            ),
+        ),
         {"schema": "attendance"},
     )
 

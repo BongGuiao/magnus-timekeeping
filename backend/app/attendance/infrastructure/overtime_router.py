@@ -7,6 +7,7 @@ from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationUseCase,
     GetOvertimeAttendanceOptionsInput,
     GetOvertimeAttendanceOptionsUseCase,
+    GetRestDayAttendanceOptionsUseCase,
     ListMyOvertimeApplicationsInput,
     ListMyOvertimeApplicationsUseCase,
     ListPendingOvertimeApplicationsInput,
@@ -30,12 +31,14 @@ from app.attendance.infrastructure.dependencies import (
     get_list_my_overtime_applications_use_case,
     get_list_pending_overtime_applications_use_case,
     get_overtime_attendance_options_use_case,
+    get_rest_day_attendance_options_use_case,
     get_recalculate_attendance_range_use_case,
     get_supervisor_team_employees_use_case,
     get_submit_overtime_application_use_case,
     get_update_overtime_application_use_case,
 )
 from app.attendance.infrastructure.overtime_repository import SqlAlchemyOvertimeRepository
+from app.attendance.domain.overtime_rules import calculated_minutes
 from app.attendance.infrastructure.http_errors import http_errors as _http_errors
 from app.attendance.infrastructure.overtime_schemas import (
     OvertimeApplicationDecisionSchema,
@@ -109,8 +112,21 @@ def _attendance_item(record: OvertimeAttendance) -> RecentAttendanceItem:
         regular_overtime_minutes=record.regular_overtime_minutes,
         night_differential_overtime_minutes=record.night_differential_overtime_minutes,
         night_differential_minutes=record.night_differential_minutes,
+        rest_day_work_minutes=(
+            calculated_minutes(record, "REST_DAY_WORK") if record.work_type.upper() == "REST" else 0
+        ),
         status="present",
     )
+
+
+@router.get("/rest-day-attendance-options", response_model=ResponseEnvelope[list[RecentAttendanceItem]])
+async def get_rest_day_attendance_options(
+    claims: dict = Depends(require_permission("overtime.submit_own")),
+    use_case: GetRestDayAttendanceOptionsUseCase = Depends(get_rest_day_attendance_options_use_case),
+):
+    with _http_errors():
+        records = await use_case.execute(GetOvertimeAttendanceOptionsInput(user_id=_user_id(claims)))
+    return ResponseEnvelope(status="success", data=[_attendance_item(record) for record in records])
 
 
 @router.get("/overtime-attendance-options", response_model=ResponseEnvelope[OvertimeAttendanceOptionsSchema])

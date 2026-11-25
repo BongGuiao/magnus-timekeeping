@@ -325,6 +325,23 @@ class _OrgUnitAttendanceSummaryAccumulator:
     undertime_minutes: int = 0
 
 
+def _accumulate_approved_overtime(
+    bucket: _OrgUnitAttendanceSummaryAccumulator,
+    application: OvertimeApplicationModel,
+) -> None:
+    minutes = (
+        application.final_payable_minutes
+        if application.final_payable_minutes is not None
+        else application.supervisor_approved_minutes or 0
+    )
+    if application.overtime_type == "REST_DAY_WORK":
+        minutes = max(0, minutes - 480)
+        if not minutes:
+            return
+    bucket.overtime_ids.add(application.id)
+    bucket.approved_overtime_minutes += minutes
+
+
 def _employee_name(employee: EmployeeModel) -> str:
     preferred_name = employee.preferred_name.strip() if employee.preferred_name else ""
     return preferred_name or " ".join(
@@ -687,12 +704,7 @@ async def get_attendance_summary_by_org_unit(
         for application in overtime_rows:
             bucket = bucket_for(application.employee_id, application.attendance_date)
             bucket.employee_ids.add(application.employee_id)
-            bucket.overtime_ids.add(application.id)
-            bucket.approved_overtime_minutes += (
-                application.final_payable_minutes
-                if application.final_payable_minutes is not None
-                else application.supervisor_approved_minutes or 0
-            )
+            _accumulate_approved_overtime(bucket, application)
 
         business_rows = (
             await session.scalars(

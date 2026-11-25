@@ -32,6 +32,7 @@ class RecentAttendanceItem(BaseModel):
     calculated_ot_minutes: int = 0
     overtime_hours: float = 0
     regular_overtime_minutes: int = 0
+    rest_day_work_minutes: int = 0
     regular_overtime_hours: float = 0
     night_differential_overtime_minutes: int = 0
     night_differential_overtime_hours: float = 0

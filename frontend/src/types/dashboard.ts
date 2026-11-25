@@ -62,6 +62,7 @@ export type OvertimeApplicationType =
   | 'REGULAR_OVERTIME'
   | 'NIGHT_DIFFERENTIAL_OVERTIME'
   | 'NIGHT_DIFFERENTIAL'
+  | 'REST_DAY_WORK'
 
 export interface OvertimeApplicationEntry {
   id: string

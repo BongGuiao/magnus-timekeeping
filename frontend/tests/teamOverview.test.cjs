@@ -62,6 +62,7 @@ function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = 
       hasAnyPermission: (values) => values.some((permission) => permissions.includes(permission)),
     },
     '../lib/attendanceApi': { fetchSupervisorInvalidAttendance: async () => [], ...apiOverrides.attendance },
+    '../lib/employeeRelatedApi': { getManilaDate: () => '2026-11-25' },
     '../lib/leaveApi': { fetchSupervisorPendingLeaves: async () => [], formatLeaveBalance: () => '', ...apiOverrides.leave },
     '../lib/deviceApi': {}, '../lib/dashboardContentApi': {},
   }
@@ -105,6 +106,19 @@ test('compact overview displays counts and invokes accessible review actions', (
 const permissions = ['attendance.read_team', 'leave.approve_team', 'overtime.approve_team',
   'official_business.approve_team', 'attendance.approve_corrections_team']
 
+test('device review remains available to administrators but not in team dashboards', () => {
+  for (const role of ['supervisor', 'manager']) {
+    const { overview } = dashboard(role, permissions, true)()
+    assert.equal(overview.props.reviews.some((item) => item.id === 'devices'), false)
+  }
+  const render = dashboard('administrator', permissions, true)
+  const { overview } = render()
+  const devices = overview.props.reviews.find((item) => item.id === 'devices')
+  assert.ok(devices)
+  devices.onClick()
+  assert.match(render().html, /Pending device reviews/)
+})
+
 test('team categories retain distinct soft colors and emphasize the selected review', () => {
   const { overview } = dashboard('supervisor', permissions, true)()
   const tree = TeamOverview(overview.props)
@@ -126,8 +140,8 @@ for (const role of ['supervisor', 'manager']) {
     const { tree, overview, html } = dashboard(role, permissions)()
     assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id),
       ['leave', 'invalid', 'overtime', 'ob', 'correction', ...(role === 'supervisor' ? ['locations'] : [])])
-    assert.equal(overview.props.metrics.length, 3)
-    assert.equal(overview.props.metrics[0].label, 'Recorded absences')
+    assert.equal(overview.props.metrics.length, 4)
+    assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').label, 'Recorded absences')
     assert.ok(!html.includes('Missing clock-in'))
     assert.ok(!html.includes('data-component="HeroBanner"'))
     assert.ok(!html.includes('Pending Team Leave'))
@@ -143,12 +157,12 @@ test('permission-limited team dashboard omits ungranted metrics and approval act
   assert.equal(overview.props.metrics.length, 0)
   assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id), ['overtime'])
   const adminPreview = dashboard('supervisor', permissions, true)().overview
-  assert.ok(adminPreview.props.reviews.some((item) => item.id === 'devices'))
+  assert.ok(!adminPreview.props.reviews.some((item) => item.id === 'devices'))
 })
 
 test('switching every review category keeps only the selected review open; clicking again closes it', async () => {
   const render = dashboard('supervisor', permissions, true)
-  for (const id of ['leave', 'invalid', 'overtime', 'ob', 'correction', 'devices', 'locations']) {
+  for (const id of ['leave', 'invalid', 'overtime', 'ob', 'correction', 'locations']) {
     render().overview.props.reviews.find((item) => item.id === id).onClick()
     await new Promise((resolve) => setImmediate(resolve))
     const open = render().overview.props.reviews.filter((item) => item.open)
@@ -183,7 +197,7 @@ test('team hours participates in exclusive panels through both hours buttons', (
     () => render().overview.props.metrics.find((item) => item.id === 'hours').onClick(),
     () => find(render().tree, (node) => node.type === 'button' && node.props['aria-controls'] === 'team-hours-this-week').props.onClick(),
   ]) {
-    for (const id of ['leave', 'invalid', 'overtime', 'ob', 'correction', 'devices', 'locations', 'missing-in', 'missing-out']) {
+    for (const id of ['leave', 'invalid', 'overtime', 'ob', 'correction', 'locations', 'missing-in', 'missing-out']) {
       clickHours()
       assert.equal(find(render().tree, (node) => node.props?.id === 'team-hours-this-week').props.hidden, false)
       assert.equal(find(render().tree, (node) => node.props?.['aria-label'] === 'Team hours details').props.hidden, false)

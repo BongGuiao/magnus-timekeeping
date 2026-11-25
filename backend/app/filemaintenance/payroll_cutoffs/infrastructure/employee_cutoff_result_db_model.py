@@ -112,6 +112,12 @@ class EmployeeCutoffResultModel(Base):
         nullable=False,
         server_default=text("0"),
     )
+    holiday_rest_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
+    holiday_rest_ot_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
+    double_holiday_rest_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
+    double_holiday_rest_ot_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
+    special_rest_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
+    special_rest_ot_minutes: Mapped[int] = mapped_column(PositiveMinutes(), nullable=False, server_default=text("0"))
     night_regular_minutes: Mapped[int] = mapped_column(
         PositiveMinutes(),
         nullable=False,

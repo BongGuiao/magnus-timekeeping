@@ -66,7 +66,9 @@ function approvedOvertimeMinutes(record: AttendanceDetailReportRecord): number {
     (total, overtime) =>
       total
       + (overtime.status === 'APPROVED'
-        ? overtime.payable_minutes ?? overtime.approved_minutes ?? 0
+        ? overtime.overtime_type === 'REST_DAY_WORK'
+          ? Math.max(0, (overtime.payable_minutes ?? overtime.approved_minutes ?? 0) - 480)
+          : overtime.payable_minutes ?? overtime.approved_minutes ?? 0
         : 0),
     0,
   )
@@ -545,6 +547,9 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                     </td>
                     <td className="break-words px-4 py-3">
                       <div className="line-clamp-2">{record.schedule_code ?? '—'}</div>
+                      {record.work_type === 'REST' && record.clock_in_at && (
+                        <div className="text-xs text-slate-500">Start: {formatTime(record.clock_in_at)} (actual clock-in)</div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="line-clamp-2 whitespace-nowrap">
@@ -616,7 +621,14 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                         {record.worked_minutes != null && record.worked_minutes > 0 && (
                           <div className="whitespace-nowrap">{formatHours(record.worked_minutes)} worked</div>
                         )}
-                        {(record.late_minutes > 0 || record.undertime_minutes > 0) && (
+                        {record.overtime_applications.filter((application) =>
+                          application.overtime_type === 'REST_DAY_WORK' && application.status === 'APPROVED',
+                        ).map((application) => (
+                          <div key={application.application_no} className="whitespace-nowrap">
+                            Rest-day work {formatHours(Math.min(480, application.payable_minutes ?? application.approved_minutes ?? 0))}
+                          </div>
+                        ))}
+                        {record.work_type !== 'REST' && (record.late_minutes > 0 || record.undertime_minutes > 0) && (
                           <div className="whitespace-nowrap text-xs">
                             {record.late_minutes > 0 && (
                               <span className="font-semibold text-rose-700">
@@ -635,7 +647,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                     </td>
                     <td className="px-4 py-3">
                       <div className="line-clamp-2 text-xs">
-                        {(record.regular_overtime_minutes > 0
+                        {record.work_type !== 'REST' && (record.regular_overtime_minutes > 0
                           || record.night_differential_overtime_minutes > 0) && (
                           <div className="whitespace-nowrap">
                             {record.regular_overtime_minutes > 0 && (
@@ -653,14 +665,14 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                             )}
                           </div>
                         )}
-                        {(record.night_differential_minutes > 0 || approvedOvertimeMinutes(record) > 0) && (
+                        {((record.work_type !== 'REST' && record.night_differential_minutes > 0) || approvedOvertimeMinutes(record) > 0) && (
                           <div className="whitespace-nowrap">
-                            {record.night_differential_minutes > 0 && (
+                            {record.work_type !== 'REST' && record.night_differential_minutes > 0 && (
                               <span className="font-semibold text-emerald-700">
                                 Night diff {formatHours(record.night_differential_minutes)}
                               </span>
                             )}
-                            {record.night_differential_minutes > 0 && approvedOvertimeMinutes(record) > 0 && ' · '}
+                            {record.work_type !== 'REST' && record.night_differential_minutes > 0 && approvedOvertimeMinutes(record) > 0 && ' · '}
                             {approvedOvertimeMinutes(record) > 0 && (
                               <>
                                 Approved OT{' '}
@@ -680,7 +692,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                           (leave) => `${leave.leave_type} · ${leave.status} · paid ${formatHours(leave.paid_minutes)} · unpaid ${formatHours(leave.unpaid_minutes)}`,
                         ),
                         ...record.overtime_applications.map(
-                          (overtime) => `Overtime · ${overtime.status} · approved ${formatHours(overtime.approved_minutes)} · payable ${formatHours(overtime.payable_minutes)}`,
+                          (overtime) => `${overtime.overtime_type === 'REST_DAY_WORK' ? 'Rest-day work' : 'Overtime'} · ${overtime.status} · approved ${formatHours(overtime.approved_minutes)} · payable ${formatHours(overtime.payable_minutes)}`,
                         ),
                         ...record.official_business_requests.map(
                           (business) => `Official business · ${business.status} · approved ${formatHours(business.approved_minutes)} · credited ${formatHours(business.credited_minutes)} · ${formatTime(business.start_at)}–${formatTime(business.end_at)}`,
@@ -704,7 +716,7 @@ function AttendanceDetailReport({ employeeName, onNavigate, onLoggedOut }: Props
                           ? record.overtime_applications.map((overtime) => (
                             <div key={overtime.application_no}>
                               <div>
-                                <span className="font-medium">Overtime</span> · {overtime.status}
+                                <span className="font-medium">{overtime.overtime_type === 'REST_DAY_WORK' ? 'Rest-day work' : 'Overtime'}</span> · {overtime.status}
                               </div>
                               <div className="text-xs text-slate-500">
                                 Approved {formatHours(overtime.approved_minutes)} · Payable {formatHours(overtime.payable_minutes)}

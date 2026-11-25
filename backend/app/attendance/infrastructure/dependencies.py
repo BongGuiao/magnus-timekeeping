@@ -27,6 +27,7 @@ from app.attendance.application.supervisor_attendance_location_use_cases import 
 from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationUseCase,
     GetOvertimeAttendanceOptionsUseCase,
+    GetRestDayAttendanceOptionsUseCase,
     ListMyOvertimeApplicationsUseCase,
     ListPendingOvertimeApplicationsUseCase,
     RecalculateAttendanceRangeUseCase,
@@ -99,6 +100,11 @@ def get_overtime_attendance_options_use_case(
     return GetOvertimeAttendanceOptionsUseCase(
         uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client),
     )
+
+def get_rest_day_attendance_options_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> GetRestDayAttendanceOptionsUseCase:
+    return GetRestDayAttendanceOptionsUseCase(uow)
 
 
 def get_recalculate_attendance_range_use_case(

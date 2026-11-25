@@ -53,6 +53,12 @@ export interface EmployeeCutoffResult {
   special_day_ot_minutes: number
   holiday_minutes: number
   holiday_ot_minutes: number
+  holiday_rest_minutes: number
+  holiday_rest_ot_minutes: number
+  double_holiday_rest_minutes: number
+  double_holiday_rest_ot_minutes: number
+  special_rest_minutes: number
+  special_rest_ot_minutes: number
   night_regular_minutes: number
   night_ot_minutes: number
   official_business_minutes: number

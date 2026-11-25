@@ -1023,12 +1023,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     open: isCorrectionApprovalOpen, controls: 'supervisor-attendance-corrections',
     onClick: () => toggleTeamReview(isCorrectionApprovalOpen, () => setIsCorrectionApprovalOpen(true)),
   })
-  if (isAdmin) teamReviews.push({
-    id: 'devices', label: 'Devices',
-    value: isLoadingDevices ? '…' : deviceError ? 'Unavailable' : hasLoadedDevices ? pendingDevices.length : '—',
-    open: isPendingListOpen,
-    onClick: () => toggleTeamReview(isPendingListOpen, () => setIsPendingListOpen(true)),
-  })
   if (role === 'supervisor' && hasSupervisorRoleCode && canReviewTeamAttendance) teamReviews.push({
     id: 'locations', label: 'Team punch locations',
     open: isTeamLocationsOpen, controls: 'team-punch-locations',
@@ -1086,6 +1080,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   if (hasPermission('overtime.submit_own')) employeeActions.push({
     id: 'overtime', label: 'Apply for Overtime', open: false,
     onClick: () => onNavigate?.('overtime-application'),
+  })
+  if (hasPermission('overtime.submit_own')) employeeActions.push({
+    id: 'rest-day', label: 'File Rest-Day Work', open: false,
+    onClick: () => onNavigate?.('rest-day-application'),
   })
   if (hasPermission('official_business.submit_own')) employeeActions.push({
     id: 'ob', label: 'File Official Business', open: false,
@@ -1145,10 +1143,16 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   })
   if (isAdmin) {
     const adminReviewItems: TeamOverviewItem[] = teamReviews
-      .filter((item) => ['devices', 'overtime', 'ob', 'leave', 'correction'].includes(item.id))
+      .filter((item) => ['overtime', 'ob', 'leave', 'correction'].includes(item.id))
       .map((item) => item.id === 'leave'
         ? { ...item, id: 'assigned-leave', label: 'Assigned leave approvals' }
         : item)
+    adminReviewItems.push({
+      id: 'devices', label: 'Devices',
+      value: isLoadingDevices ? '…' : deviceError ? 'Unavailable' : hasLoadedDevices ? pendingDevices.length : '—',
+      open: isPendingListOpen,
+      onClick: () => toggleTeamReview(isPendingListOpen, () => setIsPendingListOpen(true)),
+    })
     if (canResolveAttendanceExceptions) {
       const deviceIndex = adminReviewItems.findIndex((item) => item.id === 'devices')
       adminReviewItems.splice(deviceIndex < 0 ? adminReviewItems.length : deviceIndex, 0, {
@@ -1774,7 +1778,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           </section>
         )}
 
-        {isAdmin && role !== 'employee' && isPendingListOpen && (
+        {isAdmin && role === 'administrator' && isPendingListOpen && (
           <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
               <div>

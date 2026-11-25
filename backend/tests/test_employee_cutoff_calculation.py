@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import date, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -344,7 +345,7 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
             ],
             leaves=[],
             overtime=[
-                OvertimeFact(employee_id, date(2026, 10, 1), 30, "REGULAR_OVERTIME", "REST", "REG"),
+                OvertimeFact(employee_id, date(2026, 10, 1), 510, "REST_DAY_WORK", "REST", "REG", 120),
                 OvertimeFact(employee_id, date(2026, 10, 2), 45, "REGULAR_OVERTIME", "REG", "RH"),
                 OvertimeFact(employee_id, date(2026, 10, 2), 60, "NIGHT_DIFFERENTIAL_OVERTIME", "REG", "RH"),
             ],
@@ -362,6 +363,36 @@ class EmployeeCutoffCalculationTests(unittest.TestCase):
         self.assertEqual(totals[0].night_ot_minutes, 60)
         self.assertEqual(totals[0].exception_count, 2)
         self.assertEqual(totals[0].required_work_minutes, 0)
+
+    def test_rest_day_approval_splits_without_double_counting_and_classifies_holidays(self) -> None:
+        employee_id = uuid4()
+        work_date = date(2026, 10, 1)
+        record = AttendanceFact(
+            employee_id=employee_id, work_date=work_date, is_absent=False,
+            approved_hours_worked=12, approved_night_diff=2, scheduled_minutes=480,
+            work_type="REST", day_type="REG", late_minutes=10, undertime_minutes=20,
+        )
+        for day_type, base_field, excess_field in (
+            ("REG", "rest_day_minutes", "rest_day_ot_minutes"),
+            ("RH", "holiday_rest_minutes", "holiday_rest_ot_minutes"),
+            ("DBL", "double_holiday_rest_minutes", "double_holiday_rest_ot_minutes"),
+            ("SNW", "special_rest_minutes", "special_rest_ot_minutes"),
+        ):
+            for approved, base, excess in ((0, 0, 0), (479, 479, 0), (480, 480, 0), (481, 480, 1), (717, 480, 237)):
+                with self.subTest(day_type=day_type, approved=approved):
+                    requests = [] if not approved else [
+                        OvertimeFact(employee_id, work_date, approved, "REST_DAY_WORK", "REST", day_type)
+                    ]
+                    total = calculate_employee_cutoff_totals(
+                        [employee_id], [replace(record, day_type=day_type)], [], requests, [], [],
+                        work_date, work_date,
+                    )[0]
+                    self.assertEqual(getattr(total, base_field), base)
+                    self.assertEqual(getattr(total, excess_field), excess)
+                    self.assertEqual(total.late_minutes, 0)
+                    self.assertEqual(total.undertime_minutes, 0)
+                    self.assertEqual(total.night_regular_minutes, 0)
+                    self.assertEqual(total.paid_days, 1 if approved else 0)
 
     def test_excludes_rest_and_nonworking_holidays_from_schedule_requirements(self) -> None:
         employee_id = uuid4()

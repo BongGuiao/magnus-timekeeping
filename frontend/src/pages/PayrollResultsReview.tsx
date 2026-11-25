@@ -49,6 +49,12 @@ function ResultTable({ rows }: { rows: EmployeeCutoffResult[] }) {
             <th className="px-3 py-3">Special day OT</th>
             <th className="px-3 py-3">Holiday</th>
             <th className="px-3 py-3">Holiday OT</th>
+            <th className="px-3 py-3">Regular holiday rest</th>
+            <th className="px-3 py-3">Regular holiday rest OT</th>
+            <th className="px-3 py-3">Double holiday rest</th>
+            <th className="px-3 py-3">Double holiday rest OT</th>
+            <th className="px-3 py-3">Special holiday rest</th>
+            <th className="px-3 py-3">Special holiday rest OT</th>
             <th className="px-3 py-3">Night regular</th>
             <th className="px-3 py-3">Night OT</th>
             <th className="px-3 py-3">Exceptions</th>
@@ -84,6 +90,12 @@ function ResultTable({ rows }: { rows: EmployeeCutoffResult[] }) {
                 <td className="px-3 py-3">{formatMinutes(row.special_day_ot_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.holiday_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.holiday_ot_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.holiday_rest_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.holiday_rest_ot_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.double_holiday_rest_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.double_holiday_rest_ot_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.special_rest_minutes)}</td>
+                <td className="px-3 py-3">{formatMinutes(row.special_rest_ot_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.night_regular_minutes)}</td>
                 <td className="px-3 py-3">{formatMinutes(row.night_ot_minutes)}</td>
                 <td className="px-3 py-3">{row.exception_count}</td>

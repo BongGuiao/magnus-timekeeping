@@ -6,6 +6,7 @@ from app.attendance.domain.entities.overtime import (
     NIGHT_DIFFERENTIAL,
     NIGHT_DIFFERENTIAL_OVERTIME,
     REGULAR_OVERTIME,
+    REST_DAY_WORK,
     OvertimeApplication,
     OvertimeAttendance,
     OvertimeCutoff,
@@ -64,6 +65,15 @@ def validate_application_period(
 
 
 def calculated_minutes(attendance: OvertimeAttendance, overtime_type: str) -> int:
+    if overtime_type == REST_DAY_WORK:
+        if attendance.work_type.upper() != "REST" or attendance.is_absent:
+            raise RuleViolationError("Rest-day work can only be filed for a rest day.")
+        start, end = attendance.effective_clock_in, attendance.effective_clock_out
+        if start is None or end is None or end <= start:
+            raise RuleViolationError("The attendance record has no valid completed punch interval.")
+        return int((end - start).total_seconds() // 60)
+    if attendance.work_type.upper() == "REST":
+        raise RuleViolationError("Use the rest-day work filing for rest-day attendance.")
     return {
         REGULAR_OVERTIME: attendance.regular_overtime_minutes,
         NIGHT_DIFFERENTIAL_OVERTIME: attendance.night_differential_overtime_minutes,
@@ -90,6 +100,13 @@ def resolve_requested_period(
     actual_end = attendance.effective_clock_out
     if actual_start is None or actual_end is None:
         raise RuleViolationError("The attendance record has no valid completed punch interval.")
+    if overtime_type == REST_DAY_WORK:
+        if (
+            (requested_start_at is not None and requested_start_at != actual_start)
+            or (requested_end_at is not None and requested_end_at != actual_end)
+        ):
+            raise RuleViolationError("Rest-day work must cover the entire punched interval.")
+        return actual_start, actual_end
     if requested_start_at is not None and requested_end_at is not None:
         return requested_start_at, requested_end_at
     if overtime_type == NIGHT_DIFFERENTIAL:

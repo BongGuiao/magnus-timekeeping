@@ -71,7 +71,7 @@ export default function EarningRulesManagement({ payrollGroupId, payrollGroupLab
         <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-xl font-bold text-slate-900">Earning multipliers</h2>
-            <p className="mt-1 text-sm text-slate-500">{payrollGroupLabel}. Configure every component before calculating gross pay.</p>
+            <p className="mt-1 text-sm text-slate-500">{payrollGroupLabel}. Configure standard components and any applicable holiday/rest-day rates before calculating gross pay.</p>
           </div>
           <span className={`rounded-full px-3 py-1.5 text-xs font-bold ${configuredCount === payrollComponentCodes.length ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}>
             {configuredCount} / {payrollComponentCodes.length} configured

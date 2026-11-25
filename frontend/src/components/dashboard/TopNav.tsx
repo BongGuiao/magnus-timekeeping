@@ -91,6 +91,7 @@ export type NavView =
   | 'employee-entitlements'
   | 'leave-application'
   | 'overtime-application'
+  | 'rest-day-application'
   | 'official-business'
   | 'change-password'
   | 'reset-password'
@@ -203,6 +204,7 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   'employee-entitlements': BadgeCheck,
   'leave-application': FileClock,
   'overtime-application': Clock3,
+  'rest-day-application': Clock3,
   'official-business': BriefcaseBusiness,
 }
 
@@ -381,6 +383,7 @@ const additionalViewLabels: Partial<Record<NavView, string>> = {
   'schedule-upload-approvals': 'Schedule Approvals',
   'emergency-schedule-approvals': 'Emergency Schedule Approvals',
   'overtime-application': 'Overtime Application',
+  'rest-day-application': 'Rest-Day Work',
   'official-business': 'Official Business',
 }
 

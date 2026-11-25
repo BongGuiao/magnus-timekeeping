@@ -9,8 +9,9 @@ from app.attendance.domain.entities.attendance_employee import AttendanceEmploye
 REGULAR_OVERTIME = "REGULAR_OVERTIME"
 NIGHT_DIFFERENTIAL_OVERTIME = "NIGHT_DIFFERENTIAL_OVERTIME"
 NIGHT_DIFFERENTIAL = "NIGHT_DIFFERENTIAL"
+REST_DAY_WORK = "REST_DAY_WORK"
 
-OvertimeType = Literal["REGULAR_OVERTIME", "NIGHT_DIFFERENTIAL_OVERTIME", "NIGHT_DIFFERENTIAL"]
+OvertimeType = Literal["REGULAR_OVERTIME", "NIGHT_DIFFERENTIAL_OVERTIME", "NIGHT_DIFFERENTIAL", "REST_DAY_WORK"]
 
 
 @dataclass
@@ -23,6 +24,7 @@ class OvertimeCutoff:
     employee_filing_deadline: datetime | None = None
     attendance_finalized_at: datetime | None = None
     status: str = "SCHEDULED"
+    export_batch_id: UUID | None = None
 
 
 @dataclass
@@ -30,6 +32,9 @@ class OvertimeAttendance:
     id: UUID
     user_id: UUID
     work_date: date
+    work_type: str = "REG"
+    day_type: str = "REG"
+    is_absent: bool = False
     schedule_template_id: Optional[UUID] = None
     record_status: str = "VALID"
     is_locked: bool = False

@@ -16,12 +16,22 @@ PAY_COMPONENT_MINUTES = {
     "REST_DAY_OT": "rest_day_ot_minutes",
     "SPECIAL_DAY_OT": "special_day_ot_minutes",
     "HOLIDAY_OT": "holiday_ot_minutes",
+    "HOLIDAY_REST": "holiday_rest_minutes",
+    "HOLIDAY_REST_OT": "holiday_rest_ot_minutes",
+    "DOUBLE_HOLIDAY_REST": "double_holiday_rest_minutes",
+    "DOUBLE_HOLIDAY_REST_OT": "double_holiday_rest_ot_minutes",
+    "SPECIAL_REST": "special_rest_minutes",
+    "SPECIAL_REST_OT": "special_rest_ot_minutes",
     "NIGHT_REGULAR": "night_regular_minutes",
     "NIGHT_OT": "night_ot_minutes",
     "UNWORKED_HOLIDAY": "unworked_holiday_minutes",
     "UNWORKED_DOUBLE_HOLIDAY": "unworked_double_holiday_minutes",
 }
 PAY_COMPONENT_CODES = tuple(PAY_COMPONENT_MINUTES)
+COMBINED_REST_CODES = frozenset({
+    "HOLIDAY_REST", "HOLIDAY_REST_OT", "DOUBLE_HOLIDAY_REST",
+    "DOUBLE_HOLIDAY_REST_OT", "SPECIAL_REST", "SPECIAL_REST_OT",
+})
 # Unworked regular-holiday pay is already part of a monthly salary.
 UNWORKED_HOLIDAY_CODES = ("UNWORKED_HOLIDAY", "UNWORKED_DOUBLE_HOLIDAY")
 MONTHLY_EARNING_CODES = tuple(
@@ -315,8 +325,11 @@ def calculate_gross_pay(
     missing_rules = sorted(
         code
         for code in set(PAY_COMPONENT_CODES) - earning_rules.keys()
-        if code not in UNWORKED_HOLIDAY_CODES
-        or (policy.rate_type != "MONTHLY" and source_minutes[code] > 0)
+        if (
+            (code not in UNWORKED_HOLIDAY_CODES and code not in COMBINED_REST_CODES)
+            or (code in COMBINED_REST_CODES and source_minutes[code] > 0)
+            or (code in UNWORKED_HOLIDAY_CODES and policy.rate_type != "MONTHLY" and source_minutes[code] > 0)
+        )
     )
     if missing_rules:
         return GrossPayResult(
@@ -392,6 +405,7 @@ def calculate_gross_pay(
                 ).quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP),
             )
             for code in MONTHLY_EARNING_CODES
+            if code in earning_rules
         )
         lines = salary_lines + earnings
     else:

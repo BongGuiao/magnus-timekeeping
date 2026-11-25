@@ -14,6 +14,7 @@ from app.payroll.domain.entities.gross_payroll import (
     compensation_period_basis,
     monthly_compensation_basis,
 )
+from app.payroll.infrastructure.router import EarningRuleWriteSchema, GrossPayLineSchema
 
 
 class GrossPayrollTests(unittest.TestCase):
@@ -70,6 +71,25 @@ class GrossPayrollTests(unittest.TestCase):
         }
         params.update(overrides)
         return calculate_gross_pay(**params)
+
+    def test_combined_rest_day_rules_are_required_only_when_minutes_are_present(self) -> None:
+        rules = {code: rule for code, rule in self.rules.items() if code != "DOUBLE_HOLIDAY_REST_OT"}
+        self.assertEqual(self.calculate(earning_rules=rules).status, "READY")
+        time = replace(self.time, component_minutes={"double_holiday_rest_ot_minutes": 60})
+        held = self.calculate(time=time, earning_rules=rules)
+        self.assertEqual(held.status, "HOLD")
+        self.assertIn("DOUBLE_HOLIDAY_REST_OT", held.hold_reason)
+        rules["DOUBLE_HOLIDAY_REST_OT"] = EarningRule("DOUBLE_HOLIDAY_REST_OT", Decimal("3"))
+        result = self.calculate(time=time, earning_rules=rules)
+        self.assertEqual(result.status, "READY")
+        line = next(line for line in result.lines if line.component_code == "DOUBLE_HOLIDAY_REST_OT")
+        self.assertEqual((line.minutes, line.amount), (60, Decimal("30.00")))
+        payload = EarningRuleWriteSchema(
+            payroll_group_id=self.payroll_group_id, component_code="DOUBLE_HOLIDAY_REST_OT",
+            multiplier=Decimal("3"),
+        )
+        self.assertEqual(payload.component_code, "DOUBLE_HOLIDAY_REST_OT")
+        self.assertEqual(GrossPayLineSchema.model_validate(line).minutes, 60)
 
     def test_compensation_bases_use_configured_annual_divisor(self) -> None:
         for rate_type, base_rate, half_basis, month_basis in (

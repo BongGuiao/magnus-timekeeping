@@ -11,6 +11,7 @@ interface Props {
 }
 
 const applicationLabels: Record<OvertimeApplicationType, string> = {
+  REST_DAY_WORK: 'Rest-day work',
   REGULAR_OVERTIME: 'Regular OT',
   NIGHT_DIFFERENTIAL_OVERTIME: 'Night OT',
   NIGHT_DIFFERENTIAL: 'Night Diff',

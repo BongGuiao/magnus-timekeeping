@@ -17,6 +17,7 @@ SPECIAL_DAY_TYPES = {"SNW", "SWH", "LOC", "COM"}
 HOLIDAY_DAY_TYPES = {"RH", "DBL"}
 REGULAR_OVERTIME = "REGULAR_OVERTIME"
 NIGHT_DIFFERENTIAL_OVERTIME = "NIGHT_DIFFERENTIAL_OVERTIME"
+REST_DAY_WORK = "REST_DAY_WORK"
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,8 @@ class OvertimeFact:
     overtime_type: str
     work_type: str
     day_type: str
+    rest_night_regular_minutes: int = 0
+    rest_night_ot_minutes: int = 0
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,12 @@ class EmployeeCutoffTotals:
     special_day_ot_minutes: int = 0
     holiday_minutes: int = 0
     holiday_ot_minutes: int = 0
+    holiday_rest_minutes: int = 0
+    holiday_rest_ot_minutes: int = 0
+    double_holiday_rest_minutes: int = 0
+    double_holiday_rest_ot_minutes: int = 0
+    special_rest_minutes: int = 0
+    special_rest_ot_minutes: int = 0
     night_regular_minutes: int = 0
     night_ot_minutes: int = 0
     official_business_minutes: int = 0
@@ -186,6 +195,12 @@ class EmployeeCutoffResultEntity:
     operational_group: str | None = None
     attendance_finalized_at: datetime | None = None
     cutoff_locked_at: datetime | None = None
+    holiday_rest_minutes: int = 0
+    holiday_rest_ot_minutes: int = 0
+    double_holiday_rest_minutes: int = 0
+    double_holiday_rest_ot_minutes: int = 0
+    special_rest_minutes: int = 0
+    special_rest_ot_minutes: int = 0
 
 
 def _hours_to_minutes(hours: float | None) -> int:
@@ -233,7 +248,13 @@ def _add_classified_minutes(
     minutes = max(minutes, 0)
     day_type = day_type.upper()
     work_type = work_type.upper()
-    if day_type in HOLIDAY_DAY_TYPES:
+    if work_type == "REST" and day_type == "RH":
+        field_name = "holiday_rest_ot_minutes" if overtime else "holiday_rest_minutes"
+    elif work_type == "REST" and day_type == "DBL":
+        field_name = "double_holiday_rest_ot_minutes" if overtime else "double_holiday_rest_minutes"
+    elif work_type == "REST" and day_type in SPECIAL_DAY_TYPES:
+        field_name = "special_rest_ot_minutes" if overtime else "special_rest_minutes"
+    elif day_type in HOLIDAY_DAY_TYPES:
         field_name = "holiday_ot_minutes" if overtime else "holiday_minutes"
     elif day_type in SPECIAL_DAY_TYPES:
         field_name = "special_day_ot_minutes" if overtime else "special_day_minutes"
@@ -328,10 +349,12 @@ def calculate_employee_cutoff_totals(
             if requires_work:
                 current.absence_minutes += max(record.scheduled_minutes, 0)
         else:
-            current.present_dates.add(record.work_date)
-            if record.approved_hours_worked is None:
+            is_rest = record.work_type.upper() == "REST"
+            if not is_rest:
+                current.present_dates.add(record.work_date)
+            if record.approved_hours_worked is None and not is_rest:
                 current.incomplete_time_source_count += 1
-            if record.approved_hours_worked is None:
+            if is_rest or record.approved_hours_worked is None:
                 worked_minutes = 0
             elif requires_work:
                 worked_minutes = scheduled_work_minutes(
@@ -346,9 +369,9 @@ def calculate_employee_cutoff_totals(
             _add_classified_minutes(current, worked_minutes, record.work_type, record.day_type)
             night_minutes = max(_hours_to_minutes(record.approved_night_diff), 0)
             current.night_regular_minutes += (
-                min(night_minutes, worked_minutes) if requires_work else night_minutes
+                0 if is_rest else min(night_minutes, worked_minutes) if requires_work else night_minutes
             )
-        if not record.schedule_credited:
+        if not record.schedule_credited and record.work_type.upper() != "REST":
             current.late_minutes += max(record.late_minutes, 0)
             current.undertime_minutes += max(record.undertime_minutes, 0)
         coverage = shift_coverage(
@@ -474,7 +497,16 @@ def calculate_employee_cutoff_totals(
         if current is None or not period_start <= request.attendance_date <= period_end:
             continue
         minutes = max(request.payable_minutes, 0)
-        if request.overtime_type == NIGHT_DIFFERENTIAL_OVERTIME:
+        if request.overtime_type == REST_DAY_WORK and request.work_type.upper() == "REST":
+            if minutes > 0:
+                current.present_dates.add(request.attendance_date)
+            _add_classified_minutes(current, min(minutes, 480), request.work_type, request.day_type)
+            _add_classified_minutes(current, max(minutes - 480, 0), request.work_type, request.day_type, overtime=True)
+            current.night_regular_minutes += request.rest_night_regular_minutes
+            current.night_ot_minutes += request.rest_night_ot_minutes
+        elif request.work_type.upper() == "REST":
+            continue
+        elif request.overtime_type == NIGHT_DIFFERENTIAL_OVERTIME:
             current.night_ot_minutes += minutes
         elif request.overtime_type == REGULAR_OVERTIME:
             _add_classified_minutes(

@@ -12,6 +12,7 @@ from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationUseCase,
     GetOvertimeAttendanceOptionsInput,
     GetOvertimeAttendanceOptionsUseCase,
+    GetRestDayAttendanceOptionsUseCase,
     ListPendingOvertimeApplicationsInput,
     RecalculateAttendanceRangeInput,
     RecalculateAttendanceRangeUseCase,
@@ -135,7 +136,7 @@ class FakeOvertimeRepository:
     async def get_current_cutoff(self, employee_id, today):
         return self.cutoff
 
-    async def get_cutoff_for_employee_on_date(self, employee_id, work_date):
+    async def get_cutoff_for_employee_on_date(self, employee_id, work_date, *, lock_for_update=False):
         return self.cutoff
 
     async def list_completed_attendance_in_period(self, user_id, period_start, period_end):
@@ -177,6 +178,14 @@ class FakeOvertimeRepository:
         application.id = uuid4()
         self.applications.append(application)
         return application
+
+    async def has_open_rest_day_application(self, employee_id, work_date, exclude_application_id=None):
+        return any(
+            app.employee_id == employee_id and app.attendance_date == work_date
+            and app.overtime_type == "REST_DAY_WORK" and app.status in rules.OPEN_APPLICATION_STATUSES
+            and app.id != exclude_application_id
+            for app in self.applications
+        )
 
     async def assign_approver(self, application_id, employee_id, actor_id, on_date):
         self.assigned_approvals.append((application_id, employee_id, actor_id, on_date))
@@ -413,6 +422,36 @@ class SubmitOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuleViolationError, "calculated 120 minutes"):
             await self.submit(requested_minutes=121)
 
+    async def test_rest_day_requests_entire_corrected_interval_including_breaks(self):
+        self.attendance.work_type = "REST"
+        self.attendance.meal_break_out_at = datetime(2026, 10, 12, 4, tzinfo=timezone.utc)
+        self.attendance.meal_break_in_at = datetime(2026, 10, 12, 5, tzinfo=timezone.utc)
+        record = await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=600)
+        self.assertEqual(record.application.requested_start_at, self.attendance.corrected_clock_in_at)
+        self.assertEqual(record.application.requested_end_at, self.attendance.corrected_clock_out_at)
+        self.assertEqual(record.application.potential_ot_minutes, 600)
+        with self.assertRaisesRegex(ConflictError, "active application"):
+            await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=600)
+
+    async def test_rest_day_rejects_partial_interval_and_non_rest_attendance(self):
+        with self.assertRaisesRegex(RuleViolationError, "only be filed for a rest day"):
+            await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=600)
+        self.attendance.work_type = "REST"
+        with self.assertRaisesRegex(ConflictError, "entire punched interval"):
+            await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=480)
+        with self.assertRaisesRegex(RuleViolationError, "Use the rest-day"):
+            await self.submit()
+
+    async def test_rest_day_rejects_exported_or_locked_attendance(self):
+        self.attendance.work_type = "REST"
+        self.cutoff.export_batch_id = uuid4()
+        with self.assertRaisesRegex(ConflictError, "exported"):
+            await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=600)
+        self.cutoff.export_batch_id = None
+        self.attendance.is_locked = True
+        with self.assertRaisesRegex(ConflictError, "Locked attendance"):
+            await self.submit(overtime_type="REST_DAY_WORK", requested_minutes=600)
+
     async def test_http_router_translates_domain_errors(self):
         payload = OvertimeApplicationInputSchema(
             overtime_type="REGULAR_OVERTIME", requested_minutes=30, reason="Finished work",
@@ -621,6 +660,50 @@ class DecideOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RecordNotFoundError):
             await self.decide()
 
+    async def test_rest_day_approval_allows_partial_and_detects_changed_punches(self):
+        self.attendance.work_type = "REST"
+        self.application.overtime_type = "REST_DAY_WORK"
+        self.application.requested_start_at = self.attendance.corrected_clock_in_at
+        self.application.requested_end_at = self.attendance.corrected_clock_out_at
+        self.application.requested_minutes = 600
+        self.repository.cutoff = OvertimeCutoff("OCT-1", date(2026, 10, 1), date(2026, 10, 15))
+        record = await self.decide(minutes=481)
+        self.assertEqual(record.application.final_payable_minutes, 481)
+        self.application.status = "PENDING"
+        self.attendance.corrected_clock_out_at += timedelta(minutes=1)
+        with self.assertRaisesRegex(RuleViolationError, "entire punched interval"):
+            await self.decide(minutes=481)
+
+    async def test_rest_day_approval_rejects_finalized_or_exported_cutoff(self):
+        self.attendance.work_type = "REST"
+        self.application.overtime_type = "REST_DAY_WORK"
+        self.repository.cutoff = OvertimeCutoff(
+            "OCT-1", date(2026, 10, 1), date(2026, 10, 15), attendance_finalized_at=NOW,
+        )
+        with self.assertRaisesRegex(ConflictError, "finalized"):
+            await self.decide()
+        self.repository.cutoff.attendance_finalized_at = None
+        self.repository.cutoff.export_batch_id = uuid4()
+        with self.assertRaisesRegex(ConflictError, "exported"):
+            await self.decide()
+
+    async def test_partial_rest_day_approval_limits_night_differential_to_approved_prefix(self):
+        ph = timezone(timedelta(hours=8))
+        start = datetime(2026, 10, 12, 18, tzinfo=ph)
+        end = datetime(2026, 10, 13, 6, tzinfo=ph)
+        self.attendance.work_type = "REST"
+        self.attendance.corrected_clock_in_at = start
+        self.attendance.corrected_clock_out_at = end
+        self.application.overtime_type = "REST_DAY_WORK"
+        self.application.requested_start_at = start
+        self.application.requested_end_at = end
+        self.application.requested_minutes = 720
+        self.repository.cutoff = OvertimeCutoff("OCT-1", date(2026, 10, 1), date(2026, 10, 15))
+        await self.decide(minutes=600)
+        self.assertEqual(self.attendance.approved_night_differential_minutes, 360)
+        self.assertEqual(self.attendance.approved_night_differential_overtime_minutes, 120)
+        self.assertEqual(self.attendance.approved_ot_worked, 2)
+
 
 class OvertimeAttendanceOptionsTests(unittest.IsolatedAsyncioTestCase):
     def use_case(self, repository):
@@ -630,6 +713,16 @@ class OvertimeAttendanceOptionsTests(unittest.IsolatedAsyncioTestCase):
             MagicMock(record=AsyncMock()),
             clock=lambda: NOW,
         )
+
+    async def test_rest_day_options_include_open_but_exclude_exported_cutoffs(self):
+        cutoff = OvertimeCutoff("OCT-1", date(2026, 10, 1), date(2026, 10, 15))
+        attendance = make_attendance(work_type="REST")
+        repository = FakeOvertimeRepository(attendance, cutoff=cutoff)
+        repository.list_rest_day_attendance = AsyncMock(return_value=[attendance])
+        use_case = GetRestDayAttendanceOptionsUseCase(FakeUnitOfWork(repository), clock=lambda: NOW)
+        self.assertEqual(await use_case.execute(GetOvertimeAttendanceOptionsInput(user_id=attendance.user_id)), [attendance])
+        cutoff.export_batch_id = uuid4()
+        self.assertEqual(await use_case.execute(GetOvertimeAttendanceOptionsInput(user_id=attendance.user_id)), [])
 
     async def test_options_return_every_record_in_the_current_cutoff(self):
         cutoff = OvertimeCutoff("OCT-1", date(2026, 10, 1), date(2026, 10, 15))

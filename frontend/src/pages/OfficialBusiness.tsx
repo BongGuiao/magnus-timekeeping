@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
+import DateTimeFields from '../components/common/DateTimeFields'
 import { Briefcase, LoaderCircle, Pencil, Save, Send, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -257,12 +258,10 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
           <form onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void save(true) }} className="mt-5">
             <fieldset disabled={disabled} className="grid gap-4 sm:grid-cols-2">
               <legend className="sr-only">Official business details</legend>
-              <label className="text-xs font-semibold text-slate-700">Start date and time
-                <input required type="datetime-local" value={form.startAt} onChange={(event) => update('startAt', event.target.value)} className={inputClass} />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">End date and time
-                <input required type="datetime-local" min={form.startAt || undefined} value={form.endAt} onChange={(event) => update('endAt', event.target.value)} className={inputClass} />
-              </label>
+              <DateTimeFields label="Start" value={form.startAt}
+                onChange={(value) => update('startAt', value)} className={inputClass} />
+              <DateTimeFields label="End" min={form.startAt} value={form.endAt}
+                onChange={(value) => update('endAt', value)} className={inputClass} />
               <label className="text-xs font-semibold text-slate-700 sm:col-span-2">Destination
                 <input required maxLength={300} value={form.destination} onChange={(event) => update('destination', event.target.value)} placeholder="e.g. ACME Corp. head office, Makati City" className={inputClass} />
               </label>

@@ -35,6 +35,12 @@ const result = {
   special_day_ot_minutes: 0,
   holiday_minutes: 0,
   holiday_ot_minutes: 0,
+  holiday_rest_minutes: 120,
+  holiday_rest_ot_minutes: 30,
+  double_holiday_rest_minutes: 0,
+  double_holiday_rest_ot_minutes: 0,
+  special_rest_minutes: 60,
+  special_rest_ot_minutes: 0,
   night_regular_minutes: 120,
   night_ot_minutes: 0,
   official_business_minutes: 60,
@@ -49,6 +55,9 @@ test('payroll cutoff results CSV includes cutoff metadata and the displayed time
   assert.ok(csv.includes('01 ADMIN — Admin Group'))
   assert.ok(csv.includes('"Warren, Philip"'))
   assert.ok(csv.includes(',10,9,9.00,0.25,0.00,1.00,0.50,0.00,1.50'))
+  assert.ok(csv.includes('Regular holiday rest day (hours)'))
+  assert.ok(csv.includes(',2.00,0.50,0.00,0.00,1.00,0.00,'))
+  assert.ok(!csv.includes('NaN'))
   assert.ok(csv.includes('2,READY'))
   assert.match(csv, /\r\n$/)
 })

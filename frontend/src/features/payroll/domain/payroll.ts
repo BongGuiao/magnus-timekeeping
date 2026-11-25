@@ -9,6 +9,12 @@ export type PayrollComponentCode =
   | 'REST_DAY_OT'
   | 'SPECIAL_DAY_OT'
   | 'HOLIDAY_OT'
+  | 'HOLIDAY_REST'
+  | 'HOLIDAY_REST_OT'
+  | 'DOUBLE_HOLIDAY_REST'
+  | 'DOUBLE_HOLIDAY_REST_OT'
+  | 'SPECIAL_REST'
+  | 'SPECIAL_REST_OT'
   | 'NIGHT_REGULAR'
   | 'NIGHT_OT'
   | 'UNWORKED_HOLIDAY'
@@ -433,6 +439,12 @@ export const payrollComponentCodes: PayrollComponentCode[] = [
   'REST_DAY_OT',
   'SPECIAL_DAY_OT',
   'HOLIDAY_OT',
+  'HOLIDAY_REST',
+  'HOLIDAY_REST_OT',
+  'DOUBLE_HOLIDAY_REST',
+  'DOUBLE_HOLIDAY_REST_OT',
+  'SPECIAL_REST',
+  'SPECIAL_REST_OT',
   'NIGHT_REGULAR',
   'NIGHT_OT',
   'UNWORKED_HOLIDAY',
@@ -450,6 +462,12 @@ export const payrollComponentLabels: Record<PayrollComponentCode, string> = {
   REST_DAY_OT: 'Rest-day overtime',
   SPECIAL_DAY_OT: 'Special-day overtime',
   HOLIDAY_OT: 'Holiday overtime',
+  HOLIDAY_REST: 'Regular holiday on rest day',
+  HOLIDAY_REST_OT: 'Regular holiday on rest day overtime',
+  DOUBLE_HOLIDAY_REST: 'Double holiday on rest day',
+  DOUBLE_HOLIDAY_REST_OT: 'Double holiday on rest day overtime',
+  SPECIAL_REST: 'Special holiday on rest day',
+  SPECIAL_REST_OT: 'Special holiday on rest day overtime',
   NIGHT_REGULAR: 'Night differential',
   NIGHT_OT: 'Night overtime differential',
   UNWORKED_HOLIDAY: 'Unworked regular holiday',

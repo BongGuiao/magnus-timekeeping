@@ -26,6 +26,7 @@ import Announcements from './pages/Announcements'
 import EmployeeEntitlements from './pages/EmployeeEntitlements'
 import LeaveApplication from './pages/LeaveApplication'
 import OvertimeApplication from './pages/OvertimeApplication'
+import RestDayApplication from './pages/RestDayApplication'
 import OfficialBusiness from './pages/OfficialBusiness'
 import PayrollGroups from './pages/PayrollGroups'
 import PayrollCutoffs from './pages/PayrollCutoffs'
@@ -72,7 +73,7 @@ const navViews: NavView[] = [
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
   'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
-  'overtime-application', 'official-business', 'change-password', 'reset-password', 'database-backup', 'my-schedule', 'schedule-uploads',
+  'overtime-application', 'rest-day-application', 'official-business', 'change-password', 'reset-password', 'database-backup', 'my-schedule', 'schedule-uploads',
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
 ]
@@ -298,6 +299,7 @@ function App() {
       'employee-entitlements': 'leave.manage',
       'leave-application': 'leave.submit',
       'overtime-application': 'overtime.submit_own',
+      'rest-day-application': 'overtime.submit_own',
       'official-business': 'official_business.submit_own',
     }
     const requiredPermission = requiredPermissionByView[view]
@@ -577,6 +579,13 @@ function App() {
           onLoggedOut={logout}
         />
       )
+    }
+
+    if (view === 'rest-day-application') {
+      if (getSelectedDashboardRole() !== 'employee') {
+        return <Dashboard employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+      }
+      return <RestDayApplication employeeName={employeeName} previewOnly={!hasEmployeeRoleCode()} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'overtime-application') {

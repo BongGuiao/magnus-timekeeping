@@ -22,11 +22,15 @@ class OvertimeRepository(Protocol):
         self,
         employee_id: UUID,
         work_date: date,
+        *,
+        lock_for_update: bool = False,
     ) -> Optional[OvertimeCutoff]: ...
 
     async def list_completed_attendance_in_period(
         self, user_id: UUID, period_start: date, period_end: date
     ) -> list[OvertimeAttendance]: ...
+
+    async def list_rest_day_attendance(self, user_id: UUID, employee_id: UUID) -> list[OvertimeAttendance]: ...
 
     async def list_employee_attendance_in_range(
         self,
@@ -54,6 +58,10 @@ class OvertimeRepository(Protocol):
         attendance_id: UUID,
         overtime_type: Optional[str] = None,
         exclude_application_id: Optional[UUID] = None,
+    ) -> bool: ...
+
+    async def has_open_rest_day_application(
+        self, employee_id: UUID, work_date: date, exclude_application_id: Optional[UUID] = None
     ) -> bool: ...
 
     async def add_application(self, application: OvertimeApplication) -> OvertimeApplication: ...

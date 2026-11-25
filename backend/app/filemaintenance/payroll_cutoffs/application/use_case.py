@@ -9,6 +9,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.attendance.application.use_case import (
+    calculate_night_differential_minutes,
     resolve_attendance_day_type,
     resolve_schedule_day,
 )
@@ -1126,8 +1127,8 @@ class CalculateEmployeeCutoffResultsUseCase:
                 overtime_result = await session.execute(
                     select(
                         OvertimeApplicationModel,
-                        AttendanceModel.work_type,
-                        AttendanceModel.day_type,
+                        AttendanceModel,
+                        not_merged_source().label("is_canonical"),
                     )
                     .join(
                         AttendanceModel,
@@ -1141,17 +1142,49 @@ class CalculateEmployeeCutoffResultsUseCase:
                         OvertimeApplicationModel.is_active.is_(True),
                     )
                 )
-                overtime_facts = [
-                    OvertimeFact(
+                for application, record, is_canonical in overtime_result.all():
+                    if application.overtime_type == "REST_DAY_WORK":
+                        actual_start = record.corrected_clock_in_at or record.clock_in_at
+                        actual_end = record.corrected_clock_out_at or record.clock_out_at
+                        if (
+                            record.record_status != "VALID"
+                            or not is_canonical
+                            or record.is_absent
+                            or record.work_type.upper() != "REST"
+                            or application.requested_start_at != actual_start
+                            or application.requested_end_at != actual_end
+                            or application.attendance_date != record.work_date
+                            or application.final_payable_minutes is None
+                            or application.final_payable_minutes > application.requested_minutes
+                        ):
+                            raise ValueError(
+                                f"Approved rest-day application {application.application_no} no longer matches "
+                                "the attendance record. Contact HR before recalculating payroll."
+                            )
+                    overtime_facts.append(OvertimeFact(
                         employee_id=application.employee_id,
                         attendance_date=application.attendance_date,
                         payable_minutes=application.final_payable_minutes or 0,
                         overtime_type=application.overtime_type,
-                        work_type=work_type,
-                        day_type=day_type,
-                    )
-                    for application, work_type, day_type in overtime_result.all()
-                ]
+                        work_type=record.work_type,
+                        day_type=record.day_type,
+                        rest_night_regular_minutes=(
+                            calculate_night_differential_minutes(
+                                actual_clock_in_at=application.requested_start_at,
+                                actual_clock_out_at=application.requested_start_at + timedelta(
+                                    minutes=min(application.final_payable_minutes or 0, 480)
+                                ),
+                            ) if application.overtime_type == "REST_DAY_WORK" else 0
+                        ),
+                        rest_night_ot_minutes=(
+                            calculate_night_differential_minutes(
+                                actual_clock_in_at=application.requested_start_at + timedelta(minutes=480),
+                                actual_clock_out_at=application.requested_start_at + timedelta(
+                                    minutes=application.final_payable_minutes or 0
+                                ),
+                            ) if application.overtime_type == "REST_DAY_WORK" else 0
+                        ),
+                    ))
 
                 business_result = await session.scalars(
                     select(OfficialBusinessRequestModel).where(
@@ -1263,6 +1296,12 @@ class CalculateEmployeeCutoffResultsUseCase:
                 result.special_day_ot_minutes = total.special_day_ot_minutes
                 result.holiday_minutes = total.holiday_minutes
                 result.holiday_ot_minutes = total.holiday_ot_minutes
+                result.holiday_rest_minutes = total.holiday_rest_minutes
+                result.holiday_rest_ot_minutes = total.holiday_rest_ot_minutes
+                result.double_holiday_rest_minutes = total.double_holiday_rest_minutes
+                result.double_holiday_rest_ot_minutes = total.double_holiday_rest_ot_minutes
+                result.special_rest_minutes = total.special_rest_minutes
+                result.special_rest_ot_minutes = total.special_rest_ot_minutes
                 result.night_regular_minutes = total.night_regular_minutes
                 result.night_ot_minutes = total.night_ot_minutes
                 result.official_business_minutes = total.official_business_minutes

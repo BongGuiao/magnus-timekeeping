@@ -11,12 +11,19 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.attendance.application.use_case import assign_invalid_attendance_approver
+from app.attendance.application.overtime_use_cases import (
+    DecideOvertimeApplicationInput, DecideOvertimeApplicationUseCase,
+    GetOvertimeAttendanceOptionsInput, GetRestDayAttendanceOptionsUseCase,
+    SubmitOvertimeApplicationInput, SubmitOvertimeApplicationUseCase,
+)
 from app.attendance.infrastructure.admin_dashboard_repository import SqlAlchemyAdminDashboardRepository
 from app.attendance.infrastructure.attendance_review_repository import SqlAlchemyAttendanceReviewRepository
 from app.attendance.infrastructure import approval_routing_router, attendance_report_router, correction_router, official_business_router
 from app.attendance.infrastructure.correction_db_model import AttendanceCorrectionModel
 from app.attendance.infrastructure.db_model import AttendanceModel, OfficialBusinessRequestModel, OvertimeApplicationModel
 from app.attendance.infrastructure.overtime_repository import SqlAlchemyOvertimeRepository
+from app.attendance.infrastructure.unit_of_work import SqlAlchemyAttendanceUnitOfWork
+from app.attendance.domain.exceptions import ConflictError
 from app.auth.infrastructure.approval_routing import (
     ORG_UNIT_MANAGER_APPROVAL_PERMISSIONS,
     ApprovalRoutingError,
@@ -40,6 +47,7 @@ from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
 from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollCutoffModel
+from app.filemaintenance.payroll_cutoffs.application.use_case import CalculateEmployeeCutoffResultsUseCase
 from app.filemaintenance.payroll_groups.infrastructure.db_model import PayrollGroupModel
 from app.filemaintenance.roles.infrastructure.db_model import UserRoleModel
 from app.filemaintenance.schedule.domain.entities.schedule_upload import NewScheduleUploadBatch, ScheduleUploadBatchRow
@@ -168,6 +176,73 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "parent_org_unit_id": unit.parent_org_unit_id,
             "manager_employee_id": unit.manager_employee_id,
         }
+
+    async def test_rest_day_filing_routes_approval_and_posts_disjoint_holiday_minutes(self):
+        prefix = uuid4().hex[:8]
+        group = PayrollGroupModel(
+            id=uuid4(), company_id=self.company_id, payroll_group_code=f"RD-{prefix}",
+            payroll_group_name="Rest-day test", pay_frequency="SEMIMONTHLY", rate_type="MONTHLY",
+        )
+        self.session.add(group)
+        await self.session.flush()
+        self.assignment.payroll_group_id = group.id
+        cutoff = PayrollCutoffModel(
+            id=uuid4(), payroll_group_id=group.id, cutoff_code=f"RD-{prefix}",
+            period_start=TODAY - timedelta(days=1), period_end=TODAY + timedelta(days=1),
+            pay_date=TODAY + timedelta(days=5),
+        )
+        start = datetime(2026, 11, 4, 10, tzinfo=timezone.utc)
+        attendance = AttendanceModel(
+            id=uuid4(), user_id=self.users["worker"].id, work_date=TODAY,
+            work_type="REST", day_type="DBL", record_status="VALID",
+            clock_in_at=start, clock_out_at=start + timedelta(hours=12),
+            approved_hours_worked=12, approved_night_diff=8,
+        )
+        self.session.add_all([cutoff, attendance])
+        await self.session.flush()
+        attendance_uow = SqlAlchemyAttendanceUnitOfWork(SessionUnitOfWork(self.session))
+        now = lambda: start + timedelta(hours=13)
+        refresher = unittest.mock.MagicMock()
+        audit = unittest.mock.MagicMock(record=AsyncMock())
+        options = await GetRestDayAttendanceOptionsUseCase(attendance_uow, clock=now).execute(
+            GetOvertimeAttendanceOptionsInput(self.users["worker"].id)
+        )
+        self.assertEqual([item.id for item in options], [attendance.id])
+        submit = SubmitOvertimeApplicationUseCase(attendance_uow, refresher, audit, clock=now)
+        request = await submit.execute(SubmitOvertimeApplicationInput(
+            user_id=self.users["worker"].id, attendance_id=attendance.id,
+            overtime_type="REST_DAY_WORK", requested_minutes=720, reason="Synthetic rest-day work",
+        ))
+        self.assertEqual(request.application.status, "PENDING")
+        calculation = CalculateEmployeeCutoffResultsUseCase(SessionUnitOfWork(self.session))
+        pending_results = await calculation.calculate(cutoff.id, self.users["manager"].id)
+        pending = next(item for item in pending_results if item.employee_id == self.employees["worker"].id)
+        self.assertEqual((pending.double_holiday_rest_minutes, pending.double_holiday_rest_ot_minutes), (0, 0))
+        self.assertEqual((pending.night_regular_minutes, pending.night_ot_minutes), (0, 0))
+        another = AttendanceModel(
+            id=uuid4(), user_id=self.users["worker"].id, work_date=TODAY,
+            work_type="REST", day_type="DBL", record_status="VALID",
+            clock_in_at=start + timedelta(hours=13), clock_out_at=start + timedelta(hours=14),
+        )
+        self.session.add(another)
+        await self.session.flush()
+        with self.assertRaisesRegex(ConflictError, "already exists for this date"):
+            await submit.execute(SubmitOvertimeApplicationInput(
+                user_id=self.users["worker"].id, attendance_id=another.id,
+                overtime_type="REST_DAY_WORK", requested_minutes=60, reason="Duplicate",
+            ))
+        decide = DecideOvertimeApplicationUseCase(attendance_uow, refresher, audit, clock=now)
+        approved = await decide.execute(DecideOvertimeApplicationInput(
+            application_id=request.application.id, actor_id=self.users["manager"].id,
+            actor_employee_id=self.employees["manager"].id, is_admin=False,
+            decision="APPROVED", supervisor_approved_minutes=600,
+        ))
+        self.assertEqual(approved.application.final_payable_minutes, 600)
+        results = await calculation.calculate(cutoff.id, self.users["manager"].id)
+        result = next(item for item in results if item.employee_id == self.employees["worker"].id)
+        self.assertEqual((result.double_holiday_rest_minutes, result.double_holiday_rest_ot_minutes), (480, 120))
+        self.assertEqual((result.holiday_minutes, result.holiday_ot_minutes), (0, 0))
+        self.assertEqual((result.night_regular_minutes, result.night_ot_minutes), (240, 120))
 
     async def test_settings_default_enabled_persist_and_preserve_omitted_update_fields(self):
         self.assertTrue(self.child.manager_is_approver)

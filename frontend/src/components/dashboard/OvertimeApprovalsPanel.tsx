@@ -26,6 +26,8 @@ function overtimeTypeLabel(type: OvertimeApplication['overtime_type']): string {
       return 'Night OT'
     case 'NIGHT_DIFFERENTIAL':
       return 'Night differential'
+    case 'REST_DAY_WORK':
+      return 'Rest-day work'
   }
 }
 
@@ -47,7 +49,7 @@ export default function OvertimeApprovalsPanel({
       <AttendanceDeadlines scope="team" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-lg font-extrabold text-slate-900">Overtime applications</h2>
+          <h2 className="text-lg font-extrabold text-slate-900">Overtime and rest-day applications</h2>
           <p className="mt-1 text-sm text-slate-500">
             Approve any amount up to the employee’s request. Final approved minutes become the payroll basis.
           </p>
@@ -95,6 +97,7 @@ export default function OvertimeApprovalsPanel({
                     <td className="px-3 py-4 text-xs text-slate-600">
                       <p>{formatMinutes(request.requested_minutes)} requested</p>
                       <p>{formatMinutes(request.potential_ot_minutes)} calculated</p>
+                      {request.overtime_type === 'REST_DAY_WORK' && <p>Approved time starts at clock-in; first 8 hours are rest-day work, then overtime.</p>}
                     </td>
                     <td className="px-3 py-4">
                       <label className="text-xs text-slate-500">

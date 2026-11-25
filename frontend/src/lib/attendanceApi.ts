@@ -320,6 +320,25 @@ export interface OvertimePayrollCutoff {
   period_end: string
 }
 
+export interface RestDayAttendanceOption {
+  attendance_id: string
+  date: string
+  time_in: string
+  time_out: string
+  rest_day_work_minutes: number
+}
+
+export async function fetchRestDayAttendanceOptions(): Promise<RestDayAttendanceOption[]> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<RestDayAttendanceOption[]>>(
+      '/attendance/rest-day-attendance-options',
+    )
+    return response.data.data
+  } catch (err) {
+    throw new Error(getAttendanceErrorMessage(err, 'Could not load eligible rest-day attendance.'))
+  }
+}
+
 export async function fetchCurrentAttendancePayrollCutoff(): Promise<OvertimePayrollCutoff> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<OvertimePayrollCutoff>>(

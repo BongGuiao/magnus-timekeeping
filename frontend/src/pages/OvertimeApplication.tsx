@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
+import DateTimeFields from '../components/common/DateTimeFields'
 import { Clock3, LoaderCircle, Send } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
@@ -21,6 +22,7 @@ interface Props {
 }
 
 const labels: Record<OvertimeApplicationType, string> = {
+  REST_DAY_WORK: 'Rest-day work',
   REGULAR_OVERTIME: 'Regular overtime',
   NIGHT_DIFFERENTIAL_OVERTIME: 'Night differential overtime',
   NIGHT_DIFFERENTIAL: 'Night differential',
@@ -33,6 +35,7 @@ function potential(entry: AttendanceLogEntry, type: OvertimeApplicationType): nu
     case 'REGULAR_OVERTIME': return entry.regularOvertimeMinutes ?? 0
     case 'NIGHT_DIFFERENTIAL_OVERTIME': return entry.nightDifferentialOvertimeMinutes ?? 0
     case 'NIGHT_DIFFERENTIAL': return entry.nightDifferentialMinutes ?? 0
+    case 'REST_DAY_WORK': return 0
   }
 }
 
@@ -69,7 +72,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
         if (!current) return
         setEntries(snapshot.entries)
         setCutoff(snapshot.cutoff)
-        setApplications(records)
+        setApplications(records.filter((record) => record.overtime_type !== 'REST_DAY_WORK'))
         setLoaded(true)
       })
       .catch((cause: unknown) => { if (current) setError(errorText(cause)) })
@@ -233,12 +236,12 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
                 <p className="mt-1">Clock-in: {selected.timeIn ? formatTime(selected.timeIn) : '--'} | Clock-out: {selected.timeOut ? formatTime(selected.timeOut) : '--'}</p>
                 <p className="mt-1">Requested times must stay within these punches. Corrected punches take precedence. Overnight requests include both dates.</p>
               </div>}
-              <label className="text-xs font-semibold text-slate-700">Requested start at (Philippine time)
-                <input required type="datetime-local" step={1} min={philippineDateTime(selected?.timeIn, true) || undefined} max={philippineDateTime(selected?.timeOut) || undefined} value={period.requested_start_at} onChange={(event) => setPeriod((current) => ({ ...current, requested_start_at: event.target.value }))} className={inputClass} />
-              </label>
-              <label className="text-xs font-semibold text-slate-700">Requested end at (Philippine time)
-                <input required type="datetime-local" step={1} min={period.requested_start_at || undefined} max={philippineDateTime(selected?.timeOut) || undefined} value={period.requested_end_at} onChange={(event) => setPeriod((current) => ({ ...current, requested_end_at: event.target.value }))} className={inputClass} />
-              </label>
+              <DateTimeFields label="Requested start" step={1}
+                min={philippineDateTime(selected?.timeIn, true)} max={philippineDateTime(selected?.timeOut)}
+                value={period.requested_start_at} onChange={(value) => setPeriod((current) => ({ ...current, requested_start_at: value }))} className={inputClass} />
+              <DateTimeFields label="Requested end" step={1}
+                min={period.requested_start_at} max={philippineDateTime(selected?.timeOut)}
+                value={period.requested_end_at} onChange={(value) => setPeriod((current) => ({ ...current, requested_end_at: value }))} className={inputClass} />
               <label className="text-xs font-semibold text-slate-700">Requested minutes
                 <input readOnly type="number" value={duration} className={inputClass} />
                 <p className="mt-1 text-xs font-normal text-slate-500">Automatically calculated as requested end minus requested start, in whole minutes. The period must stay within effective attendance punches.</p>

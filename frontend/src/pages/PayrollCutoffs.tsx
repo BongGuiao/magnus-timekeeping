@@ -635,6 +635,12 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                       <th className="px-3 py-3">Special day OT (hours)</th>
                       <th className="px-3 py-3">Holiday (hours)</th>
                       <th className="px-3 py-3">Holiday OT (hours)</th>
+                      <th className="px-3 py-3">Regular holiday rest (hours)</th>
+                      <th className="px-3 py-3">Regular holiday rest OT (hours)</th>
+                      <th className="px-3 py-3">Double holiday rest (hours)</th>
+                      <th className="px-3 py-3">Double holiday rest OT (hours)</th>
+                      <th className="px-3 py-3">Special holiday rest (hours)</th>
+                      <th className="px-3 py-3">Special holiday rest OT (hours)</th>
                       <th className="px-3 py-3">Night regular (hours)</th>
                       <th className="px-3 py-3">Night OT (hours)</th>
                       <th className="px-3 py-3">Official business (hours)</th>
@@ -663,6 +669,12 @@ export default function PayrollCutoffs({ employeeName, onNavigate, onLoggedOut }
                         <td className="px-3 py-3">{formatMinutesAsHours(result.special_day_ot_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_rest_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.holiday_rest_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.double_holiday_rest_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.double_holiday_rest_ot_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.special_rest_minutes)}</td>
+                        <td className="px-3 py-3">{formatMinutesAsHours(result.special_rest_ot_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.night_regular_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.night_ot_minutes)}</td>
                         <td className="px-3 py-3">{formatMinutesAsHours(result.official_business_minutes)}</td>

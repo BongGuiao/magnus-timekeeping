@@ -39,6 +39,34 @@ def _minutes_to_hours(minutes: int) -> Decimal:
     )
 
 
+def _apply_application_totals(
+    attendance: OvertimeAttendance,
+    applications: list[OvertimeApplication] | tuple[OvertimeApplication, ...],
+) -> None:
+    rules.apply_application_totals(attendance, applications)
+    if attendance.work_type.upper() != "REST":
+        return
+    application = next((item for item in applications if item.overtime_type == "REST_DAY_WORK"), None)
+    if application is None:
+        return
+    approved = application.final_payable_minutes or 0 if application.status == "APPROVED" else 0
+    approved_end = application.requested_start_at + timedelta(minutes=approved)
+    night = calculate_night_differential_minutes(
+        actual_clock_in_at=application.requested_start_at,
+        actual_clock_out_at=approved_end,
+    )
+    night_ot = calculate_night_differential_minutes(
+        actual_clock_in_at=application.requested_start_at + timedelta(minutes=480),
+        actual_clock_out_at=approved_end,
+    )
+    attendance.overtime_request_status = application.status
+    attendance.approved_regular_overtime_minutes = max(0, approved - 480 - night_ot)
+    attendance.approved_night_differential_overtime_minutes = night_ot
+    attendance.approved_night_differential_minutes = night
+    attendance.approved_ot_worked = max(0, approved - 480) / 60
+    attendance.approved_night_diff = night / 60
+
+
 @dataclass
 class AttendanceBreakCalculationDetail:
     break_slot: str
@@ -537,6 +565,26 @@ class GetOvertimeAttendanceOptionsInput:
     user_id: UUID
 
 
+class GetRestDayAttendanceOptionsUseCase(_OvertimeUseCase, BaseUseCase[list[OvertimeAttendance]]):
+    async def _execute(self, data: GetOvertimeAttendanceOptionsInput) -> list[OvertimeAttendance]:
+        async with self._uow as uow:
+            employee_id = await uow.overtime.get_active_employee_id_for_user(data.user_id)
+            if employee_id is None:
+                raise RecordNotFoundError("An active employee linked to your account was not found.")
+            records = await uow.overtime.list_rest_day_attendance(data.user_id, employee_id)
+            eligible = []
+            for record in records:
+                cutoff = await uow.overtime.get_cutoff_for_employee_on_date(employee_id, record.work_date)
+                if (
+                    cutoff is not None
+                    and not is_cutoff_closed(cutoff, self._clock(), stage="FILING")
+                    and cutoff.export_batch_id is None
+                    and rules.calculated_minutes(record, "REST_DAY_WORK") > 0
+                ):
+                    eligible.append(record)
+            return eligible
+
+
 class GetOvertimeAttendanceOptionsUseCase(_OvertimeUseCase, BaseUseCase[OvertimeAttendanceOptions]):
     def __init__(
         self,
@@ -561,6 +609,7 @@ class GetOvertimeAttendanceOptionsUseCase(_OvertimeUseCase, BaseUseCase[Overtime
             attendance = await uow.overtime.list_completed_attendance_in_period(
                 data.user_id, cutoff.period_start, cutoff.period_end
             )
+            attendance = [record for record in attendance if record.work_type.upper() != "REST"]
             recalculated_attendance = []
             for listed_record in attendance:
                 record = listed_record
@@ -681,18 +730,29 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             if locked is None:
                 raise RecordNotFoundError("Completed attendance record was not found for your account.")
             attendance, employee = locked
+            if attendance.is_locked:
+                raise ConflictError("Locked attendance cannot be used for a new application.")
 
             cutoff = await uow.overtime.get_cutoff_for_employee_on_date(
                 employee.id,
                 attendance.work_date,
+                lock_for_update=True,
             )
-            rules.validate_cutoff(cutoff, attendance.work_date)
+            cutoff = rules.validate_cutoff(cutoff, attendance.work_date)
+            if data.overtime_type == "REST_DAY_WORK" and cutoff.export_batch_id is not None:
+                raise ConflictError("Rest-day work cannot be filed for an exported payroll cutoff.")
             try:
                 require_cutoff_open(cutoff, self._clock(), stage="FILING")
             except CutoffDeadlineError as error:
                 raise ConflictError(str(error)) from error
 
             has_open_application = await uow.overtime.has_open_application(attendance.id)
+            if data.overtime_type == "REST_DAY_WORK" and has_open_application:
+                raise ConflictError("An active application already exists for this attendance.")
+            if data.overtime_type == "REST_DAY_WORK" and await uow.overtime.has_open_rest_day_application(
+                employee.id, attendance.work_date
+            ):
+                raise ConflictError("A rest-day application already exists for this date. Merge attendance records if needed.")
             if (
                 attendance.overtime_request_status in rules.OPEN_APPLICATION_STATUSES
                 and not has_open_application
@@ -703,6 +763,8 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
 
             available_minutes = rules.calculated_minutes(attendance, data.overtime_type)
             rules.validate_requested_minutes(available_minutes, data.requested_minutes)
+            if data.overtime_type == "REST_DAY_WORK" and data.requested_minutes != available_minutes:
+                raise ConflictError("Rest-day work must request the entire punched interval.")
 
             requested_start_at, requested_end_at = rules.resolve_requested_period(
                 attendance, data.overtime_type, data.requested_start_at, data.requested_end_at
@@ -717,7 +779,10 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
 
             application = await uow.overtime.add_application(
                 OvertimeApplication(
-                    application_no=f"OT-{attendance.work_date:%Y%m%d}-{uuid4().hex[:12].upper()}",
+                    application_no=(
+                        f"{'RD' if data.overtime_type == 'REST_DAY_WORK' else 'OT'}-"
+                        f"{attendance.work_date:%Y%m%d}-{uuid4().hex[:12].upper()}"
+                    ),
                     employee_id=employee.id,
                     attendance_record_id=attendance.id,
                     attendance_date=attendance.work_date,
@@ -741,8 +806,8 @@ class SubmitOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
                 application.id, employee.id, data.user_id, ph_today(self._clock())
             )
             attendance.overtime_requested_at = self._clock()
-            rules.apply_application_totals(
-                attendance, await uow.overtime.list_applications_for_attendance(attendance.id)
+            _apply_application_totals(
+                attendance, list(await uow.overtime.list_applications_for_attendance(attendance.id))
             )
             await uow.overtime.save_attendance(attendance)
             result = OvertimeApplicationRecord(application, attendance, employee)
@@ -795,28 +860,42 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             if record is None:
                 raise RecordNotFoundError("Overtime application was not found for your account.")
             application, attendance, employee = record.application, record.attendance, record.employee
+            if attendance.is_locked:
+                raise ConflictError("Locked attendance cannot be changed.")
             if application.status == "APPROVED" or application.payroll_posted:
                 raise ConflictError("Approved or payroll-posted overtime applications cannot be edited.")
             if application.status not in ("PENDING", "REJECTED"):
                 raise ConflictError("Only pending or rejected overtime applications can be edited.")
+            if (application.overtime_type == "REST_DAY_WORK") != (data.overtime_type == "REST_DAY_WORK"):
+                raise ConflictError("A rest-day application cannot be changed to another application type.")
             was_rejected = application.status == "REJECTED"
 
             cutoff = await uow.overtime.get_cutoff_for_employee_on_date(
                 employee.id,
                 attendance.work_date,
+                lock_for_update=True,
             )
-            rules.validate_cutoff(cutoff, attendance.work_date)
+            cutoff = rules.validate_cutoff(cutoff, attendance.work_date)
+            if data.overtime_type == "REST_DAY_WORK" and cutoff.export_batch_id is not None:
+                raise ConflictError("Rest-day work cannot be changed for an exported payroll cutoff.")
             try:
                 require_cutoff_open(cutoff, self._clock(), stage="FILING")
             except CutoffDeadlineError as error:
                 raise ConflictError(str(error)) from error
             if await uow.overtime.has_open_application(
-                attendance.id, data.overtime_type, exclude_application_id=application.id,
+                attendance.id, None if data.overtime_type == "REST_DAY_WORK" else data.overtime_type,
+                exclude_application_id=application.id,
             ):
                 raise ConflictError("This overtime type already has a pending or approved application.")
+            if data.overtime_type == "REST_DAY_WORK" and await uow.overtime.has_open_rest_day_application(
+                employee.id, attendance.work_date, exclude_application_id=application.id
+            ):
+                raise ConflictError("A rest-day application already exists for this date. Merge attendance records if needed.")
 
             available_minutes = rules.calculated_minutes(attendance, data.overtime_type)
             rules.validate_requested_minutes(available_minutes, data.requested_minutes)
+            if data.overtime_type == "REST_DAY_WORK" and data.requested_minutes != available_minutes:
+                raise ConflictError("Rest-day work must request the entire punched interval.")
             requested_start_at, requested_end_at = rules.resolve_requested_period(
                 attendance, data.overtime_type, data.requested_start_at, data.requested_end_at
             )
@@ -851,8 +930,8 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             await uow.overtime.save_application(application)
 
             attendance.overtime_requested_at = self._clock()
-            rules.apply_application_totals(
-                attendance, await uow.overtime.list_applications_for_attendance(attendance.id)
+            _apply_application_totals(
+                attendance, list(await uow.overtime.list_applications_for_attendance(attendance.id))
             )
             await uow.overtime.save_attendance(attendance)
 
@@ -939,15 +1018,30 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
                     "Pending overtime application was not found for your assigned employees."
                 )
             application, attendance, employee = record.application, record.attendance, record.employee
+            if attendance.is_locked:
+                raise ConflictError("Locked attendance cannot be approved.")
             cutoff = await uow.overtime.get_cutoff_for_employee_on_date(
                 employee.id,
                 attendance.work_date,
+                lock_for_update=True,
             )
+            if application.overtime_type == "REST_DAY_WORK":
+                cutoff = rules.validate_cutoff(cutoff, attendance.work_date)
+                if cutoff.export_batch_id is not None:
+                    raise ConflictError("Rest-day work cannot be approved for an exported payroll cutoff.")
             try:
                 require_cutoff_open(cutoff, self._clock())
             except CutoffDeadlineError as error:
                 raise ConflictError(str(error)) from error
             approved_minutes = data.supervisor_approved_minutes
+            if application.overtime_type == "REST_DAY_WORK":
+                available = rules.calculated_minutes(attendance, application.overtime_type)
+                rules.resolve_requested_period(
+                    attendance, application.overtime_type,
+                    application.requested_start_at, application.requested_end_at,
+                )
+                if application.requested_minutes != available:
+                    raise ConflictError("Attendance has changed; the employee must update the application.")
             rules.validate_decision(
                 application, employee.id, data.actor_employee_id, data.decision, approved_minutes
             )
@@ -959,8 +1053,8 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             application.row_version += 1
             await uow.overtime.save_application(application)
 
-            rules.apply_application_totals(
-                attendance, await uow.overtime.list_applications_for_attendance(attendance.id)
+            _apply_application_totals(
+                attendance, list(await uow.overtime.list_applications_for_attendance(attendance.id))
             )
             attendance.overtime_approved_by_id = data.actor_id
             attendance.overtime_approved_at = self._clock()
