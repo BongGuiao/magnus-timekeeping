@@ -1002,6 +1002,20 @@ async def submit_leave_application(
     return ResponseEnvelope(status="success", data=result)
 
 
+@applications_router.get("/mine", response_model=ResponseEnvelope[list[LeaveApplicationEntity]])
+async def list_my_leave_applications(
+    leave_type_id: UUID | None = None,
+    application_status: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+    claims: dict[str, Any] = Depends(require_permission("leave.read_own", verify_approval_identity=True)),
+    use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
+):
+    _actor_id(claims)
+    result = await use_case.list(_employee_id(claims), leave_type_id, application_status, offset, limit)
+    return ResponseEnvelope(status="success", data=result)
+
+
 @applications_router.get("/list", response_model=ResponseEnvelope[list[LeaveApplicationEntity]])
 async def list_leave_applications(
     employee_id: UUID | None = None,

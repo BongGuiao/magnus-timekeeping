@@ -344,7 +344,7 @@ export async function fetchLeaveTypes(filters: { companyId?: string; leaveCode?:
 
 export async function fetchMyLeaveApplications(): Promise<LeaveApplication[]> {
   try {
-    const response = await apiClient.get<ApiSuccessEnvelope<LeaveApplication[]>>('/leave-applications/list')
+    const response = await apiClient.get<ApiSuccessEnvelope<LeaveApplication[]>>('/leave-applications/mine')
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not load your leave applications.')

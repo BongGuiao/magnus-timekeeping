@@ -106,6 +106,8 @@ The request covers the complete clock-in-to-clock-out interval without break ded
 
 2. Select Save draft. In My Leave Applications, locate the DRAFT and select Submit for approval. Saving the draft alone does not submit it.
 
+   **My Leave Applications** always lists only the signed-in employee's requests, including when that account also has HR Admin rights. Organization-wide records remain separate from this personal list.
+
 3. Check the application status and, once approved, its paid/unpaid breakdown. Leave balance is deducted only on approval; available paid balance is allocated to the earliest leave days first. Contact HR if the leave type or balance is missing.
 
 ### 2.6 File official business

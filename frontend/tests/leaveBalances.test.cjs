@@ -15,6 +15,23 @@ function load(relativePath, imports = require, globals = {}) {
   return exports
 }
 
+test('fetchMyLeaveApplications uses the employee-only endpoint without an admin-wide fallback', async () => {
+  const paths = []
+  const records = [{ id: 'my-leave', employee_id: 'signed-in-employee' }]
+  const api = load('lib/leaveApi.ts', (name) => {
+    if (name === './apiClient') return { apiClient: {
+      get: async (path) => {
+        paths.push(path)
+        return { data: { data: records } }
+      },
+    } }
+    return require(name)
+  })
+
+  assert.equal(await api.fetchMyLeaveApplications(), records)
+  assert.deepEqual(paths, ['/leave-applications/mine'])
+})
+
 test('formatLeaveBalance formats days cleanly without raw minutes', () => {
   const api = load('lib/leaveApi.ts', (name) => {
     if (name === './apiClient') return { apiClient: {} }

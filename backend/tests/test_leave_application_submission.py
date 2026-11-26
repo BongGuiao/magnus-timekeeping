@@ -16,6 +16,8 @@ from app.filemaintenance.leaves.infrastructure.leave_records_router import (
     submit_leave_application,
     update_leave_application,
     review_holiday_leave,
+    list_my_leave_applications,
+    list_leave_applications,
 )
 
 
@@ -31,6 +33,47 @@ class SessionUnitOfWork:
 
 
 class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_personal_leave_list_scopes_admin_and_employee_accounts_to_their_own_records(self):
+        employee_id, leave_type_id = uuid4(), uuid4()
+        for role, role_codes in (("admin", ["HR_ADMIN", "EMPLOYEE"]), ("user", ["EMPLOYEE"])):
+            with self.subTest(role=role):
+                claims = {
+                    "sub": str(uuid4()), "employee_id": str(employee_id), "email": "test@example.invalid",
+                    "role": role, "role_codes": role_codes,
+                }
+                records = [SimpleNamespace(employee_id=employee_id)]
+                use_case = SimpleNamespace(list=AsyncMock(return_value=records))
+                result = await list_my_leave_applications(leave_type_id, "APPROVED", 25, 25, claims, use_case)
+                use_case.list.assert_awaited_once_with(employee_id, leave_type_id, "APPROVED", 25, 25)
+                self.assertEqual(result.data, records)
+
+    async def test_personal_leave_list_rejects_missing_employee_instead_of_listing_everyone(self):
+        claims = {"sub": str(uuid4()), "email": "test@example.invalid", "role": "admin"}
+        use_case = SimpleNamespace(list=AsyncMock())
+        with self.assertRaises(HTTPException) as error:
+            await list_my_leave_applications(None, None, 0, 100, claims, use_case)
+        self.assertEqual(error.exception.status_code, 403)
+        use_case.list.assert_not_awaited()
+
+    async def test_personal_leave_list_checks_live_employee_link_and_permission(self):
+        route = next(route for route in applications_router.routes if route.endpoint is list_my_leave_applications)
+        checker = next(dependency.call for dependency in route.dependant.dependencies if dependency.name == "claims")
+        claims = {"sub": str(uuid4()), "employee_id": str(uuid4()), "role": "admin"}
+        for permissions, employee_id in ((["leave.read_own"], uuid4()), ([], uuid4())):
+            authorization = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+                permission_codes=permissions, role_codes=["HR_ADMIN"], employee_id=employee_id,
+            )))
+            with self.subTest(permissions=permissions), self.assertRaises(HTTPException) as error:
+                await checker(claims, authorization)
+            self.assertEqual(error.exception.status_code, 403)
+
+    async def test_admin_records_list_retains_organization_scope_and_employee_filters(self):
+        claims = {"sub": str(uuid4()), "email": "test@example.invalid", "role": "admin"}
+        for employee_id in (None, uuid4()):
+            use_case = SimpleNamespace(list=AsyncMock(return_value=[]))
+            await list_leave_applications(employee_id, None, None, 0, 100, claims, use_case)
+            use_case.list.assert_awaited_once_with(employee_id, None, None, 0, 100)
+
     async def test_leave_writes_reject_a_stale_employee_link(self):
         authorization = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
             permission_codes=["leave.submit"], role_codes=["EMPLOYEE"], employee_id=uuid4(),
