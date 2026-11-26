@@ -304,6 +304,26 @@ class OvertimeApplicationModel(Base):
     updated_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+
+
+class OvertimeApprovalReturnModel(Base):
+    __tablename__ = "overtime_approval_returns"
+    __table_args__ = (
+        CheckConstraint("length(trim(reason)) > 0", name="ck_overtime_approval_returns_reason"),
+        {"schema": "attendance"},
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    application_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("attendance.overtime_applications.id"), nullable=False, index=True
+    )
+    actor_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_approved_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    previous_payable_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    returned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class OfficialBusinessRequestModel(Base):
     __tablename__ = "official_business_requests"
     __table_args__ = (

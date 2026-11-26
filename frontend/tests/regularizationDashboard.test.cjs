@@ -11,6 +11,11 @@ const source = readFileSync(join(__dirname, '..', 'src', 'features', 'employees'
 const code = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
 }).outputText
+const headerExports = {}
+runInNewContext(ts.transpileModule(readFileSync(join(__dirname, '..', 'src', 'components', 'common', 'SortHeader.tsx'), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+}).outputText, { exports: headerExports, require })
+const SortHeader = headerExports.default
 
 const candidate = {
   assignment_id: 'assignment', employee_id: 'employee', employee_no: 'E1',
@@ -59,6 +64,7 @@ function harness(initialReview, enabled = true) {
     },
     require(name) {
       if (name === 'react') return hooks
+      if (name === '../../components/common/SortHeader') return { __esModule: true, default: SortHeader }
       if (name === '../../lib/employeeRelatedApi') return { EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT: 'employment-assignment-changed', getManilaDate: () => today }
       if (name === '../../lib/regularizationApi') return {
         async fetchRegularizationReview() { loads++; if (review instanceof Error) throw review; return review },
@@ -91,6 +97,7 @@ function find(node, predicate) {
   if (Array.isArray(node)) return node.map((item) => find(item, predicate)).find(Boolean)
   if (!React.isValidElement(node)) return null
   if (predicate(node)) return node
+  if (node.type === SortHeader) return find(node.type(node.props), predicate)
   return find(node.props.children, predicate)
 }
 
@@ -148,4 +155,23 @@ test('loading failures are visible and do not look like an empty candidate list'
   view.render()
   await settle()
   assert.match(renderToStaticMarkup(view.render()), /Regularization monitoring unavailable/)
+})
+
+test('candidate columns sort in both directions without mutating the review', async () => {
+  const second = { ...candidate, assignment_id: 'second', employee_no: 'E2', employee_name: 'Alex Employee', days_remaining: 3 }
+  const review = { as_of: '2026-07-02', candidates: [candidate, second], notification_pending: false }
+  const view = harness(review)
+  view.render()
+  await settle()
+  view.expand()
+  let tree = view.render()
+  find(tree, (node) => node.type === 'button' && node.props['aria-label']?.startsWith('Sort by Employee')).props.onClick()
+  tree = view.render()
+  let html = renderToStaticMarkup(tree)
+  assert.ok(html.indexOf('Alex Employee') < html.indexOf('Example Employee'))
+  assert.match(html, /aria-sort="ascending"/)
+  find(tree, (node) => node.type === 'button' && node.props['aria-label']?.startsWith('Sort by Employee')).props.onClick()
+  html = renderToStaticMarkup(view.render())
+  assert.ok(html.indexOf('Example Employee') < html.indexOf('Alex Employee'))
+  assert.deepEqual(review.candidates, [candidate, second])
 })

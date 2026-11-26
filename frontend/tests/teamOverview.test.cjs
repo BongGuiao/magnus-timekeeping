@@ -117,8 +117,10 @@ test('HR Admin actions are in the review queue and share its single-panel behavi
   let { overview, html } = render()
   const regularization = overview.props.reviews.find((item) => item.id === 'regularization')
   const reversal = overview.props.reviews.find((item) => item.id === 'leave-reversal')
+  const overtimeReversal = overview.props.reviews.find((item) => item.id === 'overtime-reversal')
   assert.ok(regularization)
   assert.ok(reversal)
+  assert.ok(overtimeReversal)
   assert.doesNotMatch(html, /data-component="RegularizationDashboard"/)
   regularization.onClick()
   ;({ overview, html } = render())
@@ -129,9 +131,13 @@ test('HR Admin actions are in the review queue and share its single-panel behavi
   assert.doesNotMatch(html, /data-component="RegularizationDashboard"/)
   assert.match(html, /data-component="LeaveApprovalReversal"/)
   assert.equal(overview.props.reviews.find((item) => item.id === 'regularization').open, false)
+  overview.props.reviews.find((item) => item.id === 'overtime-reversal').onClick()
+  ;({ overview } = render())
+  assert.equal(overview.props.reviews.find((item) => item.id === 'leave-reversal').open, false)
+  assert.equal(overview.props.reviews.find((item) => item.id === 'overtime-reversal').open, true)
   for (const [role, code] of [['administrator', 'SYSTEM_ADMIN'], ['supervisor', 'SUPERVISOR'], ['employee', 'EMPLOYEE']]) {
     const other = dashboard(role, [], role === 'administrator', undefined, {}, code)()
-    assert.equal(other.overview.props.reviews.some((item) => item.id === 'regularization' || item.id === 'leave-reversal'), false)
+    assert.equal(other.overview.props.reviews.some((item) => ['regularization', 'leave-reversal', 'overtime-reversal'].includes(item.id)), false)
   }
 })
 

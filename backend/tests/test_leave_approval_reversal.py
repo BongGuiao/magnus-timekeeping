@@ -6,10 +6,15 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from sqlalchemy import create_engine, text
 
 from app.filemaintenance.leaves.application import leave_records_use_case as leave
 from app.filemaintenance.leaves.application.leave_duration import LeaveDuration, LeaveDurationDay
-from app.filemaintenance.leaves.infrastructure.leave_records_router import require_hr_leave_reversal_access
+from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
+from app.filemaintenance.leaves.infrastructure.leave_records_router import (
+    list_approved_leave_for_reversal,
+)
+from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
 
 
 class UnitOfWork:
@@ -53,13 +58,76 @@ def fixture():
 
 
 class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_approved_leave_is_sorted_before_pagination(self):
+        engine = create_engine("sqlite://")
+        connection = engine.connect()
+        try:
+            connection.execute(text("ATTACH DATABASE ':memory:' AS leave_mgmt"))
+            connection.execute(text("ATTACH DATABASE ':memory:' AS hr"))
+            connection.execute(text(
+                "CREATE TABLE hr.employees (id CHAR(32), first_name TEXT, last_name TEXT)"
+            ))
+            connection.execute(text(
+                "CREATE TABLE leave_mgmt.leave_types (id CHAR(32), leave_name TEXT)"
+            ))
+            connection.execute(text(
+                "CREATE TABLE leave_mgmt.leave_applications (id CHAR(32), employee_id CHAR(32), leave_type_id CHAR(32),"
+                " application_no TEXT, status TEXT, is_active BOOLEAN, start_at DATETIME, end_at DATETIME, paid_minutes INTEGER)"
+            ))
+            leave_type_id = uuid4()
+            connection.execute(text("INSERT INTO leave_mgmt.leave_types VALUES (:id, 'Vacation')"), {"id": leave_type_id.hex})
+            records = {}
+            for index in range(30):
+                app_id, employee_id = uuid4(), uuid4()
+                name = f"Employee {29 - index:02}"
+                connection.execute(text("INSERT INTO hr.employees VALUES (:id, :name, 'Test')"), {
+                    "id": employee_id.hex, "name": name,
+                })
+                connection.execute(text(
+                    "INSERT INTO leave_mgmt.leave_applications VALUES "
+                    "(:id, :employee, :leave_type, :number, 'APPROVED', 1,"
+                    " '2026-12-10 09:00:00.000000', '2026-12-10 18:00:00.000000', :paid)"
+                ), {"id": app_id.hex, "employee": employee_id.hex, "leave_type": leave_type_id.hex,
+                    "number": f"LV-{index:02}", "paid": 30 - index})
+                app = SimpleNamespace(
+                    id=app_id, application_no=f"LV-{index:02}", paid_minutes=30 - index,
+                    start_at=datetime(2026, 12, 10, 9, tzinfo=ZoneInfo("Asia/Manila")),
+                    end_at=datetime(2026, 12, 10, 18, tzinfo=ZoneInfo("Asia/Manila")),
+                )
+                records[app_id] = (app, SimpleNamespace(employee_no=f"E{index:02}", first_name=name, last_name="Test"),
+                                   SimpleNamespace(leave_name="Vacation"))
+
+            async def execute(statement):
+                ids = connection.scalars(statement.with_only_columns(LeaveApplicationModel.id, maintain_column_froms=True)).all()
+                return SimpleNamespace(all=lambda: [records[app_id] for app_id in ids])
+
+            session = SimpleNamespace(execute=execute)
+            actor = (uuid4(), uuid4())
+            async def page(offset, key, direction):
+                return (await list_approved_leave_for_reversal(
+                    date(2026, 12, 1), date(2026, 12, 31), offset, actor, UnitOfWork(session), key, direction,
+                )).data
+            first = await page(0, "employee", "asc")
+            second = await page(25, "employee", "asc")
+            self.assertEqual(first.next_offset, 25)
+            self.assertIsNone(second.next_offset)
+            self.assertEqual([row.employee_name for row in first.items + second.items],
+                             [f"Employee {index:02} Test" for index in range(30)])
+            descending = await page(0, "employee", "desc")
+            self.assertEqual(descending.items[0].employee_name, "Employee 29 Test")
+            paid = await page(0, "paid_minutes", "asc")
+            self.assertEqual([row.paid_minutes for row in paid.items], list(range(1, 26)))
+        finally:
+            connection.close()
+            engine.dispose()
+
     async def test_only_active_hr_admin_in_hr_dashboard_can_access(self):
         claims = {"sub": str(uuid4()), "email": "hr@example.invalid"}
         employee_id = uuid4()
         auth = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
             role_codes=["HR_ADMIN"], employee_id=employee_id,
         )))
-        self.assertEqual(await require_hr_leave_reversal_access("HR_ADMIN", claims, auth), (UUID(claims["sub"]), employee_id))
+        self.assertEqual(await require_hr_dashboard_access("HR_ADMIN", claims, auth), (UUID(claims["sub"]), employee_id))
         for role_codes, mode, profile in [
             (["SYSTEM_ADMIN"], "HR_ADMIN", employee_id),
             (["HR_ADMIN"], "EMPLOYEE", employee_id),
@@ -67,7 +135,7 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
         ]:
             auth.execute.return_value = SimpleNamespace(role_codes=role_codes, employee_id=profile)
             with self.assertRaises(HTTPException) as error:
-                await require_hr_leave_reversal_access(mode, claims, auth)
+                await require_hr_dashboard_access(mode, claims, auth)
             self.assertEqual(error.exception.status_code, 403)
 
     async def test_reversal_restores_balance_and_reroutes_with_durable_reason(self):

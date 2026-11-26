@@ -119,6 +119,9 @@ export interface ApprovedLeaveReversalPage {
   next_offset: number | null
 }
 
+export type ApprovedLeaveSortKey = 'application' | 'employee' | 'leave' | 'coverage' | 'paid_minutes'
+export type SortDirection = 'asc' | 'desc'
+
 export interface LeaveDashboardSnapshot {
   balances: Array<{
     type: string
@@ -437,10 +440,13 @@ export async function fetchHolidayLeaveReview(fromDate: string, toDate: string, 
   }
 }
 
-export async function fetchApprovedLeaveForReversal(fromDate: string, toDate: string, offset: number): Promise<ApprovedLeaveReversalPage> {
+export async function fetchApprovedLeaveForReversal(
+  fromDate: string, toDate: string, offset: number,
+  sortBy: ApprovedLeaveSortKey, sortDirection: SortDirection,
+): Promise<ApprovedLeaveReversalPage> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<ApprovedLeaveReversalPage>>('/leave-applications/hr/approved', {
-      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset },
+      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
     })
     return response.data.data
   } catch (error) {

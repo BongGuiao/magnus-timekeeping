@@ -1,6 +1,10 @@
+from datetime import date
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 
 from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationInput,
@@ -14,6 +18,8 @@ from app.attendance.application.overtime_use_cases import (
     ListPendingOvertimeApplicationsUseCase,
     RecalculateAttendanceRangeInput,
     RecalculateAttendanceRangeUseCase,
+    ReturnOvertimeApprovalInput,
+    ReturnOvertimeApprovalUseCase,
     SubmitOvertimeApplicationInput,
     SubmitOvertimeApplicationUseCase,
     UpdateOvertimeApplicationInput,
@@ -33,11 +39,13 @@ from app.attendance.infrastructure.dependencies import (
     get_overtime_attendance_options_use_case,
     get_rest_day_attendance_options_use_case,
     get_recalculate_attendance_range_use_case,
+    get_return_overtime_approval_use_case,
     get_supervisor_team_employees_use_case,
     get_submit_overtime_application_use_case,
     get_update_overtime_application_use_case,
 )
 from app.attendance.infrastructure.overtime_repository import SqlAlchemyOvertimeRepository
+from app.attendance.infrastructure.db_model import OvertimeApplicationModel
 from app.attendance.domain.overtime_rules import calculated_minutes
 from app.attendance.infrastructure.http_errors import http_errors as _http_errors
 from app.attendance.infrastructure.overtime_schemas import (
@@ -59,10 +67,94 @@ from app.auth.infrastructure.dependencies import (
     require_role,
 )
 from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
+from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
 
 router = APIRouter()
+
+
+class ApprovedOvertimeForReturn(BaseModel):
+    id: UUID
+    application_no: str
+    employee_no: str
+    employee_name: str
+    overtime_type: str
+    attendance_date: date
+    payable_minutes: int
+
+
+class ApprovedOvertimeReturnPage(BaseModel):
+    items: list[ApprovedOvertimeForReturn]
+    next_offset: int | None
+
+
+class OvertimeReturnRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+@router.get("/overtime-applications/hr/approved", response_model=ResponseEnvelope[ApprovedOvertimeReturnPage])
+async def list_approved_overtime_for_return(
+    from_date: date, to_date: date,
+    offset: int = Query(default=0, ge=0),
+    sort_by: Literal["application", "employee", "type", "date", "payable_minutes"] = "date",
+    sort_direction: Literal["asc", "desc"] = "desc",
+    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    if to_date < from_date or (to_date - from_date).days > 365:
+        raise HTTPException(status_code=422, detail="Choose a date range of at most 366 days.")
+    columns = {
+        "application": (func.lower(OvertimeApplicationModel.application_no),),
+        "employee": (func.lower(EmployeeModel.first_name), func.lower(EmployeeModel.last_name)),
+        "type": (OvertimeApplicationModel.overtime_type,),
+        "date": (OvertimeApplicationModel.attendance_date,),
+        "payable_minutes": (func.coalesce(OvertimeApplicationModel.final_payable_minutes, 0),),
+    }[sort_by]
+    ordering = [column.asc() if sort_direction == "asc" else column.desc() for column in columns]
+    async with uow as active_uow:
+        session = active_uow.session
+        if session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        rows = (await session.execute(
+            select(OvertimeApplicationModel, EmployeeModel)
+            .join(EmployeeModel, EmployeeModel.id == OvertimeApplicationModel.employee_id)
+            .where(
+                OvertimeApplicationModel.status == "APPROVED",
+                OvertimeApplicationModel.is_active.is_(True),
+                OvertimeApplicationModel.employee_id != actor[1],
+                OvertimeApplicationModel.attendance_date >= from_date,
+                OvertimeApplicationModel.attendance_date <= to_date,
+            )
+            .order_by(*ordering, OvertimeApplicationModel.id)
+            .offset(offset).limit(26)
+        )).all()
+    return ResponseEnvelope(status="success", data=ApprovedOvertimeReturnPage(
+        items=[
+            ApprovedOvertimeForReturn(
+                id=application.id, application_no=application.application_no,
+                employee_no=employee.employee_no, employee_name=f"{employee.first_name} {employee.last_name}",
+                overtime_type=application.overtime_type, attendance_date=application.attendance_date,
+                payable_minutes=application.final_payable_minutes or 0,
+            )
+            for application, employee in rows[:25]
+        ],
+        next_offset=offset + 25 if len(rows) > 25 else None,
+    ))
+
+
+@router.post("/overtime-applications/{application_id}/return-for-approval", response_model=ResponseEnvelope[OvertimeApplicationSchema])
+async def return_approved_overtime(
+    application_id: UUID, payload: OvertimeReturnRequest,
+    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
+    use_case: ReturnOvertimeApprovalUseCase = Depends(get_return_overtime_approval_use_case),
+):
+    with _http_errors():
+        record = await use_case.execute(ReturnOvertimeApprovalInput(
+            application_id=application_id, actor_id=actor[0], actor_employee_id=actor[1], reason=payload.reason,
+        ))
+    return ResponseEnvelope(status="success", data=_application_schema(record))
 
 
 def _user_id(claims: dict) -> UUID:

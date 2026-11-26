@@ -29,7 +29,7 @@ from app.attendance.domain.entities.overtime import (
     OvertimeAttendance,
     OvertimeCutoff,
 )
-from app.attendance.domain.exceptions import ConflictError, RecordNotFoundError
+from app.attendance.domain.exceptions import ConflictError, PermissionDeniedError, RecordNotFoundError, RuleViolationError
 from app.core.generics.uc_base import BaseUseCase
 
 
@@ -1073,4 +1073,68 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
                 "final_payable_minutes": application.final_payable_minutes,
             },
         )
+        return record
+
+
+@dataclass
+class ReturnOvertimeApprovalInput:
+    application_id: UUID
+    actor_id: UUID
+    actor_employee_id: UUID
+    reason: str
+
+
+class ReturnOvertimeApprovalUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApplicationRecord]):
+    def __init__(
+        self, uow: OvertimeUnitOfWork, refresher: RecentAttendanceRefresher,
+        clock: Callable[[], datetime] = utc_now,
+    ):
+        super().__init__(uow, clock)
+        self._refresher = refresher
+
+    async def _execute(self, data: ReturnOvertimeApprovalInput) -> OvertimeApplicationRecord:
+        reason = data.reason.strip()
+        if not reason or len(reason) > 1000:
+            raise RuleViolationError("A reason of up to 1000 characters is required.")
+        async with self._uow as uow:
+            record = await uow.overtime.lock_approved_application(data.application_id)
+            if record is None:
+                raise RecordNotFoundError("Approved overtime application was not found.")
+            application, attendance, employee = record.application, record.attendance, record.employee
+            if employee.id == data.actor_employee_id:
+                raise PermissionDeniedError("You cannot return your own overtime application.")
+            if application.payroll_posted or attendance.is_locked or attendance.record_status != "VALID":
+                raise ConflictError("Posted or locked overtime attendance cannot be returned.")
+            cutoff = rules.validate_cutoff(await uow.overtime.get_cutoff_for_employee_on_date(
+                employee.id, attendance.work_date, lock_for_update=True,
+            ), attendance.work_date)
+            if cutoff.export_batch_id is not None:
+                raise ConflictError("Overtime for an exported payroll cutoff cannot be returned.")
+            try:
+                require_cutoff_open(cutoff, self._clock())
+            except CutoffDeadlineError as error:
+                raise ConflictError(str(error)) from error
+            if await uow.overtime.has_open_application(attendance.id, application.overtime_type, application.id):
+                raise ConflictError("Another open application exists for this overtime type.")
+            if application.overtime_type == "REST_DAY_WORK" and await uow.overtime.has_open_rest_day_application(
+                employee.id, attendance.work_date, application.id
+            ):
+                raise ConflictError("Another open rest-day work application exists for this date.")
+            await uow.overtime.assign_return_approver(data.application_id, employee.id, data.actor_id, self._today())
+            await uow.overtime.record_approval_return(application, data.actor_id, reason)
+            application.status = "PENDING"
+            application.supervisor_approved_minutes = None
+            application.final_payable_minutes = None
+            application.updated_by = data.actor_id
+            application.row_version += 1
+            await uow.overtime.save_application(application)
+            applications = list(await uow.overtime.list_applications_for_attendance(attendance.id))
+            _apply_application_totals(attendance, applications)
+            # Attendance stores only one approval identity for all overtime types.
+            attendance.overtime_approved_by_id = None
+            attendance.overtime_approved_at = None
+            await uow.overtime.save_attendance(attendance)
+            employee_user_id = await uow.overtime.get_user_id_for_employee(employee.id)
+        if employee_user_id is not None:
+            self._refresher.request_refresh(employee_user_id)
         return record

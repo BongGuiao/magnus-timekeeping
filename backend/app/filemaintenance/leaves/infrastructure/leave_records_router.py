@@ -11,17 +11,16 @@ from kombu.exceptions import OperationalError
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
 from app.attendance.application.use_case import resolve_attendance_day_type, resolve_schedule_day
 from app.attendance.domain.worked_minutes import NONWORKING_DAY_TYPES
-from app.auth.application.authorization import GetCurrentAuthorizationUseCase
 from app.auth.infrastructure.dependencies import (
-    get_current_authorization_use_case, get_current_user_claims,
     require_approval_permission, require_permission,
 )
+from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
@@ -139,22 +138,6 @@ def _queue_leave_dashboard_refresh(employee_id: UUID) -> None:
         )
 
 
-async def require_hr_leave_reversal_access(
-    dashboard_role_code: str = Query(...),
-    claims: dict[str, Any] = Depends(get_current_user_claims),
-    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
-) -> tuple[UUID, UUID]:
-    actor_id = _actor_id(claims)
-    authorization = await authorization_use_case.execute(actor_id)
-    if dashboard_role_code != "HR_ADMIN" or not any(
-        role.strip().upper() == "HR_ADMIN" for role in authorization.role_codes
-    ):
-        raise HTTPException(status_code=403, detail="This action requires the HR_ADMIN role and dashboard.")
-    if authorization.employee_id is None:
-        raise HTTPException(status_code=403, detail="An active employee profile is required for this action.")
-    return actor_id, authorization.employee_id
-
-
 class ApprovedLeaveForReversal(BaseModel):
     id: UUID
     application_no: str
@@ -179,13 +162,23 @@ class LeaveReversalRequest(BaseModel):
 async def list_approved_leave_for_reversal(
     from_date: date, to_date: date,
     offset: int = Query(default=0, ge=0),
-    actor: tuple[UUID, UUID] = Depends(require_hr_leave_reversal_access),
+    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
+    sort_by: Literal["application", "employee", "leave", "coverage", "paid_minutes"] = "coverage",
+    sort_direction: Literal["asc", "desc"] = "desc",
 ):
     if to_date < from_date or (to_date - from_date).days > 365:
         raise HTTPException(status_code=422, detail="Choose a date range of at most 366 days.")
     start = datetime.combine(from_date, datetime.min.time(), tzinfo=PH_TIMEZONE)
     end = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=PH_TIMEZONE)
+    sort_columns = {
+        "application": (func.lower(LeaveApplicationModel.application_no),),
+        "employee": (func.lower(EmployeeModel.first_name), func.lower(EmployeeModel.last_name)),
+        "leave": (func.lower(LeaveTypeModel.leave_name),),
+        "coverage": (LeaveApplicationModel.start_at,),
+        "paid_minutes": (func.coalesce(LeaveApplicationModel.paid_minutes, 0),),
+    }[sort_by]
+    ordering = [column.asc() if sort_direction == "asc" else column.desc() for column in sort_columns]
     async with uow as active_uow:
         session = active_uow.session
         if session is None:
@@ -200,7 +193,7 @@ async def list_approved_leave_for_reversal(
                 LeaveApplicationModel.employee_id != actor[1],
                 LeaveApplicationModel.start_at < end, LeaveApplicationModel.end_at > start,
             )
-            .order_by(LeaveApplicationModel.start_at.desc(), LeaveApplicationModel.id)
+            .order_by(*ordering, LeaveApplicationModel.id)
             .offset(offset).limit(26)
         )).all()
     items = [
@@ -220,7 +213,7 @@ async def list_approved_leave_for_reversal(
 @applications_router.post("/{application_id}/return-for-approval", response_model=ResponseEnvelope[LeaveApplicationEntity])
 async def return_approved_leave_for_approval(
     application_id: UUID, payload: LeaveReversalRequest,
-    actor: tuple[UUID, UUID] = Depends(require_hr_leave_reversal_access),
+    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):

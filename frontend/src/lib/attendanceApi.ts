@@ -21,6 +21,42 @@ export interface AttendanceLocation {
 
 export { checkAttendanceBrowserRegistration, registerAttendanceBrowser }
 
+export type ApprovedOvertimeSortKey = 'application' | 'employee' | 'type' | 'date' | 'payable_minutes'
+export interface ApprovedOvertimeReturnPage {
+  items: Array<{
+    id: string
+    application_no: string
+    employee_no: string
+    employee_name: string
+    overtime_type: string
+    attendance_date: string
+    payable_minutes: number
+  }>
+  next_offset: number | null
+}
+
+export async function fetchApprovedOvertimeForReturn(
+  fromDate: string, toDate: string, offset: number, sortBy: ApprovedOvertimeSortKey, sortDirection: 'asc' | 'desc',
+): Promise<ApprovedOvertimeReturnPage> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedOvertimeReturnPage>>('/attendance/overtime-applications/hr/approved', {
+      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
+    })
+    return response.data.data
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not load approved overtime applications.'))
+  }
+}
+
+export async function returnOvertimeForApproval(applicationId: string, reason: string): Promise<void> {
+  try {
+    await apiClient.post(`/attendance/overtime-applications/${encodeURIComponent(applicationId)}/return-for-approval`,
+      { reason }, { params: { dashboard_role_code: 'HR_ADMIN' } })
+  } catch (error) {
+    throw new Error(getAttendanceErrorMessage(error, 'Could not return this overtime application for approval.'))
+  }
+}
+
 // Relative path: nginx proxies /attendance/* to the FastAPI backend (see nginx/default.conf).
 // user_id narrows the face match to a single enrollment row instead of scanning every employee.
 export function getAttendanceErrorMessage(error: unknown, fallback: string): string {

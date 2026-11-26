@@ -15,7 +15,7 @@ from app.attendance.domain.entities.overtime import (
 )
 from app.attendance.domain.overtime_rules import OPEN_APPLICATION_STATUSES
 from app.attendance.domain.exceptions import ConflictError
-from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel
+from app.attendance.infrastructure.db_model import AttendanceModel, OvertimeApplicationModel, OvertimeApprovalReturnModel
 from app.attendance.infrastructure.attendance_merge_queries import not_merged_source
 from app.attendance.infrastructure.entity_mapping import copy_fields as _copy_fields
 from app.attendance.infrastructure.entity_mapping import to_attendance_employee as _employee
@@ -368,6 +368,43 @@ class SqlAlchemyOvertimeRepository:
             )
         except ApprovalRoutingError as error:
             raise ConflictError(str(error)) from error
+
+    async def assign_return_approver(
+        self, application_id: UUID, employee_id: UUID, actor_id: UUID, on_date: date
+    ) -> None:
+        try:
+            await assign_org_approval(
+                self._session, resource_type="overtime_application", resource_id=application_id,
+                employee_id=employee_id, assigned_by=actor_id, on_date=on_date,
+                permission_code="overtime.approve_team", hold_unresolved=False,
+            )
+        except ApprovalRoutingError as error:
+            raise ConflictError(str(error)) from error
+
+    async def record_approval_return(
+        self, application: OvertimeApplication, actor_id: UUID, reason: str
+    ) -> None:
+        self._session.add(OvertimeApprovalReturnModel(
+            application_id=application.id, actor_id=actor_id, reason=reason,
+            previous_approved_minutes=application.supervisor_approved_minutes,
+            previous_payable_minutes=application.final_payable_minutes,
+        ))
+        await self._session.flush()
+
+    async def lock_approved_application(self, application_id: UUID) -> Optional[OvertimeApplicationRecord]:
+        statement = (
+            select(OvertimeApplicationModel, AttendanceModel, EmployeeModel)
+            .join(AttendanceModel, AttendanceModel.id == OvertimeApplicationModel.attendance_record_id)
+            .join(EmployeeModel, EmployeeModel.id == OvertimeApplicationModel.employee_id)
+            .where(
+                OvertimeApplicationModel.id == application_id,
+                OvertimeApplicationModel.status == "APPROVED",
+                OvertimeApplicationModel.is_active.is_(True),
+            )
+            .with_for_update(of=(OvertimeApplicationModel, AttendanceModel))
+        )
+        row = (await self._session.execute(statement)).first()
+        return _record(row) if row is not None else None
 
     async def save_application(self, application: OvertimeApplication) -> None:
         model = await self._session.get(OvertimeApplicationModel, application.id)

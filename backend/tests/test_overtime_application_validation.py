@@ -1,11 +1,12 @@
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import create_engine, text
 
 from app.attendance.application.overtime_use_cases import (
     DecideOvertimeApplicationInput,
@@ -16,6 +17,8 @@ from app.attendance.application.overtime_use_cases import (
     ListPendingOvertimeApplicationsInput,
     RecalculateAttendanceRangeInput,
     RecalculateAttendanceRangeUseCase,
+    ReturnOvertimeApprovalInput,
+    ReturnOvertimeApprovalUseCase,
     SubmitOvertimeApplicationInput,
     SubmitOvertimeApplicationUseCase,
     UpdateOvertimeApplicationInput,
@@ -43,9 +46,12 @@ from app.attendance.infrastructure.overtime_repository import (
 from app.attendance.infrastructure.overtime_router import (
     decide_overtime_application,
     get_pending_overtime_applications,
+    list_approved_overtime_for_return,
     submit_overtime_application,
     update_overtime_application,
+    router as overtime_router,
 )
+from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
 from app.attendance.infrastructure.overtime_schemas import (
     AttendanceRangeRecalculationInputSchema,
     AttendanceRangeRecalculationSchema,
@@ -53,6 +59,7 @@ from app.attendance.infrastructure.overtime_schemas import (
     OvertimeApplicationInputSchema,
 )
 from app.core.database import init_db_models
+from app.attendance.infrastructure.db_model import OvertimeApplicationModel
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
 
@@ -126,6 +133,7 @@ class FakeOvertimeRepository:
         self.employee_user_id = uuid4()
         self.schedule_break_rules = []
         self.assigned_approvals = []
+        self.returns = []
 
     async def get_active_employee_id_for_user(self, user_id):
         return self.employee.id
@@ -189,6 +197,16 @@ class FakeOvertimeRepository:
 
     async def assign_approver(self, application_id, employee_id, actor_id, on_date):
         self.assigned_approvals.append((application_id, employee_id, actor_id, on_date))
+
+    async def assign_return_approver(self, application_id, employee_id, actor_id, on_date):
+        self.assigned_approvals.append((application_id, employee_id, actor_id, on_date))
+
+    async def lock_approved_application(self, application_id):
+        application = next((item for item in self.applications if item.id == application_id and item.status == "APPROVED"), None)
+        return OvertimeApplicationRecord(application, self.attendance, self.employee) if application else None
+
+    async def record_approval_return(self, application, actor_id, reason):
+        self.returns.append((application.id, actor_id, reason, application.supervisor_approved_minutes, application.final_payable_minutes))
 
     async def save_application(self, application):
         self.saved_application = application
@@ -703,6 +721,188 @@ class DecideOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.attendance.approved_night_differential_minutes, 360)
         self.assertEqual(self.attendance.approved_night_differential_overtime_minutes, 120)
         self.assertEqual(self.attendance.approved_ot_worked, 2)
+
+
+class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.employee = make_employee()
+        self.attendance = make_attendance(approved_regular_overtime_minutes=60)
+        self.application = OvertimeApplication(
+            id=uuid4(), application_no="OT-1", employee_id=self.employee.id,
+            attendance_record_id=self.attendance.id, attendance_date=self.attendance.work_date,
+            requested_start_at=NOW, requested_end_at=NOW + timedelta(hours=1),
+            potential_ot_minutes=120, requested_minutes=60, overtime_type="REGULAR_OVERTIME",
+            reason="work", status="APPROVED", supervisor_approved_minutes=60, final_payable_minutes=60,
+        )
+        self.repository = FakeOvertimeRepository(self.attendance, self.employee)
+        self.repository.applications = [self.application]
+        self.refresher = MagicMock()
+        self.repository.cutoff = OvertimeCutoff("OCT", date(2026, 10, 1), date(2026, 10, 15))
+        self.actor_id, self.actor_employee_id = uuid4(), uuid4()
+        self.use_case = ReturnOvertimeApprovalUseCase(FakeUnitOfWork(self.repository), self.refresher, clock=lambda: NOW)
+
+    async def reverse(self, **changes):
+        values = dict(application_id=self.application.id, actor_id=self.actor_id,
+                      actor_employee_id=self.actor_employee_id, reason="  Correction  ")
+        values.update(changes)
+        return await self.use_case.execute(ReturnOvertimeApprovalInput(**values))
+
+    async def test_return_preserves_other_approved_type_and_allows_reapproval(self):
+        other = OvertimeApplication(
+            id=uuid4(), application_no="OT-2", employee_id=self.employee.id,
+            attendance_record_id=self.attendance.id, attendance_date=self.attendance.work_date,
+            requested_start_at=NOW, requested_end_at=NOW + timedelta(hours=1),
+            potential_ot_minutes=60, requested_minutes=30, overtime_type="NIGHT_DIFFERENTIAL_OVERTIME",
+            reason="work", status="APPROVED", supervisor_approved_minutes=30, final_payable_minutes=30,
+        )
+        self.repository.applications.append(other)
+        await self.reverse()
+        self.assertEqual(self.application.status, "PENDING")
+        self.assertIsNone(self.application.final_payable_minutes)
+        self.assertEqual(self.attendance.approved_regular_overtime_minutes, 0)
+        self.assertEqual(self.attendance.approved_night_differential_overtime_minutes, 30)
+        self.assertEqual(self.repository.returns, [(self.application.id, self.actor_id, "Correction", 60, 60)])
+        self.assertEqual(self.repository.assigned_approvals[0][:3], (self.application.id, self.employee.id, self.actor_id))
+        self.refresher.request_refresh.assert_called_once_with(self.repository.employee_user_id)
+        with self.assertRaises(RecordNotFoundError):
+            await self.reverse()
+        self.repository.pending_record = OvertimeApplicationRecord(self.application, self.attendance, self.employee)
+        decide = DecideOvertimeApplicationUseCase(
+            FakeUnitOfWork(self.repository), self.refresher, MagicMock(record=AsyncMock()), clock=lambda: NOW,
+        )
+        await decide.execute(DecideOvertimeApplicationInput(
+            self.application.id, uuid4(), uuid4(), False, "APPROVED", 45,
+        ))
+        self.assertEqual(self.attendance.approved_regular_overtime_minutes, 45)
+        self.assertEqual(self.attendance.approved_night_differential_overtime_minutes, 30)
+
+    async def test_rest_day_return_clears_approved_rest_day_totals(self):
+        self.attendance.work_type = "REST"
+        self.attendance.approved_night_differential_minutes = 30
+        self.application.overtime_type = "REST_DAY_WORK"
+        self.repository.cutoff = OvertimeCutoff("OCT", date(2026, 10, 1), date(2026, 10, 15))
+        await self.reverse()
+        self.assertEqual(self.attendance.approved_regular_overtime_minutes, 0)
+        self.assertEqual(self.attendance.approved_night_differential_minutes, 0)
+        self.assertEqual(self.attendance.overtime_request_status, "PENDING")
+
+    async def test_return_blocks_self_locked_posted_closed_and_exported(self):
+        with self.assertRaises(PermissionDeniedError):
+            await self.reverse(actor_employee_id=self.employee.id)
+        for field in ("payroll_posted", "is_locked"):
+            target = self.application if field == "payroll_posted" else self.attendance
+            setattr(target, field, True)
+            with self.assertRaises(ConflictError):
+                await self.reverse()
+            setattr(target, field, False)
+        for cutoff_changes in (
+            {"attendance_deadline": NOW - timedelta(seconds=1)},
+            {"attendance_finalized_at": NOW}, {"locked_at": NOW}, {"export_batch_id": uuid4()},
+        ):
+            self.repository.cutoff = OvertimeCutoff("OCT", date(2026, 10, 1), date(2026, 10, 15), **cutoff_changes)
+            with self.assertRaises(ConflictError):
+                await self.reverse()
+        self.assertEqual(self.application.status, "APPROVED")
+        self.assertEqual(self.repository.returns, [])
+
+    async def test_return_requires_a_resolved_cutoff(self):
+        self.repository.cutoff = None
+        with self.assertRaisesRegex(RuleViolationError, "No current payroll cutoff"):
+            await self.reverse()
+        self.assertEqual(self.application.status, "APPROVED")
+
+    async def test_history_failure_does_not_change_application_or_refresh(self):
+        self.repository.record_approval_return = AsyncMock(side_effect=RuntimeError("History unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "History unavailable"):
+            await self.reverse()
+        self.assertEqual(self.application.status, "APPROVED")
+        self.refresher.request_refresh.assert_not_called()
+
+    async def test_reason_and_routing_failures_do_not_return_approval(self):
+        with self.assertRaises(RuleViolationError):
+            await self.reverse(reason="   ")
+        self.repository.assign_return_approver = AsyncMock(side_effect=ConflictError("No approver"))
+        with self.assertRaisesRegex(ConflictError, "No approver"):
+            await self.reverse()
+        self.assertEqual(self.application.status, "APPROVED")
+        self.assertEqual(self.repository.returns, [])
+
+    async def test_repository_records_reason_and_requires_resolved_route(self):
+        session = SimpleNamespace(add=MagicMock(), flush=AsyncMock())
+        repository = SqlAlchemyOvertimeRepository(session)
+        await repository.record_approval_return(self.application, self.actor_id, "Correction")
+        entry = session.add.call_args.args[0]
+        self.assertEqual((entry.application_id, entry.actor_id, entry.reason), (self.application.id, self.actor_id, "Correction"))
+        self.assertEqual((entry.previous_approved_minutes, entry.previous_payable_minutes), (60, 60))
+        with patch("app.attendance.infrastructure.overtime_repository.assign_org_approval", new=AsyncMock()) as route:
+            await repository.assign_return_approver(self.application.id, self.employee.id, self.actor_id, NOW.date())
+        self.assertEqual(route.await_args.kwargs["permission_code"], "overtime.approve_team")
+        self.assertFalse(route.await_args.kwargs["hold_unresolved"])
+
+    async def test_both_hr_endpoints_require_live_hr_dashboard_access(self):
+        routes = [route for route in overtime_router.routes if route.path in {
+            "/overtime-applications/hr/approved",
+            "/overtime-applications/{application_id}/return-for-approval",
+        }]
+        self.assertEqual(len(routes), 2)
+        for route in routes:
+            self.assertIn(require_hr_dashboard_access, [dependency.call for dependency in route.dependant.dependencies])
+
+    async def test_approved_list_sorts_before_pagination_and_excludes_own(self):
+        engine = create_engine("sqlite://")
+        connection = engine.connect()
+        try:
+            connection.execute(text("ATTACH DATABASE ':memory:' AS attendance"))
+            connection.execute(text("ATTACH DATABASE ':memory:' AS hr"))
+            connection.execute(text("CREATE TABLE hr.employees (id CHAR(32), first_name TEXT, last_name TEXT)"))
+            connection.execute(text(
+                "CREATE TABLE attendance.overtime_applications (id CHAR(32), employee_id CHAR(32), "
+                "application_no TEXT, status TEXT, is_active BOOLEAN, overtime_type TEXT, "
+                "attendance_date DATE, final_payable_minutes INTEGER)"
+            ))
+            records = {}
+            excluded_employee = None
+            for index in range(30):
+                app_id, employee_id = uuid4(), uuid4()
+                if index == 0:
+                    excluded_employee = employee_id
+                name = f"Employee {29 - index:02}"
+                connection.execute(text("INSERT INTO hr.employees VALUES (:id, :name, 'Test')"),
+                                   {"id": employee_id.hex, "name": name})
+                connection.execute(text(
+                    "INSERT INTO attendance.overtime_applications VALUES "
+                    "(:id, :employee, :number, 'APPROVED', 1, 'REST_DAY_WORK', '2026-10-12', :minutes)"
+                ), {"id": app_id.hex, "employee": employee_id.hex, "number": f"OT-{index:02}", "minutes": 30 - index})
+                records[app_id] = (
+                    SimpleNamespace(id=app_id, application_no=f"OT-{index:02}", overtime_type="REST_DAY_WORK",
+                                    attendance_date=date(2026, 10, 12), final_payable_minutes=30 - index),
+                    SimpleNamespace(employee_no=f"E{index:02}", first_name=name, last_name="Test"),
+                )
+            async def execute(statement):
+                ids = connection.scalars(statement.with_only_columns(OvertimeApplicationModel.id, maintain_column_froms=True)).all()
+                return SimpleNamespace(all=lambda: [records[app_id] for app_id in ids])
+
+            uow = FakeUnitOfWork(None)
+            uow.session = SimpleNamespace(execute=execute)
+            async def page(offset, key, direction):
+                return (await list_approved_overtime_for_return(
+                    date(2026, 10, 1), date(2026, 10, 31), offset, key, direction, (self.actor_id, uuid4()), uow,
+                )).data
+            first, second = await page(0, "employee", "asc"), await page(25, "employee", "asc")
+            self.assertEqual(first.next_offset, 25)
+            self.assertIsNone(second.next_offset)
+            self.assertEqual([row.employee_name for row in first.items + second.items],
+                             [f"Employee {index:02} Test" for index in range(30)])
+            paid = await page(0, "payable_minutes", "asc")
+            self.assertEqual([row.payable_minutes for row in paid.items], list(range(1, 26)))
+            own_excluded = (await list_approved_overtime_for_return(
+                date(2026, 10, 1), date(2026, 10, 31), 0, "application", "asc",
+                (self.actor_id, excluded_employee), uow,
+            )).data
+            self.assertNotIn("OT-00", [item.application_no for item in own_excluded.items])
+        finally:
+            connection.close()
+            engine.dispose()
 
 
 class OvertimeAttendanceOptionsTests(unittest.IsolatedAsyncioTestCase):

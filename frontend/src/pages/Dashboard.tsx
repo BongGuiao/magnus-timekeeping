@@ -232,6 +232,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [isAttendanceExceptionsOpen, setIsAttendanceExceptionsOpen] = useState(false)
   const [isRegularizationOpen, setIsRegularizationOpen] = useState(false)
   const [isLeaveReversalOpen, setIsLeaveReversalOpen] = useState(false)
+  const [isOvertimeReversalOpen, setIsOvertimeReversalOpen] = useState(false)
   const [isPunchedEmployeesOpen, setIsPunchedEmployeesOpen] = useState(false)
   const [punchedEmployeesDate, setPunchedEmployeesDate] = useState(() => getManilaDate())
   const [punchedEmployees, setPunchedEmployees] = useState<AdminPunchedEmployee[]>([])
@@ -293,6 +294,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       setIsAttendanceExceptionsOpen(false)
       setIsRegularizationOpen(false)
       setIsLeaveReversalOpen(false)
+      setIsOvertimeReversalOpen(false)
       setIsPunchedEmployeesOpen(false)
     }
     window.addEventListener('dashboard-role-change', updateRole)
@@ -986,6 +988,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     setIsAttendanceExceptionsOpen(false)
     setIsRegularizationOpen(false)
     setIsLeaveReversalOpen(false)
+    setIsOvertimeReversalOpen(false)
     setIsPunchedEmployeesOpen(false)
     setIsTeamHoursOpen(false)
     setIsTeamLocationsOpen(false)
@@ -1230,6 +1233,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       open: isLeaveReversalOpen, controls: 'hr-leave-reversal',
       onClick: () => toggleTeamReview(isLeaveReversalOpen, () => setIsLeaveReversalOpen(true)),
     })
+    adminReviews.push({
+      id: 'overtime-reversal', label: 'Return approved overtime for approval',
+      open: isOvertimeReversalOpen, controls: 'hr-overtime-reversal',
+      onClick: () => toggleTeamReview(isOvertimeReversalOpen, () => setIsOvertimeReversalOpen(true)),
+    })
   }
 
   return (
@@ -1249,6 +1257,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
         {isHrAdminDashboard && isRegularizationOpen && <RegularizationDashboard state={regularization} />}
         {isHrAdminDashboard && isLeaveReversalOpen && <LeaveApprovalReversal />}
+        {isHrAdminDashboard && isOvertimeReversalOpen && <LeaveApprovalReversal mode="overtime" />}
 
         {canResolveAttendanceExceptions && (
           <section

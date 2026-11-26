@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import SortHeader from '../../components/common/SortHeader'
 import { EMPLOYMENT_ASSIGNMENT_CHANGED_EVENT, getManilaDate } from '../../lib/employeeRelatedApi'
 import {
   dismissRegularizationNotification,
   fetchRegularizationReview,
-  type RegularizationReview,
+  type RegularizationCandidate, type RegularizationReview,
 } from '../../lib/regularizationApi'
+
+type CandidateSortKey = 'employee' | 'company' | 'employment_type' | 'hire_date' | 'six_month_date' | 'days_remaining'
+type Direction = 'asc' | 'desc'
 
 export function useRegularizationDashboard(enabled: boolean) {
   const [review, setReview] = useState<RegularizationReview | null>(null)
@@ -95,6 +99,31 @@ export function RegularizationNotice({ state }: { state: RegularizationState }) 
 
 export default function RegularizationDashboard({ state }: { state: RegularizationState }) {
   const { review, refresh } = state
+  const [sortKey, setSortKey] = useState<CandidateSortKey>('six_month_date')
+  const [direction, setDirection] = useState<Direction>('asc')
+  const columns: Array<{ key: CandidateSortKey; label: string }> = [
+    { key: 'employee', label: 'Employee' }, { key: 'company', label: 'Company / org unit' },
+    { key: 'employment_type', label: 'Employment type' }, { key: 'hire_date', label: 'Hire date' },
+    { key: 'six_month_date', label: 'Six months' }, { key: 'days_remaining', label: 'Remaining' },
+  ]
+  function value(candidate: RegularizationCandidate): string | number {
+    if (sortKey === 'employee') return candidate.employee_name
+    if (sortKey === 'company') return `${candidate.company_name} ${candidate.org_unit_name ?? ''}`
+    return candidate[sortKey]
+  }
+  const candidates = [...(review?.candidates ?? [])].sort((a, b) => {
+    const left = value(a)
+    const right = value(b)
+    const comparison = typeof left === 'number' && typeof right === 'number'
+      ? left - right : String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' })
+    return (direction === 'asc' ? comparison : -comparison)
+      || a.employee_no.localeCompare(b.employee_no, undefined, { numeric: true })
+      || a.assignment_id.localeCompare(b.assignment_id)
+  })
+  function changeSort(key: CandidateSortKey) {
+    setDirection(sortKey === key && direction === 'asc' ? 'desc' : 'asc')
+    setSortKey(key)
+  }
   return (
     <section id="regularization-candidate-list" className="mt-4 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm" aria-label="Regularization candidates">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -107,10 +136,11 @@ export default function RegularizationDashboard({ state }: { state: Regularizati
           {review.candidates.length === 0 && <p className="text-sm text-slate-500">No regularization candidates.</p>}
           <table className="w-full min-w-[700px] text-left text-sm">
             <thead className="border-b border-slate-200 text-xs uppercase text-slate-500">
-              <tr><th className="p-2">Employee</th><th className="p-2">Company / org unit</th><th className="p-2">Employment type</th><th className="p-2">Hire date</th><th className="p-2">Six months</th><th className="p-2">Remaining</th></tr>
+              <tr>{columns.map((column) => <SortHeader key={column.key} label={column.label} active={sortKey === column.key}
+                direction={direction} onClick={() => changeSort(column.key)} className="p-2" />)}</tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {review.candidates.map((candidate) => (
+              {candidates.map((candidate) => (
                 <tr key={candidate.assignment_id}>
                   <td className="p-2"><span className="font-semibold">{candidate.employee_name}</span><br />{candidate.employee_no}</td>
                   <td className="p-2">{candidate.company_name}<br />{candidate.org_unit_name ?? 'No org unit'}</td>

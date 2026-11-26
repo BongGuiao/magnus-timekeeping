@@ -31,6 +31,7 @@ from app.attendance.application.overtime_use_cases import (
     ListMyOvertimeApplicationsUseCase,
     ListPendingOvertimeApplicationsUseCase,
     RecalculateAttendanceRangeUseCase,
+    ReturnOvertimeApprovalUseCase,
     SubmitOvertimeApplicationUseCase,
     UpdateOvertimeApplicationUseCase,
 )
@@ -147,6 +148,12 @@ def get_decide_overtime_application_use_case(
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ) -> DecideOvertimeApplicationUseCase:
     return DecideOvertimeApplicationUseCase(uow, CeleryRecentAttendanceRefresher(), ElasticsearchAuditTrail(es_client))
+
+
+def get_return_overtime_approval_use_case(
+    uow: SqlAlchemyAttendanceUnitOfWork = Depends(get_attendance_unit_of_work),
+) -> ReturnOvertimeApprovalUseCase:
+    return ReturnOvertimeApprovalUseCase(uow, CeleryRecentAttendanceRefresher())
 
 
 def get_list_invalid_attendance_use_case(
