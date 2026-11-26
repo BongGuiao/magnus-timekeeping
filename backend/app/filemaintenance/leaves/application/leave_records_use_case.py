@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
 from app.auth.infrastructure.approval_routing import (
     approval_route_scope,
     assign_org_approval,
@@ -35,6 +35,7 @@ from app.filemaintenance.leaves.infrastructure.leave_records_db_model import (
 )
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
+from app.filemaintenance.leaves.application.leave_duration import LeaveDuration, calculate_leave_duration
 
 EntityT = TypeVar("EntityT")
 ModelT = TypeVar("ModelT")
@@ -67,6 +68,64 @@ def calculate_available_minutes(values: dict[str, Any]) -> int:
 
 def approved_leave_charge_minutes(requested_minutes: int, available_minutes: int) -> int:
     return min(requested_minutes, max(available_minutes, 0))
+
+
+async def _validated_duration(
+    session: Any, employee_id: UUID, start_at: datetime, end_at: datetime, requested_minutes: int,
+) -> LeaveDuration:
+    duration = await calculate_leave_duration(session, employee_id, start_at, end_at)
+    if not duration.requested_minutes:
+        raise ValueError("This period covers no scheduled work. No leave application is required.")
+    if duration.requested_minutes != requested_minutes:
+        raise ValueError(
+            f"The scheduled leave duration is {duration.requested_minutes} minutes. "
+            "Refresh the calculation and review the application."
+        )
+    return duration
+
+
+async def _replace_draft_days(session: Any, application_id: UUID, duration: LeaveDuration) -> None:
+    rows = list((await session.scalars(
+        select(LeaveApplicationDateModel).where(
+            LeaveApplicationDateModel.leave_application_id == application_id,
+        ).with_for_update()
+    )).all())
+    if {row.leave_date: row.requested_minutes for row in rows} == {
+        day.work_date: day.requested_minutes for day in duration.days
+    }:
+        return
+    if any(
+        row.roster_id is not None or row.approved_paid_minutes or row.approved_unpaid_minutes
+        or row.attendance_overlap_minutes or row.final_charge_minutes or row.holiday_flag or row.rest_day_flag
+        for row in rows
+    ):
+        raise ValueError("This draft has manually maintained leave-day details. Contact HR before changing its dates.")
+    await session.execute(delete(LeaveApplicationDateModel).where(
+        LeaveApplicationDateModel.leave_application_id == application_id,
+    ))
+    for day in duration.days:
+        session.add(LeaveApplicationDateModel(
+            leave_application_id=application_id, leave_date=day.work_date,
+            requested_minutes=day.requested_minutes,
+        ))
+
+
+async def _verify_saved_days(session: Any, application: LeaveApplicationModel, duration: LeaveDuration):
+    rows = list((await session.scalars(
+        select(LeaveApplicationDateModel).where(
+            LeaveApplicationDateModel.leave_application_id == application.id,
+        ).with_for_update()
+    )).all())
+    expected = {day.work_date: day.requested_minutes for day in duration.days}
+    if rows and {row.leave_date: row.requested_minutes for row in rows} != expected:
+        raise ValueError("The scheduled leave dates changed. Contact HR and submit a new application.")
+    return rows
+
+
+async def _require_duration_open(session: Any, employee_id: UUID, duration: LeaveDuration, stage: DeadlineStage) -> None:
+    await require_attendance_open(
+        session, employee_id, duration.days[0].work_date, duration.days[-1].work_date, stage=stage,
+    )
 
 
 async def _validate_leave_type_company(
@@ -179,17 +238,21 @@ def _validate_entitlement_grant_rules(
 
 async def _post_approved_leave_charge(session: Any, application: LeaveApplicationModel, actor_id: UUID) -> None:
     ledger_result = await session.execute(
-        select(LeaveLedgerModel.id)
+        select(func.coalesce(func.sum(LeaveLedgerModel.minutes_delta), 0))
         .where(
             LeaveLedgerModel.reference_type == "LEAVE_APPLICATION",
             LeaveLedgerModel.reference_id == application.id,
-            LeaveLedgerModel.transaction_type == "LEAVE_USED",
+            LeaveLedgerModel.transaction_type.in_(("LEAVE_USED", "LEAVE_REVERSAL")),
         )
-        .limit(1)
     )
-    if ledger_result.scalar_one_or_none() is not None:
-        return
+    if ledger_result.scalar_one_or_none():
+        raise ValueError("This application already has an outstanding leave charge. Contact HR.")
 
+    duration = await _validated_duration(
+        session, application.employee_id, application.start_at, application.end_at, application.requested_minutes,
+    )
+    await _require_duration_open(session, application.employee_id, duration, "APPROVAL")
+    existing_days = await _verify_saved_days(session, application, duration)
     entitlement_year = application.start_at.astimezone(ZoneInfo("Asia/Manila")).year
     entitlement_result = await session.execute(
         select(EmployeeEntitlementModel)
@@ -218,6 +281,21 @@ async def _post_approved_leave_charge(session: Any, application: LeaveApplicatio
     )
     application.paid_minutes = charged_minutes
     application.unpaid_minutes = application.requested_minutes - charged_minutes
+    by_date = {row.leave_date: row for row in existing_days}
+    remaining = charged_minutes
+    for day in duration.days:
+        paid = min(day.requested_minutes, remaining)
+        remaining -= paid
+        row = by_date.get(day.work_date)
+        if row is None:
+            row = LeaveApplicationDateModel(
+                leave_application_id=application.id, leave_date=day.work_date,
+                requested_minutes=day.requested_minutes,
+            )
+            session.add(row)
+        row.approved_paid_minutes = paid
+        row.approved_unpaid_minutes = day.requested_minutes - paid
+        row.final_charge_minutes = paid
 
     now = datetime.now(timezone.utc)
     entitlement.used_minutes += charged_minutes
@@ -445,6 +523,97 @@ class LeaveApplicationUseCase:
     def __init__(self, uow: GenUnitOfWork):
         self.uow = uow
 
+    async def return_approved_to_pending(
+        self, application_id: UUID, actor_id: UUID, actor_employee_id: UUID, reason: str,
+    ) -> LeaveApplicationEntity | None:
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("A reason is required to return an approved leave application.")
+        async with self.uow as active_uow:
+            session = active_uow.session
+            if session is None:
+                raise RuntimeError("UnitOfWork session is not active.")
+            application = (await session.execute(
+                select(LeaveApplicationModel).where(LeaveApplicationModel.id == application_id).with_for_update()
+            )).scalar_one_or_none()
+            if application is None or not application.is_active:
+                return None
+            if application.employee_id == actor_employee_id:
+                raise ValueError("Another HR administrator must return your own leave application.")
+            if application.status != "APPROVED":
+                raise ValueError("Only approved leave applications can be returned for approval.")
+            if application.payroll_posted:
+                raise ValueError("Payroll-posted leave cannot be returned for approval.")
+
+            days = list((await session.scalars(
+                select(LeaveApplicationDateModel)
+                .where(LeaveApplicationDateModel.leave_application_id == application.id)
+                .order_by(LeaveApplicationDateModel.leave_date)
+                .with_for_update()
+            )).all())
+            start = application.start_at.astimezone(ZoneInfo("Asia/Manila")).date()
+            end = (application.end_at - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).date()
+            if days:
+                start = min(start, days[0].leave_date)
+                end = max(end, days[-1].leave_date)
+            await require_attendance_open(session, application.employee_id, start, end, stage="APPROVAL", lock_for_update=True)
+
+            net = (await session.execute(
+                select(func.coalesce(func.sum(LeaveLedgerModel.minutes_delta), 0)).where(
+                    LeaveLedgerModel.reference_type == "LEAVE_APPLICATION",
+                    LeaveLedgerModel.reference_id == application.id,
+                    LeaveLedgerModel.transaction_type.in_(("LEAVE_USED", "LEAVE_REVERSAL")),
+                )
+            )).scalar_one()
+            paid = application.paid_minutes or 0
+            if net != -paid:
+                raise ValueError("The leave charge and ledger do not match. Contact HR to review this application.")
+            year = application.start_at.astimezone(ZoneInfo("Asia/Manila")).year
+            entitlement = (await session.execute(
+                select(EmployeeEntitlementModel).where(
+                    EmployeeEntitlementModel.employee_id == application.employee_id,
+                    EmployeeEntitlementModel.leave_type_id == application.leave_type_id,
+                    EmployeeEntitlementModel.entitlement_year == year,
+                ).with_for_update()
+            )).scalar_one_or_none()
+            if entitlement is None or entitlement.used_minutes < paid:
+                raise ValueError("The matching leave entitlement cannot be safely restored. Contact HR.")
+
+            await assign_org_approval(
+                session, resource_type="leave_application", resource_id=application.id,
+                employee_id=application.employee_id, assigned_by=actor_id,
+                on_date=datetime.now(ZoneInfo("Asia/Manila")).date(),
+                permission_code="leave.approve_team",
+            )
+            now = datetime.now(timezone.utc)
+            entitlement.used_minutes -= paid
+            entitlement.available_minutes = calculate_available_minutes(
+                {field: getattr(entitlement, field) for field in BALANCE_FIELDS}
+            )
+            entitlement.last_calculated_at = now
+            session.add(LeaveLedgerModel(
+                employee_id=application.employee_id, leave_type_id=application.leave_type_id,
+                transaction_date=application.start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
+                transaction_type="LEAVE_REVERSAL", reference_type="LEAVE_APPLICATION",
+                reference_id=application.id, minutes_delta=paid,
+                balance_after_minutes=entitlement.available_minutes,
+                remarks=f"Returned {application.application_no} for approval: {reason}", posted_by=actor_id,
+            ))
+            for day in days:
+                day.approved_paid_minutes = 0
+                day.approved_unpaid_minutes = 0
+                day.final_charge_minutes = 0
+            application.status = "PENDING"
+            application.paid_minutes = None
+            application.unpaid_minutes = None
+            application.approved_at = None
+            application.updated_by = actor_id
+            application.updated_at = now
+            application.row_version += 1
+            await session.flush()
+            await session.refresh(application)
+            return _to_entity(application, LeaveApplicationEntity)
+
     async def create(self, values: dict[str, Any]) -> LeaveApplicationEntity:
         if values.get("status") in ("APPROVED", "REJECTED"):
             raise ValueError("Create a draft or pending leave application and use its approval workflow.")
@@ -459,10 +628,14 @@ class LeaveApplicationUseCase:
                 values["leave_type_id"],
                 local_start.date(),
             )
+            duration = await _validated_duration(
+                session, values["employee_id"], values["start_at"], values["end_at"], values["requested_minutes"],
+            )
             await _require_leave_open(
                 session, values["employee_id"], values["start_at"], values["end_at"],
                 stage="APPROVAL" if values.get("status") == "APPROVED" else "FILING",
             )
+            await _require_duration_open(session, values["employee_id"], duration, "FILING")
             await _lock_matching_entitlements(
                 session, values["employee_id"], values["leave_type_id"], local_start.year,
                 (values["end_at"] - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).year,
@@ -470,6 +643,7 @@ class LeaveApplicationUseCase:
             model = LeaveApplicationModel(**values)
             session.add(model)
             await session.flush()
+            await _replace_draft_days(session, model.id, duration)
             if model.status == "PENDING":
                 await assign_org_approval(
                     session,
@@ -517,6 +691,11 @@ class LeaveApplicationUseCase:
                 model.leave_type_id,
                 model.start_at.astimezone(ZoneInfo("Asia/Manila")).date(),
             )
+            duration = await _validated_duration(
+                active_uow.session, model.employee_id, model.start_at, model.end_at, model.requested_minutes,
+            )
+            await _require_duration_open(active_uow.session, model.employee_id, duration, "FILING")
+            await _verify_saved_days(active_uow.session, model, duration)
 
             now = datetime.now(timezone.utc)
             await assign_org_approval(
@@ -777,6 +956,20 @@ class LeaveApplicationUseCase:
             )
             next_year = next_start_at.astimezone(ZoneInfo("Asia/Manila")).year
             next_end_at = values.get("end_at", model.end_at)
+            duration = None
+            if model.status == "DRAFT" and next_status == "DRAFT":
+                duration = await _validated_duration(
+                    active_uow.session, next_employee_id, next_start_at, next_end_at,
+                    values.get("requested_minutes", model.requested_minutes),
+                )
+                await _require_duration_open(active_uow.session, next_employee_id, duration, "FILING")
+            elif model.status == "DRAFT" and next_status == "PENDING":
+                duration_to_submit = await _validated_duration(
+                    active_uow.session, next_employee_id, next_start_at, next_end_at,
+                    values.get("requested_minutes", model.requested_minutes),
+                )
+                await _require_duration_open(active_uow.session, next_employee_id, duration_to_submit, "FILING")
+                await _verify_saved_days(active_uow.session, model, duration_to_submit)
             next_end_year = (next_end_at - timedelta(microseconds=1)).astimezone(ZoneInfo("Asia/Manila")).year
             if (
                 next_employee_id != model.employee_id
@@ -813,6 +1006,8 @@ class LeaveApplicationUseCase:
                 )
             for key, value in values.items():
                 setattr(model, key, value)
+            if duration is not None:
+                await _replace_draft_days(active_uow.session, model.id, duration)
             if next_status == "APPROVED" and not was_approved:
                 if actor_id is None:
                     raise ValueError("An actor is required to approve a leave application.")

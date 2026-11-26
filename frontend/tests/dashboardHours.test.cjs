@@ -39,7 +39,8 @@ test('employee snapshot maps exact net minutes and requests a live refresh', asy
         return { data: { data: {
           records: [{ date: '2026-10-12', time_in: 'in', time_out: 'out', minutes_worked: 481, status: 'present' }],
           weekly_minutes_worked: 481, weekly_hours_worked: 8.02,
-          missed_clock_ins_this_month: 0, refreshed_at: '2026-10-12T17:00:00+08:00',
+          missed_clock_ins_this_month: 1, recorded_absence_dates: ['2026-10-02'],
+          refreshed_at: '2026-10-12T17:00:00+08:00',
         } } }
       } },
     }
@@ -51,6 +52,33 @@ test('employee snapshot maps exact net minutes and requests a live refresh', asy
   assert.equal(requested[1].params.force_refresh, true)
   assert.equal(snapshot.weeklyHoursWorked, 481 / 60)
   assert.equal(snapshot.entries[0].minutesWorked, 481)
+  assert.equal(snapshot.missedClockInsThisMonth, 1)
+  assert.equal(snapshot.recordedAbsenceDates[0], '2026-10-02')
+})
+
+test('employee snapshot reports unavailable absence dates instead of showing an empty list', async () => {
+  const api = load('lib/attendanceApi.ts', (name) => {
+    if (name === './apiClient') return {
+      apiClient: { get: async () => ({ data: { data: { recorded_absence_dates: null } } }) },
+    }
+    if (name === './attendanceDevice') return {}
+    return require(name)
+  })
+  await assert.rejects(api.fetchRecentAttendanceSnapshot(), /Recorded absence dates are unavailable/)
+})
+
+test('employee recorded absences display dates and report failures explicitly', () => {
+  const { RecordedAbsencesPanel } = load('pages/Dashboard.tsx', (name) => {
+    if (name.startsWith('../')) return {}
+    return require(name)
+  })
+  const render = (props) => renderToStaticMarkup(React.createElement(RecordedAbsencesPanel, props))
+  const html = render({ dates: ['2026-10-02'], isLoading: false, error: null })
+  assert.match(html, /October 2, 2026/)
+  assert.match(render({ dates: [], isLoading: false, error: null }), /No recorded absences this month/)
+  const errorHtml = render({ dates: ['2026-10-02'], isLoading: false, error: 'Could not load attendance.' })
+  assert.match(errorHtml, /Could not load attendance/)
+  assert.doesNotMatch(errorHtml, /October 2, 2026/)
 })
 
 test('administrator total exactly tallies employee minutes despite rounded decimal hours', () => {

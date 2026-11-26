@@ -4,6 +4,10 @@ from datetime import date, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import create_engine, select, text
+
+from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
+from app.filemaintenance.payroll_cutoffs.application.use_case import _leave_overlaps_period
 from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result import (
     AttendanceFact,
     ExceptionFact,
@@ -17,6 +21,51 @@ from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result 
 
 
 class EmployeeCutoffCalculationTests(unittest.TestCase):
+    def test_payroll_lookup_includes_overnight_leave_by_work_date(self) -> None:
+        employee_leave_id = uuid4()
+        unrelated_id = uuid4()
+        engine = create_engine("sqlite://")
+        with engine.begin() as connection:
+            connection.execute(text("ATTACH DATABASE ':memory:' AS leave_mgmt"))
+            connection.execute(text(
+                "CREATE TABLE leave_mgmt.leave_applications (id CHAR(32), start_at DATETIME, end_at DATETIME)"
+            ))
+            connection.execute(text(
+                "CREATE TABLE leave_mgmt.leave_application_dates (id CHAR(32), leave_application_id CHAR(32), leave_date DATE)"
+            ))
+            connection.execute(text(
+                "INSERT INTO leave_mgmt.leave_applications VALUES (:id, '2026-12-16 00:00:00.000000', '2026-12-16 05:00:00.000000')"
+            ), [{"id": employee_leave_id.hex}, {"id": unrelated_id.hex}])
+            connection.execute(text(
+                "INSERT INTO leave_mgmt.leave_application_dates VALUES (:id, :application_id, '2026-12-15')"
+            ), {"id": uuid4().hex, "application_id": employee_leave_id.hex})
+            selected = connection.scalars(
+                select(LeaveApplicationModel.id).where(_leave_overlaps_period(date(2026, 12, 1), date(2026, 12, 15)))
+            ).all()
+        engine.dispose()
+        self.assertEqual(selected, [employee_leave_id])
+
+    def test_leave_days_are_allocated_to_cutoffs_without_the_intervening_holiday(self) -> None:
+        employee_id = uuid4()
+        timezone = ZoneInfo("Asia/Manila")
+        leave = LeaveFact(
+            employee_id=employee_id,
+            start_at=datetime(2026, 12, 14, 9, tzinfo=timezone),
+            end_at=datetime(2026, 12, 16, 18, tzinfo=timezone),
+            paid_minutes=600,
+            unpaid_minutes=360,
+            days=(LeaveDayFact(date(2026, 12, 14), 480, 0), LeaveDayFact(date(2026, 12, 16), 120, 360)),
+        )
+        def calculate(start, end):
+            return calculate_employee_cutoff_totals(
+                employee_ids=[employee_id], attendance=[], leaves=[leave], overtime=[],
+                official_business=[], exceptions=[], period_start=start, period_end=end,
+            )[0]
+        first = calculate(date(2026, 12, 1), date(2026, 12, 15))
+        second = calculate(date(2026, 12, 16), date(2026, 12, 31))
+        self.assertEqual((first.paid_leave_minutes, first.unpaid_leave_minutes), (480, 0))
+        self.assertEqual((second.paid_leave_minutes, second.unpaid_leave_minutes), (120, 360))
+
     def test_carries_forward_late_approved_paid_leave_from_previous_cutoff(self) -> None:
         employee_id = uuid4()
         timezone = ZoneInfo("Asia/Manila")

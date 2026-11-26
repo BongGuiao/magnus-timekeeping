@@ -237,6 +237,7 @@ interface RecentAttendanceSnapshot {
   weekly_hours_worked: number
   weekly_minutes_worked: number
   missed_clock_ins_this_month: number
+  recorded_absence_dates: string[] | null
   refreshed_at: string
 }
 
@@ -650,12 +651,16 @@ export async function fetchRecentAttendanceSnapshot(): Promise<{
   entries: AttendanceLogEntry[]
   weeklyHoursWorked: number
   missedClockInsThisMonth: number
+  recordedAbsenceDates: string[]
   refreshedAt: string
 }> {
   try {
     const response = await apiClient.get<ApiSuccessEnvelope<RecentAttendanceSnapshot>>('/attendance/recent', {
       params: { force_refresh: true },
     })
+    if (!Array.isArray(response.data.data.recorded_absence_dates)) {
+      throw new Error('Recorded absence dates are unavailable. Please try again after the dashboard is updated.')
+    }
     return {
       entries: response.data.data.records.map((record) => ({
         date: record.date,
@@ -698,6 +703,7 @@ export async function fetchRecentAttendanceSnapshot(): Promise<{
       })),
       weeklyHoursWorked: response.data.data.weekly_minutes_worked / 60,
       missedClockInsThisMonth: response.data.data.missed_clock_ins_this_month,
+      recordedAbsenceDates: response.data.data.recorded_absence_dates,
       refreshedAt: response.data.data.refreshed_at,
     }
   } catch (err) {

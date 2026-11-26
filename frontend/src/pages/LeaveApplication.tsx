@@ -9,11 +9,11 @@ import {
   fetchLeaveTypes,
   fetchMyLeaveApplications,
   getAuthenticatedEmployeeId,
-  leaveUnitsToMinutes,
   minutesToLeaveUnits,
+  previewLeaveDuration,
   submitLeaveApplication,
 } from '../lib/leaveApi'
-import type { LeaveApplication, LeaveType } from '../lib/leaveApi'
+import type { LeaveApplication, LeaveDurationPreview, LeaveType } from '../lib/leaveApi'
 
 interface Props {
   employeeName: string
@@ -59,11 +59,11 @@ async function loadLeaveApplicationData(previewOnly: boolean) {
     fetchCurrentEmploymentAssignments(employeeId),
     fetchMyLeaveApplications(),
   ])
-  const assignmentWithPrimaryLocation = assignments.find((assignment) => assignment.primary_location_id)
-  if (!assignmentWithPrimaryLocation) {
-    throw new Error('No active employment assignment with a primary location was found, so company leave types cannot be loaded.')
+  const assignment = assignments.find((item) => item.primary_location_id) ?? assignments[0]
+  if (!assignment) {
+    throw new Error('No active employment assignment was found, so company leave types cannot be loaded.')
   }
-  const companyId = assignmentWithPrimaryLocation.company_id
+  const companyId = assignment.company_id
   const allTypes = (await fetchLeaveTypes({ companyId }))
     .filter((type) => type.company_id === companyId)
   return {
@@ -94,7 +94,6 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
   const [leaveTypeId, setLeaveTypeId] = useState('')
   const [startAt, setStartAt] = useState(() => localDateTime(1, 9))
   const [endAt, setEndAt] = useState(() => localDateTime(1, 18))
-  const [duration, setDuration] = useState('1')
   const [reason, setReason] = useState('')
   const [contactInformation, setContactInformation] = useState('')
   const [loading, setLoading] = useState(true)
@@ -102,6 +101,19 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
   const [submittingApplicationId, setSubmittingApplicationId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [durationCheck, setDurationCheck] = useState<{
+    key: string
+    result?: LeaveDurationPreview
+    error?: string
+  } | null>(null)
+
+  const startTime = new Date(startAt).getTime()
+  const endTime = new Date(endAt).getTime()
+  const checkKey = Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime
+    ? `${startAt}|${endAt}`
+    : ''
+  const currentCheck = durationCheck?.key === checkKey ? durationCheck : null
+  const checkingDuration = !previewOnly && Boolean(checkKey) && !currentCheck
 
   useEffect(() => {
     void loadLeaveApplicationData(previewOnly)
@@ -115,10 +127,24 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       .finally(() => setLoading(false))
   }, [previewOnly])
 
+  useEffect(() => {
+    if (previewOnly || !checkKey) return
+    let active = true
+    void previewLeaveDuration(new Date(startAt).toISOString(), new Date(endAt).toISOString())
+      .then((result) => {
+        if (active) setDurationCheck({ key: checkKey, result })
+      })
+      .catch((cause: unknown) => {
+        if (active) setDurationCheck({
+          key: checkKey,
+          error: cause instanceof Error ? cause.message : 'Could not calculate the leave duration.',
+        })
+      })
+    return () => { active = false }
+  }, [previewOnly, checkKey, startAt, endAt])
+
   const selectedLeaveType = leaveTypes.find((type) => type.id === leaveTypeId)
-  const requestedMinutes = selectedLeaveType
-    ? leaveUnitsToMinutes(Number(duration), selectedLeaveType.unit_type)
-    : 0
+  const requestedMinutes = currentCheck?.result?.requested_minutes
 
   async function submitDraft(applicationId: string) {
     setError('')
@@ -145,8 +171,8 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
       setError('There are no active leave types available for application.')
       return
     }
-    if (!Number.isFinite(requestedMinutes) || requestedMinutes <= 0) {
-      setError('Enter a leave duration greater than zero.')
+    if (requestedMinutes === undefined || requestedMinutes <= 0) {
+      setError('The leave period must cover scheduled work. Check the calculation and selected dates.')
       return
     }
     if (new Date(endAt) <= new Date(startAt)) {
@@ -193,7 +219,7 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
             <p className="text-xs font-bold uppercase tracking-wide text-indigo-600">Employee self-service</p>
             <h1 className="mt-1 text-2xl font-extrabold text-slate-900">Apply for Leave</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Leave duration follows the unit configured for each leave type. Your application is saved as a draft.
+              Leave duration is calculated from your schedule. Your application is saved as a draft.
             </p>
           </div>
           <button
@@ -225,27 +251,44 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
                   {leaveTypes.map((type) => <option key={type.id} value={type.id}>{type.leave_name} ({unitLabel(type.unit_type)})</option>)}
                 </select>
               </label>
-              <label className="text-sm font-semibold text-slate-700">
-                Requested duration ({selectedLeaveType ? unitLabel(selectedLeaveType.unit_type) : 'unit'})
-                <input
-                  required
-                  type="number"
-                  min="0.001"
-                  step="0.001"
-                  value={duration}
-                  onChange={(event) => setDuration(event.target.value)}
-                  className={inputClass}
-                />
-                {selectedLeaveType && <span className="mt-1 block text-xs font-normal text-slate-500">Equivalent to {leaveUnitsToMinutes(Number(duration) || 0, selectedLeaveType.unit_type).toLocaleString()} minutes</span>}
-              </label>
+              <div className="text-sm font-semibold text-slate-700">
+                Calculated duration
+                <p className="mt-1 font-normal">
+                  {selectedLeaveType && requestedMinutes !== undefined
+                    ? `${formatDuration(requestedMinutes, selectedLeaveType.unit_type)} (${requestedMinutes} minutes)`
+                    : 'Select valid dates to calculate.'}
+                </p>
+              </div>
               <label className="text-sm font-semibold text-slate-700">
                 Start
-                <input required type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} className={inputClass} />
+                <input required type="datetime-local" value={startAt} onChange={(event) => { setDurationCheck(null); setStartAt(event.target.value) }} className={inputClass} />
               </label>
               <label className="text-sm font-semibold text-slate-700">
                 End
-                <input required type="datetime-local" value={endAt} onChange={(event) => setEndAt(event.target.value)} className={inputClass} />
+                <input required type="datetime-local" value={endAt} onChange={(event) => { setDurationCheck(null); setEndAt(event.target.value) }} className={inputClass} />
               </label>
+              {checkingDuration && (
+                <p role="status" className="text-sm text-slate-600 sm:col-span-2">Calculating leave duration…</p>
+              )}
+              {currentCheck?.result && currentCheck.result.rest_days.length > 0 && (
+                <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:col-span-2">
+                  Rest days excluded: {currentCheck.result.rest_days.join(', ')}.
+                </p>
+              )}
+              {currentCheck?.result && currentCheck.result.holidays.length > 0 && (
+                <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:col-span-2">
+                  Non-working holidays excluded: {currentCheck.result.holidays.join(', ')}.
+                </p>
+              )}
+              {currentCheck?.result?.requested_minutes === 0 && (
+                <p role="alert" className="text-sm text-rose-700 sm:col-span-2">This period covers no scheduled work; no leave application is required.</p>
+              )}
+              {currentCheck?.error && (
+                <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 sm:col-span-2">
+                  Leave calculation unavailable: {currentCheck.error}
+                </p>
+              )}
+              <p className="text-xs text-slate-500 sm:col-span-2">Only published holiday calendars and the assigned work location are used; missing calendar or location information is treated as an ordinary workday. Balance is deducted only upon approval.</p>
               <label className="text-sm font-semibold text-slate-700 sm:col-span-2">
                 Reason
                 <textarea required minLength={1} value={reason} onChange={(event) => setReason(event.target.value)} rows={3} className={inputClass} />
@@ -257,7 +300,7 @@ export default function LeaveApplication({ employeeName, previewOnly = false, on
               <div className="sm:col-span-2">
                 <button
                   type="submit"
-                  disabled={previewOnly || saving || loading || leaveTypes.length === 0}
+                  disabled={previewOnly || saving || loading || checkingDuration || !requestedMinutes || leaveTypes.length === 0}
                   className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {saving ? 'Saving…' : 'Save draft'}

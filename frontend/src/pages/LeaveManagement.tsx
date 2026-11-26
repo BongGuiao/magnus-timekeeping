@@ -286,8 +286,6 @@ export default function LeaveManagement({ employeeName, onNavigate, onLoggedOut 
                 ['carryover_allowed', 'Allow carryover'],
                 ['cash_conversion_allowed', 'Allow cash conversion'],
                 ['document_required', 'Document required'],
-                ['exclude_rest_days', 'Exclude rest days'],
-                ['exclude_holidays', 'Exclude holidays'],
                 ['is_active', 'Active'],
               ] as const).map(([key, label]) => (
                 <label key={key} className="inline-flex items-center gap-2 text-sm text-slate-700">
@@ -295,6 +293,9 @@ export default function LeaveManagement({ employeeName, onNavigate, onLoggedOut 
                 </label>
               ))}
             </div>
+            <p className="text-sm text-slate-500 md:col-span-3">
+              Non-working holidays and rest days are excluded from all leave applications.
+            </p>
             <div className="flex justify-end gap-2 md:col-span-3">
               <button type="button" onClick={resetForm} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
               <button disabled={saving || !companyId} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-bold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60">

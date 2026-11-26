@@ -259,7 +259,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
         monthly_no_login_statement = (
             select(
                 AttendanceModel.user_id,
-                func.count(AttendanceModel.id).label("no_login_count"),
+                AttendanceModel.work_date,
             )
             .where(
                 AttendanceModel.record_status == "VALID",
@@ -269,7 +269,7 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
                 AttendanceModel.is_absent.is_(True),
                 AttendanceModel.leave_type.is_(None),
             )
-            .group_by(AttendanceModel.user_id)
+            .order_by(AttendanceModel.work_date.desc(), AttendanceModel.id)
         )
         if user_id is not None:
             monthly_no_login_statement = monthly_no_login_statement.where(
@@ -431,9 +431,10 @@ def load_recent_attendance_snapshots(user_id: str | None = None) -> dict[str, di
                     key,
                     {"records": [], "refreshed_at": refreshed_at, "weekly_minutes_worked": 0},
                 )
-                snapshot["missed_clock_ins_this_month"] = row.no_login_count
+                snapshot.setdefault("recorded_absence_dates", []).append(row.work_date.isoformat())
         for snapshot in snapshots.values():
-            snapshot.setdefault("missed_clock_ins_this_month", 0)
+            snapshot.setdefault("recorded_absence_dates", [])
+            snapshot["missed_clock_ins_this_month"] = len(snapshot["recorded_absence_dates"])
             snapshot["weekly_hours_worked"] = round(snapshot["weekly_minutes_worked"] / 60, 2)
     finally:
         engine.dispose()

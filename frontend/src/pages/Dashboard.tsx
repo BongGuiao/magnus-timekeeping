@@ -44,6 +44,7 @@ import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendan
 import UnresolvedAttendanceApprovals from '../features/attendance/UnresolvedAttendanceApprovals'
 import AttendanceExceptionsPanel from '../features/attendance/AttendanceExceptionsPanel'
 import RegularizationDashboard from '../features/employees/RegularizationDashboard'
+import LeaveApprovalReversal from '../features/employees/LeaveApprovalReversal'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -75,7 +76,7 @@ interface Props {
 type DeviceReviewStatus = Exclude<DeviceRecord['registration_status'], 'PENDING'>
 type AdminDashboardPanel = 'no-login' | 'no-logout' | 'pending-leaves' | 'weekly-hours' | 'invalid-attendance'
 type TeamAttendancePanel = 'no-login' | 'no-logout'
-type EmployeeDashboardPanel = 'attendance' | 'hours' | 'leave' | 'balances' | 'correction' | 'updates'
+type EmployeeDashboardPanel = 'attendance' | 'absences' | 'hours' | 'leave' | 'balances' | 'correction' | 'updates'
 
 function formatWeeklyHours(hours: number): string {
   const totalMinutes = Math.round(hours * 60)
@@ -103,6 +104,30 @@ function formatManilaDate(workDate: string): string {
     day: 'numeric',
     year: 'numeric',
   })
+}
+
+export function RecordedAbsencesPanel({ dates, isLoading, error }: {
+  dates: string[]
+  isLoading: boolean
+  error: string | null
+}) {
+  return (
+    <div id="employee-absences" className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="text-base font-semibold text-slate-700">Recorded absences this month</h2>
+      <p className="mt-1 text-sm text-slate-500">From the first day of this month through today, Philippine time.</p>
+      {error ? (
+        <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>
+      ) : isLoading ? (
+        <p className="mt-3 text-sm text-slate-500">Loading recorded absences…</p>
+      ) : dates.length === 0 ? (
+        <p className="mt-3 text-sm text-slate-500">No recorded absences this month.</p>
+      ) : (
+        <ul className="mt-3 space-y-2 text-sm text-slate-700">
+          {dates.map((date, index) => <li key={`${date}-${index}`}>{formatManilaDate(date)}</li>)}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 const punchedEmployeeColumns: DataTableColumn<AdminPunchedEmployee>[] = [
@@ -211,6 +236,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [recentAttendance, setRecentAttendance] = useState<AttendanceLogEntry[]>([])
   const [weeklyHoursWorked, setWeeklyHoursWorked] = useState<number | null>(null)
   const [missedClockInsThisMonth, setMissedClockInsThisMonth] = useState<number | null>(null)
+  const [recordedAbsenceDates, setRecordedAbsenceDates] = useState<string[]>([])
   const [attendanceSnapshotRefreshedAt, setAttendanceSnapshotRefreshedAt] = useState<string | null>(null)
   const [isLoadingRecentAttendance, setIsLoadingRecentAttendance] = useState(false)
   const [recentAttendanceError, setRecentAttendanceError] = useState<string | null>(null)
@@ -278,6 +304,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         setRecentAttendance(snapshot.entries)
         setWeeklyHoursWorked(snapshot.weeklyHoursWorked)
         setMissedClockInsThisMonth(snapshot.missedClockInsThisMonth)
+        setRecordedAbsenceDates(snapshot.recordedAbsenceDates)
         setAttendanceSnapshotRefreshedAt(snapshot.refreshedAt)
         setRecentAttendanceError(null)
       } catch (error) {
@@ -889,13 +916,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       description: 'Your attendance, leave balance, and work-hour summary.',
       metrics: [
         {
-          label: 'No Login',
+          label: 'Recorded Absences',
           value: isLoadingRecentAttendance
             ? 'Loading…'
             : recentAttendanceError
               ? 'Unavailable'
               : missedClockInsThisMonth ?? '—',
-          hint: 'Missed clock-ins this month',
+          hint: 'Recorded this month',
           icon: '🚪',
           accent: 'rose',
         },
@@ -1040,10 +1067,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   if (hasPermission('attendance.read_own')) {
     employeeMetrics.push(
       {
-        id: 'missing-in', label: 'Missed clock-ins this month',
+        id: 'missing-in', label: 'Recorded absences this month',
         value: isLoadingRecentAttendance ? '…' : recentAttendanceError ? 'Unavailable' : missedClockInsThisMonth ?? '—',
-        open: employeePanel === 'attendance', controls: 'employee-attendance',
-        onClick: () => toggleEmployeePanel('attendance'),
+        open: employeePanel === 'absences', controls: 'employee-absences',
+        onClick: () => toggleEmployeePanel('absences'),
       },
       {
         id: 'missing-out', label: 'Missing clock-outs (recent)',
@@ -1187,7 +1214,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
-        {roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN') && <RegularizationDashboard />}
+        {roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN') && <>
+          <RegularizationDashboard />
+          <LeaveApprovalReversal />
+        </>}
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
         ) : role === 'employee' ? (
@@ -1947,6 +1977,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                       />
                     )}
                   </div>
+                )}
+                {employeePanel === 'absences' && hasPermission('attendance.read_own') && (
+                  <RecordedAbsencesPanel dates={recordedAbsenceDates} isLoading={isLoadingRecentAttendance} error={recentAttendanceError} />
                 )}
                 {employeePanel === 'attendance' && hasPermission('attendance.read_own') && (
                   <div id="employee-attendance">

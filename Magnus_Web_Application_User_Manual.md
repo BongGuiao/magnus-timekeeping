@@ -62,6 +62,8 @@ For company-scoped setup and payroll, select the intended company in the top nav
 
 1. On Dashboard, open attendance, weekly hours, leave balances or recent requests as available. Use Reports > Attendance Detail for the detailed report within your permitted scope.
 
+   Select **Recorded absences this month** to see your recorded absence dates from the first of the calendar month through today in Philippine time. This is not the payroll cutoff; recent attendance uses the current cutoff.
+
 2. Use Timekeeping > Emergency CWS to view My Schedule and, when needed, request an emergency schedule change for a work date. Select the eligible replacement schedule and provide the reason.
 
 3. Confirm an emergency request is submitted and check its status. An approved change applies to the specified day, not the permanent assignment. Past-date requests are restricted by the filing window and eligibility rules.
@@ -94,11 +96,15 @@ The request covers the complete clock-in-to-clock-out interval without break ded
 
 ### 2.5 Apply for leave
 
-1. On Dashboard choose + Apply for Leave. Select the leave type and enter a positive requested duration in the unit shown, start and end, reason and optional contact information.
+1. On Dashboard choose + Apply for Leave. Select the leave type and enter the start and end, reason and optional contact information.
+
+   The duration is calculated from approved schedules, excluding rest days and non-working holidays. It uses published company calendars and the assigned work location; missing calendar or location information is treated as an ordinary workday. A missing schedule prevents filing. The period is limited to 93 days and cannot cross entitlement years. A period with no scheduled work cannot be filed.
+
+   For an overnight shift, the shift's work/start date determines its holiday and rest-day status. An unpaid break is deducted only when the entire shift is covered. The calculated duration is checked again on submission and approval; if the schedule or calendar changes, the application may need to be updated or refiled.
 
 2. Select Save draft. In My Leave Applications, locate the DRAFT and select Submit for approval. Saving the draft alone does not submit it.
 
-3. Check the application status and, once approved, its paid/unpaid breakdown. Contact HR if the leave type or balance is missing.
+3. Check the application status and, once approved, its paid/unpaid breakdown. Leave balance is deducted only on approval; available paid balance is allocated to the earliest leave days first. Contact HR if the leave type or balance is missing.
 
 ### 2.6 File official business
 
@@ -125,6 +131,14 @@ In the HR Admin dashboard view, **Regularization candidates** appears only when 
 An assignment appears starting 15 calendar days before its six-month date and remains until its employment type is changed to `REGULAR` or it is no longer active and current. Use **Refresh** after updating an assignment. The six-month date uses calendar months, with month-end dates adjusted to the last day of the target month.
 
 Each HR Admin sees one in-app reminder per Philippine calendar day when candidates exist and they open or refresh the dashboard. Select **Dismiss reminder** to hide that day's reminder; the candidate list stays available. A dashboard left open refreshes on a new day and window focus. There is no email or push notification when the dashboard is closed.
+
+### 2.9 Return an approved leave application
+
+In the HR Admin dashboard, open **Return approved leave for approval**, choose a date range and search. Select the application, enter the reason, then confirm **Return for approval**. An HR Admin cannot return their own leave; another HR Admin must do it.
+
+The application returns to pending and is assigned to the current eligible org-unit approver. If routing cannot be resolved, the return is blocked until HR corrects the organization setup. The paid leave charge is restored and the reason and reversal are recorded in the leave ledger. A new approval recalculates and charges the eligible paid amount again.
+
+The action is blocked for payroll-posted leave, closed approval deadlines, finalized or locked cutoffs, or inconsistent leave ledger/entitlement records. If payroll or attendance results were already calculated but remain open, recalculate them after the return. Older applications with missing or inconsistent charge records require HR review rather than automatic reversal.
 
 ## 3. Approver workflows
 
@@ -231,6 +245,8 @@ Company Parameters controls whether new direct assignments and upload batches re
 3. Under Settings > Company Setup > Payroll Setup > Calendar, maintain the applicable holiday calendar and dates. Link the intended calendar to the payroll group and schedule template where appropriate.
 
 Verify holiday classifications, leave units and paid/unpaid treatment with HR before the period is calculated. Calendar and policy changes can affect time and payroll results.
+
+Non-working holidays and rest days are excluded for every leave type; the legacy per-type exclusion settings no longer control this calculation. Older pending applications whose saved duration or daily breakdown differs from the current calculation must be reviewed and refiled before approval. Under Employee Entitlements, HR can open the read-only holiday leave review for potentially affected approved leave. It uses currently published calendars and assignments and cannot reconstruct missing historical data; review each result before any adjustment.
 
 ## 10. Payroll groups and cutoffs
 

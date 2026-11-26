@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from dataclasses import asdict
 import logging
 from typing import Any, Literal
@@ -8,21 +8,30 @@ from zoneinfo import ZoneInfo
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from kombu.exceptions import OperationalError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy import select
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
-from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
+from app.attendance.application.use_case import resolve_attendance_day_type, resolve_schedule_day
+from app.attendance.domain.worked_minutes import NONWORKING_DAY_TYPES
+from app.auth.application.authorization import GetCurrentAuthorizationUseCase
+from app.auth.infrastructure.dependencies import (
+    get_current_authorization_use_case, get_current_user_claims,
+    require_approval_permission, require_permission,
+)
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
+from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.leaves.application.entitlement_upload_use_case import (
     EntitlementUploadChangedError,
     EntitlementUploadInvalidError,
     EntitlementUploadUseCase,
 )
+from app.filemaintenance.leaves.application.leave_duration import calculate_leave_duration
 from app.filemaintenance.leaves.application.leave_records_use_case import (
     EmployeeEntitlementUseCase,
     LeaveApplicationDateUseCase,
@@ -43,6 +52,11 @@ from app.filemaintenance.leaves.infrastructure.leave_records_dependencies import
     get_leave_ledger_use_case,
 )
 from app.filemaintenance.leaves.infrastructure.entitlement_upload_csv import entitlement_upload_csv_template
+from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel
+from app.filemaintenance.holidays.calendar.infrastructure.db_model import HolidayCalendarModel
+from app.filemaintenance.holidays.holiday.infrastructure.db_model import HolidayModel
+from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
+from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationDateModel, LeaveApplicationModel
 from app.tasks.dashboard_tasks import (
     LEAVE_DASHBOARD_SNAPSHOT_PREFIX,
     refresh_leave_dashboard_snapshots,
@@ -62,6 +76,7 @@ ledger_router = APIRouter(
 logger = logging.getLogger(__name__)
 PH_TIMEZONE = ZoneInfo("Asia/Manila")
 MAX_ENTITLEMENT_UPLOAD_BYTES = 1024 * 1024
+MAX_REST_DAY_CHECK_DAYS = 93
 
 
 def _actor_id(claims: dict[str, Any]) -> UUID:
@@ -122,6 +137,278 @@ def _queue_leave_dashboard_refresh(employee_id: UUID) -> None:
             "Leave data was saved, but its dashboard snapshot refresh could not be queued.",
             extra={"employee_id": str(employee_id)},
         )
+
+
+async def require_hr_leave_reversal_access(
+    dashboard_role_code: str = Query(...),
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+    authorization_use_case: GetCurrentAuthorizationUseCase = Depends(get_current_authorization_use_case),
+) -> tuple[UUID, UUID]:
+    actor_id = _actor_id(claims)
+    authorization = await authorization_use_case.execute(actor_id)
+    if dashboard_role_code != "HR_ADMIN" or not any(
+        role.strip().upper() == "HR_ADMIN" for role in authorization.role_codes
+    ):
+        raise HTTPException(status_code=403, detail="This action requires the HR_ADMIN role and dashboard.")
+    if authorization.employee_id is None:
+        raise HTTPException(status_code=403, detail="An active employee profile is required for this action.")
+    return actor_id, authorization.employee_id
+
+
+class ApprovedLeaveForReversal(BaseModel):
+    id: UUID
+    application_no: str
+    employee_no: str
+    employee_name: str
+    leave_type: str
+    start_at: datetime
+    end_at: datetime
+    paid_minutes: int
+
+
+class ApprovedLeaveReversalPage(BaseModel):
+    items: list[ApprovedLeaveForReversal]
+    next_offset: int | None
+
+
+class LeaveReversalRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+@applications_router.get("/hr/approved", response_model=ResponseEnvelope[ApprovedLeaveReversalPage])
+async def list_approved_leave_for_reversal(
+    from_date: date, to_date: date,
+    offset: int = Query(default=0, ge=0),
+    actor: tuple[UUID, UUID] = Depends(require_hr_leave_reversal_access),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    if to_date < from_date or (to_date - from_date).days > 365:
+        raise HTTPException(status_code=422, detail="Choose a date range of at most 366 days.")
+    start = datetime.combine(from_date, datetime.min.time(), tzinfo=PH_TIMEZONE)
+    end = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=PH_TIMEZONE)
+    async with uow as active_uow:
+        session = active_uow.session
+        if session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        rows = (await session.execute(
+            select(LeaveApplicationModel, EmployeeModel, LeaveTypeModel)
+            .join(EmployeeModel, EmployeeModel.id == LeaveApplicationModel.employee_id)
+            .join(LeaveTypeModel, LeaveTypeModel.id == LeaveApplicationModel.leave_type_id)
+            .where(
+                LeaveApplicationModel.status == "APPROVED",
+                LeaveApplicationModel.is_active.is_(True),
+                LeaveApplicationModel.employee_id != actor[1],
+                LeaveApplicationModel.start_at < end, LeaveApplicationModel.end_at > start,
+            )
+            .order_by(LeaveApplicationModel.start_at.desc(), LeaveApplicationModel.id)
+            .offset(offset).limit(26)
+        )).all()
+    items = [
+        ApprovedLeaveForReversal(
+            id=application.id, application_no=application.application_no,
+            employee_no=employee.employee_no, employee_name=f"{employee.first_name} {employee.last_name}",
+            leave_type=leave_type.leave_name, start_at=application.start_at, end_at=application.end_at,
+            paid_minutes=application.paid_minutes or 0,
+        )
+        for application, employee, leave_type in rows[:25]
+    ]
+    return ResponseEnvelope(status="success", data=ApprovedLeaveReversalPage(
+        items=items, next_offset=offset + 25 if len(rows) > 25 else None,
+    ))
+
+
+@applications_router.post("/{application_id}/return-for-approval", response_model=ResponseEnvelope[LeaveApplicationEntity])
+async def return_approved_leave_for_approval(
+    application_id: UUID, payload: LeaveReversalRequest,
+    actor: tuple[UUID, UUID] = Depends(require_hr_leave_reversal_access),
+    use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
+    es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
+):
+    before = _require_record(await use_case.get(application_id), "Leave application not found.")
+    try:
+        result = await use_case.return_approved_to_pending(application_id, actor[0], actor[1], payload.reason)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    result = _require_record(result, "Leave application not found.")
+    await log_entity_action(
+        es_client, user_id=actor[0], action="RETURN_FOR_APPROVAL", resource="leave_application",
+        resource_id=application_id, before=before, after=result,
+    )
+    _queue_leave_dashboard_refresh(result.employee_id)
+    return ResponseEnvelope(status="success", data=result)
+
+
+class LeaveRestDayCheck(BaseModel):
+    rest_days: list[date]
+    unchecked_dates: list[date]
+
+
+class LeaveDurationPreview(BaseModel):
+    requested_minutes: int
+    holidays: list[date]
+    rest_days: list[date]
+
+
+class HolidayLeaveReviewItem(BaseModel):
+    application_no: str
+    employee_no: str
+    employee_name: str
+    leave_type: str
+    start_at: datetime
+    end_at: datetime
+    requested_minutes: int
+    paid_minutes: int
+    holiday_dates: list[date]
+    has_daily_breakdown: bool
+
+
+class HolidayLeaveReview(BaseModel):
+    items: list[HolidayLeaveReviewItem]
+    next_offset: int | None
+
+
+@entitlements_router.get("/holiday-review", response_model=ResponseEnvelope[HolidayLeaveReview])
+async def review_holiday_leave(
+    from_date: date,
+    to_date: date,
+    offset: int = Query(default=0, ge=0),
+    claims: dict[str, Any] = Depends(require_permission("leave.manage")),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    _actor_id(claims)
+    if to_date < from_date or (to_date - from_date).days > 365:
+        raise HTTPException(status_code=422, detail="Choose a date range of at most 366 days.")
+    start = datetime.combine(from_date, datetime.min.time(), tzinfo=PH_TIMEZONE)
+    end = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=PH_TIMEZONE)
+    page_size = 25
+    async with uow as active_uow:
+        session = active_uow.session
+        if session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        applications = (await session.execute(
+            select(LeaveApplicationModel, EmployeeModel, LeaveTypeModel)
+            .join(EmployeeModel, EmployeeModel.id == LeaveApplicationModel.employee_id)
+            .join(LeaveTypeModel, LeaveTypeModel.id == LeaveApplicationModel.leave_type_id)
+            .where(
+                LeaveApplicationModel.is_active.is_(True),
+                LeaveApplicationModel.status == "APPROVED",
+                LeaveApplicationModel.paid_minutes > 0,
+                LeaveApplicationModel.start_at < end,
+                LeaveApplicationModel.end_at > start,
+            )
+            .order_by(LeaveApplicationModel.start_at, LeaveApplicationModel.id)
+            .offset(offset).limit(page_size + 1)
+        )).all()
+        has_next = len(applications) > page_size
+        applications = applications[:page_size]
+        holiday_dates = set((await session.scalars(
+            select(HolidayModel.holiday_date).join(
+                HolidayCalendarModel, HolidayCalendarModel.id == HolidayModel.holiday_calendar_id,
+            ).where(
+                HolidayModel.holiday_date.between(from_date, to_date),
+                HolidayModel.status == "ACTIVE", HolidayModel.is_active.is_(True),
+                HolidayCalendarModel.status == "PUBLISHED", HolidayCalendarModel.is_active.is_(True),
+            )
+        )).all())
+        ids = [application.id for application, _, _ in applications]
+        dates_by_application: dict[UUID, list[LeaveApplicationDateModel]] = {}
+        if ids:
+            for day in (await session.scalars(
+                select(LeaveApplicationDateModel).where(LeaveApplicationDateModel.leave_application_id.in_(ids))
+            )).all():
+                dates_by_application.setdefault(day.leave_application_id, []).append(day)
+        items = []
+        resolved: dict[tuple[UUID, date], str] = {}
+        for application, employee, leave_type in applications:
+            first = max(from_date, application.start_at.astimezone(PH_TIMEZONE).date())
+            last = min(to_date, (application.end_at - timedelta(microseconds=1)).astimezone(PH_TIMEZONE).date())
+            rows = dates_by_application.get(application.id, [])
+            reliable_days = bool(rows) and sum(row.approved_paid_minutes for row in rows) == application.paid_minutes
+            paid_days = {row.leave_date for row in rows if row.approved_paid_minutes > 0}
+            potential = []
+            for day in sorted(holiday_dates):
+                if day < first or day > last or (reliable_days and day not in paid_days):
+                    continue
+                key = (application.employee_id, day)
+                if key not in resolved:
+                    resolved[key] = await resolve_attendance_day_type(session, *key)
+                if resolved[key] in NONWORKING_DAY_TYPES:
+                    potential.append(day)
+            if potential:
+                items.append(HolidayLeaveReviewItem(
+                    application_no=application.application_no,
+                    employee_no=employee.employee_no,
+                    employee_name=f"{employee.first_name} {employee.last_name}",
+                    leave_type=leave_type.leave_name,
+                    start_at=application.start_at,
+                    end_at=application.end_at,
+                    requested_minutes=application.requested_minutes,
+                    paid_minutes=application.paid_minutes,
+                    holiday_dates=potential,
+                    has_daily_breakdown=reliable_days,
+                ))
+    return ResponseEnvelope(status="success", data=HolidayLeaveReview(
+        items=items, next_offset=offset + page_size if has_next else None,
+    ))
+
+
+@applications_router.get("/duration-preview", response_model=ResponseEnvelope[LeaveDurationPreview])
+async def preview_leave_duration(
+    start_at: AwareDatetime,
+    end_at: AwareDatetime,
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.submit")),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    _actor_id(claims)
+    employee_id = _employee_id(claims)
+    async with uow as active_uow:
+        if active_uow.session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        try:
+            duration = await calculate_leave_duration(active_uow.session, employee_id, start_at, end_at)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    return ResponseEnvelope(
+        status="success",
+        data=LeaveDurationPreview(
+            requested_minutes=duration.requested_minutes,
+            holidays=list(duration.holidays),
+            rest_days=list(duration.rest_days),
+        ),
+    )
+
+
+@applications_router.get("/rest-day-check", response_model=ResponseEnvelope[LeaveRestDayCheck])
+async def check_leave_rest_days(
+    start_at: AwareDatetime,
+    end_at: AwareDatetime,
+    claims: dict[str, Any] = Depends(require_approval_permission("leave.submit")),
+    uow: GenUnitOfWork = Depends(get_unit_of_work),
+):
+    _actor_id(claims)
+    employee_id = _employee_id(claims)
+    if end_at <= start_at:
+        raise HTTPException(status_code=422, detail="end_at must be later than start_at.")
+    first = start_at.astimezone(PH_TIMEZONE).date()
+    last = (end_at - timedelta(microseconds=1)).astimezone(PH_TIMEZONE).date()
+    count = (last - first).days + 1
+    if count > MAX_REST_DAY_CHECK_DAYS:
+        raise HTTPException(status_code=422, detail=f"Rest-day checks are limited to {MAX_REST_DAY_CHECK_DAYS} days.")
+
+    rest_days = []
+    unchecked_dates = []
+    async with uow as active_uow:
+        if active_uow.session is None:
+            raise RuntimeError("UnitOfWork session is not active.")
+        for offset in range(count):
+            work_date = first + timedelta(days=offset)
+            schedule = await resolve_schedule_day(active_uow.session, employee_id, work_date)
+            context = schedule.schedule_context or {}
+            if not (context.get("schedule_assignment_id") or context.get("emergency_schedule_request_id")):
+                unchecked_dates.append(work_date)
+            elif schedule.work_type == "REST":
+                rest_days.append(work_date)
+    return ResponseEnvelope(status="success", data=LeaveRestDayCheck(rest_days=rest_days, unchecked_dates=unchecked_dates))
 
 
 class EntitlementCreateSchema(BaseModel):

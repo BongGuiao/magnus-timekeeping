@@ -5,7 +5,7 @@ from typing import Any, NoReturn
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.attendance.application.use_case import (
@@ -238,6 +238,18 @@ def _payroll_undertime_minutes(record: AttendanceModel) -> int:
     return record.undertime_minutes
 
 
+def _leave_overlaps_period(start: date, end: date):
+    start_at = datetime.combine(start, time.min, tzinfo=PH_TIMEZONE)
+    end_at = datetime.combine(end + timedelta(days=1), time.min, tzinfo=PH_TIMEZONE)
+    return or_(
+        and_(LeaveApplicationModel.start_at < end_at, LeaveApplicationModel.end_at > start_at),
+        exists(select(LeaveApplicationDateModel.id).where(
+            LeaveApplicationDateModel.leave_application_id == LeaveApplicationModel.id,
+            LeaveApplicationDateModel.leave_date.between(start, end),
+        )),
+    )
+
+
 def _local_dates(start_at: datetime, end_at: datetime) -> list[date]:
     first = start_at.astimezone(PH_TIMEZONE).date()
     # end_at is exclusive, so a request ending exactly at midnight does not cover the next day.
@@ -328,8 +340,7 @@ async def _unworked_holiday_facts(
                 LeaveApplicationModel.employee_id.in_(employee_ids),
                 LeaveApplicationModel.status == "APPROVED",
                 LeaveApplicationModel.is_active.is_(True),
-                LeaveApplicationModel.start_at < window_end_at,
-                LeaveApplicationModel.end_at > window_start_at,
+                _leave_overlaps_period(window_start, window_end),
             )
         )
     ).all()
@@ -997,8 +1008,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                     LeaveApplicationModel.employee_id.in_(employee_ids),
                     LeaveApplicationModel.status == "APPROVED",
                     LeaveApplicationModel.is_active.is_(True),
-                    LeaveApplicationModel.start_at < cutoff_end,
-                    LeaveApplicationModel.end_at > cutoff_start,
+                    _leave_overlaps_period(cutoff.period_start, cutoff.period_end),
                 )
                 if cutoff.attendance_deadline is not None:
                     leave_statement = leave_statement.where(
@@ -1040,8 +1050,7 @@ class CalculateEmployeeCutoffResultsUseCase:
                             LeaveApplicationModel.is_active.is_(True),
                             LeaveApplicationModel.approved_at
                             > previous_cutoff.attendance_deadline,
-                            LeaveApplicationModel.start_at < previous_cutoff_end,
-                            LeaveApplicationModel.end_at > previous_cutoff_start,
+                            _leave_overlaps_period(previous_cutoff.period_start, previous_cutoff.period_end),
                         )
                     )
                     late_leave_applications = list(late_leave_result.all())

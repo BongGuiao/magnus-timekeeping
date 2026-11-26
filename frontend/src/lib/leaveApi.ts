@@ -78,6 +78,47 @@ export interface LeaveApplication {
   updated_at: string
 }
 
+export interface LeaveRestDayCheck {
+  rest_days: string[]
+  unchecked_dates: string[]
+}
+
+export interface LeaveDurationPreview {
+  requested_minutes: number
+  holidays: string[]
+  rest_days: string[]
+}
+
+export interface HolidayLeaveReview {
+  items: Array<{
+    application_no: string
+    employee_no: string
+    employee_name: string
+    leave_type: string
+    start_at: string
+    end_at: string
+    requested_minutes: number
+    paid_minutes: number
+    holiday_dates: string[]
+    has_daily_breakdown: boolean
+  }>
+  next_offset: number | null
+}
+
+export interface ApprovedLeaveReversalPage {
+  items: Array<{
+    id: string
+    application_no: string
+    employee_no: string
+    employee_name: string
+    leave_type: string
+    start_at: string
+    end_at: string
+    paid_minutes: number
+  }>
+  next_offset: number | null
+}
+
 export interface LeaveDashboardSnapshot {
   balances: Array<{
     type: string
@@ -358,6 +399,64 @@ export async function createLeaveApplication(payload: LeaveApplicationPayload): 
     return response.data.data
   } catch (error) {
     return rethrowApiError(error, 'Could not save your leave application.')
+  }
+}
+
+export async function checkLeaveRestDays(startAt: string, endAt: string): Promise<LeaveRestDayCheck> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<LeaveRestDayCheck>>('/leave-applications/rest-day-check', {
+      params: { start_at: startAt, end_at: endAt },
+      timeout: 15_000,
+    })
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not check the leave dates for rest days.')
+  }
+}
+
+export async function previewLeaveDuration(startAt: string, endAt: string): Promise<LeaveDurationPreview> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<LeaveDurationPreview>>('/leave-applications/duration-preview', {
+      params: { start_at: startAt, end_at: endAt },
+      timeout: 15_000,
+    })
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not calculate the leave duration.')
+  }
+}
+
+export async function fetchHolidayLeaveReview(fromDate: string, toDate: string, offset: number): Promise<HolidayLeaveReview> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<HolidayLeaveReview>>('/employee-entitlements/holiday-review', {
+      params: { from_date: fromDate, to_date: toDate, offset },
+    })
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load the holiday leave review.')
+  }
+}
+
+export async function fetchApprovedLeaveForReversal(fromDate: string, toDate: string, offset: number): Promise<ApprovedLeaveReversalPage> {
+  try {
+    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedLeaveReversalPage>>('/leave-applications/hr/approved', {
+      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset },
+    })
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not load approved leave applications.')
+  }
+}
+
+export async function returnLeaveForApproval(applicationId: string, reason: string): Promise<LeaveApplication> {
+  try {
+    const response = await apiClient.post<ApiSuccessEnvelope<LeaveApplication>>(
+      `/leave-applications/${encodeURIComponent(applicationId)}/return-for-approval`,
+      { reason }, { params: { dashboard_role_code: 'HR_ADMIN' } },
+    )
+    return response.data.data
+  } catch (error) {
+    return rethrowApiError(error, 'Could not return this leave application for approval.')
   }
 }
 

@@ -3,6 +3,7 @@ import { Pencil, X } from 'lucide-react'
 import TopNav from '../components/dashboard/TopNav'
 import type { NavView } from '../components/dashboard/TopNav'
 import EntitlementUpload from '../features/employees/EntitlementUpload'
+import HolidayLeaveReview from '../features/employees/HolidayLeaveReview'
 import { useLogout } from '../hooks/useLogout'
 import { EMPLOYEE_CREATED_EVENT, fetchEmployees } from '../lib/employeeApi'
 import { fetchCurrentEmploymentAssignmentWithPrimaryLocation, getCompletedServiceMonths, getManilaDate } from '../lib/employeeRelatedApi'
@@ -237,6 +238,7 @@ export default function EmployeeEntitlements({ employeeName, onNavigate, onLogge
     <div className="min-h-screen bg-slate-50">
       <TopNav employeeName={employeeName} activeView="employee-entitlements" onNavigate={onNavigate} onSignOut={logout} />
       <main className="w-full space-y-6 px-4 py-6 sm:px-6 lg:px-8">
+        <HolidayLeaveReview />
         <header>
           <EntitlementUpload onUploaded={async (result) => {
             if (editing && result.entitlement_ids.includes(editing.id)) resetForm()

@@ -49,6 +49,7 @@ class GetRecentAttendanceSnapshotUseCase(BaseUseCase[RecentAttendanceSnapshot]):
             "weekly_hours_worked": 0,
             "weekly_minutes_worked": 0,
             "missed_clock_ins_this_month": 0,
+            "recorded_absence_dates": [],
             "refreshed_at": self._clock().isoformat(),
         }
         snapshot = RecentAttendanceSnapshot.model_validate(live)
@@ -69,7 +70,7 @@ class GetRecentAttendanceSnapshotUseCase(BaseUseCase[RecentAttendanceSnapshot]):
                 "The recent attendance dashboard snapshot is temporarily unavailable."
             ) from error
         if serialized is None and refreshed_at is not None:
-            return RecentAttendanceSnapshot(records=[], refreshed_at=refreshed_at)
+            return RecentAttendanceSnapshot(records=[], recorded_absence_dates=[], refreshed_at=refreshed_at)
         if serialized is None:
             raise SnapshotUnavailableError(
                 "The recent attendance dashboard snapshot has not been generated yet. Please try again shortly."

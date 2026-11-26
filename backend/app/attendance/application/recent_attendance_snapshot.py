@@ -57,4 +57,5 @@ class RecentAttendanceSnapshot(BaseModel):
     weekly_hours_worked: float = 0
     weekly_minutes_worked: int = Field(default=0, ge=0)
     missed_clock_ins_this_month: int = 0
+    recorded_absence_dates: list[str] | None = None
     refreshed_at: str

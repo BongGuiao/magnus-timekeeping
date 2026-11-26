@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from redis.exceptions import RedisError
+from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
 
 from app.attendance.application.recent_attendance_ports import SnapshotStoreError
@@ -37,6 +38,7 @@ def live_snapshot(minutes=480):
         "weekly_hours_worked": minutes / 60,
         "weekly_minutes_worked": minutes,
         "missed_clock_ins_this_month": 0,
+        "recorded_absence_dates": [],
         "refreshed_at": TIMESTAMP,
     }
 
@@ -69,6 +71,66 @@ class FakeCache:
 
 
 class EmployeeSnapshotTaskTests(unittest.TestCase):
+    def test_monthly_absence_dates_are_returned_even_without_a_current_cutoff(self):
+        user_id = uuid4()
+        today = datetime.now(dashboard_tasks.PH_TIMEZONE).date()
+        recorded_date = today.replace(day=1)
+        ranked_rows = MagicMock()
+        ranked_rows.all.return_value = []
+        session = MagicMock()
+        session.execute.side_effect = [
+            [], ranked_rows,
+            [SimpleNamespace(user_id=user_id, work_date=recorded_date)],
+        ]
+        with (
+            patch.object(dashboard_tasks, "create_engine", return_value=MagicMock()),
+            patch.object(dashboard_tasks, "Session") as session_factory,
+        ):
+            session_factory.return_value.__enter__.return_value = session
+            snapshot = dashboard_tasks.load_recent_attendance_snapshots(str(user_id))[str(user_id)]
+
+        self.assertEqual(snapshot["recorded_absence_dates"], [recorded_date.isoformat()])
+        self.assertEqual(snapshot["missed_clock_ins_this_month"], 1)
+        query = session.execute.call_args_list[-1].args[0]
+        compiled = query.compile(dialect=postgresql.dialect())
+        self.assertIn(recorded_date, compiled.params.values())
+        self.assertIn(today, compiled.params.values())
+        self.assertIn(user_id, compiled.params.values())
+        self.assertIn("is_absent IS true", str(compiled))
+        self.assertIn("leave_type IS NULL", str(compiled))
+
+        engine = create_engine("sqlite://")
+        try:
+            with engine.begin() as conn:
+                conn.exec_driver_sql("ATTACH DATABASE ':memory:' AS attendance")
+                conn.exec_driver_sql(
+                    "CREATE TABLE attendance.attendance_records "
+                    "(id TEXT, user_id TEXT, work_date DATE, record_status TEXT, is_absent BOOLEAN, leave_type TEXT)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE TABLE attendance.attendance_merge_sources (source_attendance_id TEXT)"
+                )
+                valid_id, merged_id = uuid4(), uuid4()
+                records = [
+                    (valid_id.hex, user_id.hex, recorded_date.isoformat(), "VALID", 1, None),
+                    (uuid4().hex, user_id.hex, (recorded_date - timedelta(days=1)).isoformat(), "VALID", 1, None),
+                    (uuid4().hex, user_id.hex, (today + timedelta(days=1)).isoformat(), "VALID", 1, None),
+                    (uuid4().hex, uuid4().hex, recorded_date.isoformat(), "VALID", 1, None),
+                    (uuid4().hex, user_id.hex, recorded_date.isoformat(), "VALID", 0, None),
+                    (uuid4().hex, user_id.hex, recorded_date.isoformat(), "VALID", 1, "LEAVE"),
+                    (uuid4().hex, user_id.hex, recorded_date.isoformat(), "VOID", 1, None),
+                    (merged_id.hex, user_id.hex, recorded_date.isoformat(), "VALID", 1, None),
+                ]
+                conn.exec_driver_sql(
+                    "INSERT INTO attendance.attendance_records VALUES (?, ?, ?, ?, ?, ?)", records,
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO attendance.attendance_merge_sources VALUES (?)", (merged_id.hex,),
+                )
+                self.assertEqual(conn.execute(query).all(), [(user_id, recorded_date)])
+        finally:
+            engine.dispose()
+
     def test_employee_snapshot_uses_corrected_punches_and_net_minutes(self):
         user_id = uuid4()
         start = datetime(2026, 10, 12, tzinfo=timezone.utc)
@@ -164,6 +226,15 @@ class GetRecentAttendanceSnapshotTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.run_use_case(self.use_case(loader, cache), False)
         self.assertEqual(snapshot.weekly_minutes_worked, 300)
         self.assertEqual(loader.calls, [])
+
+    async def test_legacy_cached_snapshot_remains_available(self):
+        legacy = live_snapshot()
+        del legacy["recorded_absence_dates"]
+        snapshot = await self.run_use_case(
+            self.use_case(cache=FakeCache(serialized=json.dumps(legacy))), False,
+        )
+        self.assertIsNone(snapshot.recorded_absence_dates)
+        self.assertEqual(snapshot.records[0].time_out, TIMESTAMP)
 
     async def test_missing_user_entry_with_a_global_marker_means_nothing_to_show(self):
         snapshot = await self.run_use_case(self.use_case(cache=FakeCache(refreshed_at=TIMESTAMP)), False)
