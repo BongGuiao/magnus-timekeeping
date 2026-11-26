@@ -199,6 +199,20 @@ class EmploymentAssignmentModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
 
 
+class RegularizationNotificationModel(Base):
+    __tablename__ = "regularization_notifications"
+    __table_args__ = {"schema": "hr"}
+
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("identity.users.id"), primary_key=True
+    )
+    notification_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class EmploymentAssignmentGeofenceModel(Base):
     __tablename__ = "employment_assignment_geofences"
     __table_args__ = (

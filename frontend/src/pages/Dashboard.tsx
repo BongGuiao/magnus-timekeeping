@@ -43,6 +43,7 @@ import SupervisorAttendanceLocationsPanel from '../features/attendance/Superviso
 import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendanceReviewPanel'
 import UnresolvedAttendanceApprovals from '../features/attendance/UnresolvedAttendanceApprovals'
 import AttendanceExceptionsPanel from '../features/attendance/AttendanceExceptionsPanel'
+import RegularizationDashboard from '../features/employees/RegularizationDashboard'
 import {
   AnnouncementsCard,
   HolidaysCard,
@@ -1186,6 +1187,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
+        {roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN') && <RegularizationDashboard />}
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
         ) : role === 'employee' ? (

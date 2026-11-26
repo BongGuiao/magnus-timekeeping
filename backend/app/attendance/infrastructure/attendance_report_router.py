@@ -4,8 +4,9 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, exists, false, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.attendance.domain.worked_minutes import (
@@ -63,6 +64,7 @@ from app.filemaintenance.payroll_cutoffs.infrastructure.db_model import PayrollC
 from app.filemaintenance.payroll_cutoffs.infrastructure.employee_cutoff_result_db_model import (
     EmployeeCutoffResultModel,
 )
+from app.filemaintenance.payroll_cutoffs.domain.entities.employee_cutoff_result import overlap_minutes
 from app.filemaintenance.payroll_groups.infrastructure.db_model import PayrollGroupModel
 
 router = APIRouter(prefix="/reports", tags=["Attendance Reports"])
@@ -227,6 +229,8 @@ class AttendanceReportLeave(BaseModel):
     paid_minutes: int
     unpaid_minutes: int
     status: str
+    # Estimated allocations must not change schedule-credit calculations.
+    has_daily_breakdown: bool = Field(default=True, exclude=True)
 
 
 class AttendanceReportOfficialBusiness(BaseModel):
@@ -388,6 +392,74 @@ def _attendance_mode_for_date(
     return "PUNCH_REQUIRED"
 
 
+async def _load_report_leave(
+    session: AsyncSession, employee_ids: set[UUID], from_date: date, to_date: date,
+) -> dict[tuple[UUID, date], list[AttendanceReportLeave]]:
+    start = datetime.combine(from_date, time.min, tzinfo=MANILA)
+    end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=MANILA)
+    applications = (await session.execute(
+        select(LeaveApplicationModel, LeaveTypeModel.leave_code)
+        .join(LeaveTypeModel, LeaveTypeModel.id == LeaveApplicationModel.leave_type_id)
+        .where(
+            LeaveApplicationModel.employee_id.in_(employee_ids),
+            LeaveApplicationModel.is_active.is_(True),
+            or_(
+                and_(LeaveApplicationModel.start_at < end, LeaveApplicationModel.end_at > start),
+                exists(select(LeaveApplicationDateModel.id).where(
+                    LeaveApplicationDateModel.leave_application_id == LeaveApplicationModel.id,
+                    LeaveApplicationDateModel.leave_date >= from_date,
+                    LeaveApplicationDateModel.leave_date <= to_date,
+                )),
+            ),
+        )
+        .order_by(LeaveApplicationModel.created_at)
+    )).all()
+    if not applications:
+        return {}
+    date_rows = (await session.scalars(
+        select(LeaveApplicationDateModel).where(
+            LeaveApplicationDateModel.leave_application_id.in_([application.id for application, _ in applications])
+        )
+    )).all()
+    dates_by_application: dict[UUID, list[LeaveApplicationDateModel]] = {}
+    for row in date_rows:
+        dates_by_application.setdefault(row.leave_application_id, []).append(row)
+
+    by_employee_date: dict[tuple[UUID, date], list[AttendanceReportLeave]] = {}
+    for application, leave_code in applications:
+        explicit_dates = dates_by_application.get(application.id, [])
+        if explicit_dates:
+            for row in explicit_dates:
+                if from_date <= row.leave_date <= to_date:
+                    by_employee_date.setdefault((application.employee_id, row.leave_date), []).append(
+                        AttendanceReportLeave(
+                            application_no=application.application_no, leave_type=leave_code,
+                            requested_minutes=row.requested_minutes, paid_minutes=row.approved_paid_minutes,
+                            unpaid_minutes=row.approved_unpaid_minutes, status=application.status,
+                        )
+                    )
+            continue
+        first = max(from_date, application.start_at.astimezone(MANILA).date())
+        last = min(to_date, (application.end_at - timedelta(microseconds=1)).astimezone(MANILA).date())
+        for offset in range((last - first).days + 1):
+            work_date = first + timedelta(days=offset)
+            day_start = datetime.combine(work_date, time.min, tzinfo=MANILA)
+            day_end = day_start + timedelta(days=1)
+
+            def portion(minutes: int | None) -> int:
+                return overlap_minutes(minutes or 0, application.start_at, application.end_at, day_start, day_end)
+
+            by_employee_date.setdefault((application.employee_id, work_date), []).append(
+                AttendanceReportLeave(
+                    application_no=application.application_no, leave_type=leave_code,
+                    requested_minutes=portion(application.requested_minutes), paid_minutes=portion(application.paid_minutes),
+                    unpaid_minutes=portion(application.unpaid_minutes), status=application.status,
+                    has_daily_breakdown=False,
+                )
+            )
+    return by_employee_date
+
+
 def _attach_official_business(
     coverage_inputs: list[tuple[UUID, "AttendanceDetailReportRecord", int | None]],
     requests_by_employee: dict[UUID, list[OfficialBusinessRequestModel]],
@@ -404,7 +476,7 @@ def _attach_official_business(
             sum(
                 leave.paid_minutes + leave.unpaid_minutes
                 for leave in record.leave_applications
-                if leave.status == "APPROVED"
+                if leave.status == "APPROVED" and leave.has_daily_breakdown
             ),
         ) if record.attendance_mode == "SCHEDULE_CREDITED" else 0
         coverage = shift_coverage(
@@ -483,7 +555,7 @@ def _attach_official_business(
             sum(
                 leave.paid_minutes + leave.unpaid_minutes
                 for leave in record.leave_applications
-                if leave.status == "APPROVED"
+                if leave.status == "APPROVED" and leave.has_daily_breakdown
             ),
         )
         official_business_minutes = min(
@@ -1190,44 +1262,7 @@ async def get_attendance_detail_report(
                 )
 
         if employee_ids:
-            leave_rows = (
-                await session.execute(
-                    select(
-                        LeaveApplicationModel,
-                        LeaveApplicationDateModel,
-                        LeaveTypeModel.leave_code,
-                    )
-                    .join(
-                        LeaveApplicationDateModel,
-                        LeaveApplicationDateModel.leave_application_id
-                        == LeaveApplicationModel.id,
-                    )
-                    .join(
-                        LeaveTypeModel,
-                        LeaveTypeModel.id == LeaveApplicationModel.leave_type_id,
-                    )
-                    .where(
-                        LeaveApplicationModel.employee_id.in_(employee_ids),
-                        LeaveApplicationModel.is_active.is_(True),
-                        LeaveApplicationDateModel.leave_date >= from_date,
-                        LeaveApplicationDateModel.leave_date <= to_date,
-                    )
-                    .order_by(LeaveApplicationModel.created_at)
-                )
-            ).all()
-            for application, application_date, leave_code in leave_rows:
-                leave_by_employee_date.setdefault(
-                    (application.employee_id, application_date.leave_date), []
-                ).append(
-                    AttendanceReportLeave(
-                        application_no=application.application_no,
-                        leave_type=leave_code,
-                        requested_minutes=application_date.requested_minutes,
-                        paid_minutes=application_date.approved_paid_minutes,
-                        unpaid_minutes=application_date.approved_unpaid_minutes,
-                        status=application.status,
-                    )
-                )
+            leave_by_employee_date = await _load_report_leave(session, employee_ids, from_date, to_date)
 
             business_rows = (
                 await session.scalars(

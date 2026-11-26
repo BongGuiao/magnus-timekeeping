@@ -41,9 +41,11 @@ from app.filemaintenance.employees.infrastructure.dependencies import (
     get_update_employee_use_case,
 )
 from app.filemaintenance.employees.infrastructure.personal_details_router import router as personal_details_router
+from app.filemaintenance.employees.infrastructure.regularization_router import router as regularization_router
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 router.include_router(personal_details_router)
+router.include_router(regularization_router)
 
 
 def _require_email(claims: dict[str, Any]) -> None:

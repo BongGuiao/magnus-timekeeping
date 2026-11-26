@@ -52,6 +52,40 @@ Monitor worker logs for failures. The backfill uses currently active accounts
 and currently active, approved assignments covering each date; it cannot
 reconstruct missing or deactivated historical assignments.
 
+### Regularization candidates
+
+The HR Admin dashboard shows a compact **Regularization candidates** card when
+active employees have a currently effective, active employment assignment whose
+employment type is not `REGULAR` (case and surrounding whitespace are ignored)
+and whose six-month date is at most 15 calendar days away or has passed. All
+non-regular employment types are included, including contractual types; review
+the list rather than assuming it establishes an employee's legal status. The
+six-month date is six calendar months after the assignment's hire date, clamped
+to the final day of the target month when necessary. Separated or inactive
+employees and inactive, expired, or future assignments are excluded. Concurrent
+assignments are shown separately with their company and org unit.
+
+The card and reminder are hidden when there are no candidates. Expand the card
+for employee, company, org unit, type, hire date, six-month date, and remaining
+or overdue days. A candidate remains visible until the assignment becomes
+`REGULAR` or otherwise ceases to be eligible. The screen does not change the
+employee's employment type. Use **Refresh** after assignment changes.
+
+Only users currently assigned the exact `HR_ADMIN` role can access the API;
+the dashboard displays it in the HR Admin view. For each HR user, one in-app
+reminder is created per Philippine calendar day when candidates exist and that
+user opens or refreshes the dashboard. It remains visible until dismissed;
+the list remains available after dismissal. A dashboard left open checks for a
+new day within one minute and refreshes on window focus. There is no email,
+push notification, or background delivery while the dashboard is closed.
+Candidate and notification errors are shown rather than treated as an empty list.
+
+Before deploying, back up the database and upgrade an Alembic-managed database
+through revision `a9c3e5f7b1d2`, then deploy the matching backend and frontend.
+The migration adds `hr.regularization_notifications` for per-user daily reminder
+state; it does not change employee records. Coordinate deployments for manually
+maintained databases rather than applying the fresh-install baseline.
+
 ### Tardiness review preview
 
 **Timekeeping → Tardiness Review** and `GET /attendance/tardiness-review` provide

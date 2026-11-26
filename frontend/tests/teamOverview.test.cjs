@@ -95,12 +95,20 @@ test('compact overview displays counts and invokes accessible review actions', (
     metrics: [{ id: 'hours', label: 'Hours this week', value: '32h 15m', open: false, onClick() {} }],
     reviews: [{ id: 'correction', label: 'Attendance corrections', value: 3, open: true, onClick() { clicked = true } }],
   })
+
   const html = renderToStaticMarkup(tree)
   assert.ok(html.includes('Review queue'))
   assert.ok(html.includes('32h 15m'))
   assert.ok(html.includes('aria-expanded="true"'))
   find(tree, (node) => node.type === 'button' && node.props['aria-expanded'] === true).props.onClick()
   assert.equal(clicked, true)
+})
+
+test('regularization monitoring is shown only in the HR Admin dashboard view', () => {
+  assert.match(dashboard('administrator', [], true, undefined, {}, 'HR_ADMIN')().html, /data-component="RegularizationDashboard"/)
+  assert.doesNotMatch(dashboard('administrator', [], true, undefined, {}, 'SYSTEM_ADMIN')().html, /data-component="RegularizationDashboard"/)
+  assert.doesNotMatch(dashboard('supervisor', [], false, undefined, {}, 'SUPERVISOR')().html, /data-component="RegularizationDashboard"/)
+  assert.doesNotMatch(dashboard('employee', [], false, undefined, {}, 'EMPLOYEE')().html, /data-component="RegularizationDashboard"/)
 })
 
 const permissions = ['attendance.read_team', 'leave.approve_team', 'overtime.approve_team',
