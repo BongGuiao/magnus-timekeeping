@@ -4,13 +4,18 @@ import SortHeader from '../../components/common/SortHeader'
 import { getManilaDate } from '../../lib/employeeRelatedApi'
 import { fetchApprovedLeaveForReversal, returnLeaveForApproval, type ApprovedLeaveReversalPage, type ApprovedLeaveSortKey, type SortDirection } from '../../lib/leaveApi'
 import { fetchApprovedOvertimeForReturn, returnOvertimeForApproval, type ApprovedOvertimeSortKey } from '../../lib/attendanceApi'
+import type { ApprovalReturnDashboardCode } from '../../types/role'
 
 const overtimeSortKeys: Record<ApprovedLeaveSortKey, ApprovedOvertimeSortKey> = {
   application: 'application', employee: 'employee', leave: 'type', coverage: 'date', paid_minutes: 'payable_minutes',
 }
 
-export default function LeaveApprovalReversal({ mode = 'leave' }: { mode?: 'leave' | 'overtime' } = {}) {
+export default function LeaveApprovalReversal({ mode = 'leave', dashboardRoleCode = 'HR_ADMIN' }: {
+  mode?: 'leave' | 'overtime'
+  dashboardRoleCode?: ApprovalReturnDashboardCode
+} = {}) {
   const isOvertime = mode === 'overtime'
+  const isSupervisor = dashboardRoleCode === 'SUPERVISOR'
   const [fromDate, setFromDate] = useState(() => `${getManilaDate().slice(0, 7)}-01`)
   const [toDate, setToDate] = useState(getManilaDate)
   const [range, setRange] = useState<{ from: string; to: string } | null>(null)
@@ -34,14 +39,14 @@ export default function LeaveApprovalReversal({ mode = 'leave' }: { mode?: 'leav
     setError('')
     try {
       const result = isOvertime
-        ? await fetchApprovedOvertimeForReturn(from, to, nextOffset, overtimeSortKeys[key], direction).then((response) => ({
+        ? await fetchApprovedOvertimeForReturn(from, to, nextOffset, overtimeSortKeys[key], direction, dashboardRoleCode).then((response) => ({
           ...response,
           items: response.items.map((item) => ({
             ...item, leave_type: item.overtime_type.replaceAll('_', ' '),
             start_at: item.attendance_date, end_at: item.attendance_date, paid_minutes: item.payable_minutes,
           })),
         }))
-        : await fetchApprovedLeaveForReversal(from, to, nextOffset, key, direction)
+        : await fetchApprovedLeaveForReversal(from, to, nextOffset, key, direction, dashboardRoleCode)
       setPage(result)
       setSortKey(key)
       setSortDirection(direction)
@@ -78,8 +83,8 @@ export default function LeaveApprovalReversal({ mode = 'leave' }: { mode?: 'leav
     setError('')
     setMessage('')
     try {
-      if (isOvertime) await returnOvertimeForApproval(item.id, reason.trim())
-      else await returnLeaveForApproval(item.id, reason.trim())
+      if (isOvertime) await returnOvertimeForApproval(item.id, reason.trim(), dashboardRoleCode)
+      else await returnLeaveForApproval(item.id, reason.trim(), dashboardRoleCode)
       setPage((current) => current && { ...current, items: current.items.filter((entry) => entry.id !== item.id) })
       setSelected(null)
       setReason('')
@@ -92,18 +97,21 @@ export default function LeaveApprovalReversal({ mode = 'leave' }: { mode?: 'leav
   }
 
   return (
-    <section id={isOvertime ? 'hr-overtime-reversal' : 'hr-leave-reversal'} className="mt-4 overflow-hidden rounded-xl border border-indigo-100 bg-white shadow-sm" aria-label={`Return approved ${mode}`}>
+    <section id={`${isSupervisor ? 'supervisor' : 'hr'}-${mode}-reversal`} className="mt-4 overflow-hidden rounded-xl border border-indigo-100 bg-white shadow-sm" aria-label={`Return approved ${mode}`}>
       <header className="flex items-start gap-3 border-b border-indigo-100 bg-gradient-to-r from-indigo-50 to-sky-50 px-5 py-4">
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm">
           <ClipboardCheck size={19} aria-hidden="true" />
         </span>
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-600">HR Admin · {isOvertime ? 'Overtime' : 'Leave'} approvals</p>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-600">{isSupervisor ? 'Supervisor' : 'HR Admin'} · {isOvertime ? 'Overtime' : 'Leave'} approvals</p>
           <h2 className="mt-0.5 text-base font-bold text-indigo-950">Return approved {mode} for approval</h2>
           <p className="mt-1 text-sm text-slate-600">Find an application and return it to the approval queue.</p>
         </div>
       </header>
       <div className="space-y-5 p-5">
+        {isSupervisor && <p className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-3 text-sm text-indigo-950">
+          Only applications you personally approved are available. Older approvals without a verified approver must be returned by HR Admin. Your current team assignment does not grant access to another approver's applications.
+        </p>}
         <div className="flex gap-2 rounded-lg border border-sky-100 bg-sky-50 px-3 py-3 text-sm text-sky-900">
           <Info size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
           <p>{isOvertime

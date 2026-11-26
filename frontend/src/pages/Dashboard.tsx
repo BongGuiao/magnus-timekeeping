@@ -209,6 +209,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     && roleCode === 'HR_ADMIN' && canReadOrgAttendance
   const isHrAdminDashboard = role === 'administrator'
     && roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN')
+  const isSupervisorReturnDashboard = role === 'supervisor'
+    && roleCode === 'SUPERVISOR' && getAvailableRoleCodes().includes('SUPERVISOR')
   const regularization = useRegularizationDashboard(isHrAdminDashboard)
   const [pendingDevices, setPendingDevices] = useState<DeviceRecord[]>([])
   const [isLoadingDevices, setIsLoadingDevices] = useState(isAdmin)
@@ -1035,6 +1037,17 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     },
   ] : []
   const teamReviews: TeamOverviewItem[] = []
+  if (isSupervisorReturnDashboard) {
+    teamReviews.push({
+      id: 'leave-reversal', label: 'Return approved leave for approval',
+      open: isLeaveReversalOpen, controls: 'supervisor-leave-reversal',
+      onClick: () => toggleTeamReview(isLeaveReversalOpen, () => setIsLeaveReversalOpen(true)),
+    }, {
+      id: 'overtime-reversal', label: 'Return approved overtime for approval',
+      open: isOvertimeReversalOpen, controls: 'supervisor-overtime-reversal',
+      onClick: () => toggleTeamReview(isOvertimeReversalOpen, () => setIsOvertimeReversalOpen(true)),
+    })
+  }
   if (canReviewTeamLeave) teamReviews.push({
     id: 'leave', label: 'Leave',
     value: isLoadingSupervisorLeaveCount ? '…' : supervisorLeavesError ? 'Unavailable' : supervisorPendingLeaveCount ?? '—',
@@ -1256,8 +1269,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         )}
 
         {isHrAdminDashboard && isRegularizationOpen && <RegularizationDashboard state={regularization} />}
-        {isHrAdminDashboard && isLeaveReversalOpen && <LeaveApprovalReversal />}
-        {isHrAdminDashboard && isOvertimeReversalOpen && <LeaveApprovalReversal mode="overtime" />}
+        {(isHrAdminDashboard || isSupervisorReturnDashboard) && isLeaveReversalOpen &&
+          <LeaveApprovalReversal dashboardRoleCode={isHrAdminDashboard ? 'HR_ADMIN' : 'SUPERVISOR'} />}
+        {(isHrAdminDashboard || isSupervisorReturnDashboard) && isOvertimeReversalOpen &&
+          <LeaveApprovalReversal mode="overtime" dashboardRoleCode={isHrAdminDashboard ? 'HR_ADMIN' : 'SUPERVISOR'} />}
 
         {canResolveAttendanceExceptions && (
           <section

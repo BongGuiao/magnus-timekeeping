@@ -135,10 +135,27 @@ test('HR Admin actions are in the review queue and share its single-panel behavi
   ;({ overview } = render())
   assert.equal(overview.props.reviews.find((item) => item.id === 'leave-reversal').open, false)
   assert.equal(overview.props.reviews.find((item) => item.id === 'overtime-reversal').open, true)
-  for (const [role, code] of [['administrator', 'SYSTEM_ADMIN'], ['supervisor', 'SUPERVISOR'], ['employee', 'EMPLOYEE']]) {
+  for (const [role, code] of [['administrator', 'SYSTEM_ADMIN'], ['manager', 'MANAGER'], ['employee', 'EMPLOYEE']]) {
     const other = dashboard(role, [], role === 'administrator', undefined, {}, code)()
     assert.equal(other.overview.props.reviews.some((item) => ['regularization', 'leave-reversal', 'overtime-reversal'].includes(item.id)), false)
   }
+})
+
+test('Supervisor return modules share exclusive panels and use supervisor scope', () => {
+  const render = dashboard('supervisor', [], false, undefined, {}, 'SUPERVISOR')
+  let { overview, tree } = render()
+  overview.props.reviews.find((item) => item.id === 'leave-reversal').onClick()
+  ;({ overview, tree } = render())
+  let panel = find(tree, (node) => node.props.dashboardRoleCode === 'SUPERVISOR')
+  assert.ok(panel)
+  assert.equal(panel.props.mode, undefined)
+  overview.props.reviews.find((item) => item.id === 'overtime-reversal').onClick()
+  ;({ overview, tree } = render())
+  assert.equal(overview.props.reviews.find((item) => item.id === 'leave-reversal').open, false)
+  panel = find(tree, (node) => node.props.dashboardRoleCode === 'SUPERVISOR')
+  assert.equal(panel.props.mode, 'overtime')
+  overview.props.reviews.find((item) => item.id === 'overtime-reversal').onClick()
+  assert.equal(find(render().tree, (node) => node.props.dashboardRoleCode === 'SUPERVISOR'), null)
 })
 
 const permissions = ['attendance.read_team', 'leave.approve_team', 'overtime.approve_team',
@@ -177,7 +194,8 @@ for (const role of ['supervisor', 'manager']) {
   test(`${role} groups permitted reviews, removes hero and duplicate leave card, and collapses reports`, () => {
     const { tree, overview, html } = dashboard(role, permissions)()
     assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id),
-      ['leave', 'invalid', 'overtime', 'ob', 'correction', ...(role === 'supervisor' ? ['locations'] : [])])
+      [...(role === 'supervisor' ? ['leave-reversal', 'overtime-reversal'] : []),
+        'leave', 'invalid', 'overtime', 'ob', 'correction', ...(role === 'supervisor' ? ['locations'] : [])])
     assert.equal(overview.props.metrics.length, 4)
     assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').label, 'Recorded absences')
     assert.ok(!html.includes('Missing clock-in'))

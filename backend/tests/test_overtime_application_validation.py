@@ -50,8 +50,10 @@ from app.attendance.infrastructure.overtime_router import (
     submit_overtime_application,
     update_overtime_application,
     router as overtime_router,
+    return_approved_overtime,
+    OvertimeReturnRequest,
 )
-from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
+from app.auth.infrastructure.hr_dashboard_access import ApprovalReturnActor, require_approval_return_access
 from app.attendance.infrastructure.overtime_schemas import (
     AttendanceRangeRecalculationInputSchema,
     AttendanceRangeRecalculationSchema,
@@ -618,7 +620,9 @@ class DecideOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         return await self.use_case.execute(DecideOvertimeApplicationInput(**values))
 
     async def test_approval_records_minutes_and_updates_attendance_totals(self):
-        record = await self.decide()
+        actor_id = uuid4()
+        record = await self.decide(actor_id=actor_id)
+        self.assertEqual(record.application.approved_by_id, actor_id)
         self.assertEqual(record.application.status, "APPROVED")
         self.assertEqual(record.application.final_payable_minutes, 45)
         self.assertEqual(record.application.row_version, 2)
@@ -773,6 +777,9 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
         await decide.execute(DecideOvertimeApplicationInput(
             self.application.id, uuid4(), uuid4(), False, "APPROVED", 45,
         ))
+        self.assertIsNotNone(self.application.approved_by_id)
+        with self.assertRaises(PermissionDeniedError):
+            await self.reverse(original_approver_only=True)
         self.assertEqual(self.attendance.approved_regular_overtime_minutes, 45)
         self.assertEqual(self.attendance.approved_night_differential_overtime_minutes, 30)
 
@@ -811,6 +818,18 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
             await self.reverse()
         self.assertEqual(self.application.status, "APPROVED")
 
+    async def test_supervisor_requires_actual_approver_and_not_last_editor(self):
+        self.application.updated_by = self.actor_id
+        for approved_by in (None, uuid4()):
+            self.application.approved_by_id = approved_by
+            with self.assertRaisesRegex(PermissionDeniedError, "personally approved"):
+                await self.reverse(original_approver_only=True)
+        self.application.approved_by_id = self.actor_id
+        await self.reverse(original_approver_only=True)
+        self.assertEqual(self.application.status, "PENDING")
+        self.assertIsNone(self.application.approved_by_id)
+        self.assertEqual(len(self.repository.returns), 1)
+
     async def test_history_failure_does_not_change_application_or_refresh(self):
         self.repository.record_approval_return = AsyncMock(side_effect=RuntimeError("History unavailable"))
         with self.assertRaisesRegex(RuntimeError, "History unavailable"):
@@ -839,14 +858,24 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route.await_args.kwargs["permission_code"], "overtime.approve_team")
         self.assertFalse(route.await_args.kwargs["hold_unresolved"])
 
-    async def test_both_hr_endpoints_require_live_hr_dashboard_access(self):
+    async def test_both_return_endpoints_require_live_dashboard_access(self):
         routes = [route for route in overtime_router.routes if route.path in {
             "/overtime-applications/hr/approved",
             "/overtime-applications/{application_id}/return-for-approval",
         }]
         self.assertEqual(len(routes), 2)
         for route in routes:
-            self.assertIn(require_hr_dashboard_access, [dependency.call for dependency in route.dependant.dependencies])
+            self.assertIn(require_approval_return_access, [dependency.call for dependency in route.dependant.dependencies])
+
+    async def test_return_endpoint_passes_server_authorized_scope(self):
+        for organization_wide in (False, True):
+            actor = ApprovalReturnActor(uuid4(), uuid4(), organization_wide)
+            use_case = SimpleNamespace(execute=AsyncMock(side_effect=RecordNotFoundError("Not found")))
+            with self.assertRaises(HTTPException):
+                await return_approved_overtime(uuid4(), OvertimeReturnRequest(reason="Correction"), actor, use_case)
+            data = use_case.execute.await_args.args[0]
+            self.assertEqual(data.original_approver_only, not organization_wide)
+            self.assertEqual((data.actor_id, data.actor_employee_id), (actor.user_id, actor.employee_id))
 
     async def test_approved_list_sorts_before_pagination_and_excludes_own(self):
         engine = create_engine("sqlite://")
@@ -858,7 +887,7 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
             connection.execute(text(
                 "CREATE TABLE attendance.overtime_applications (id CHAR(32), employee_id CHAR(32), "
                 "application_no TEXT, status TEXT, is_active BOOLEAN, overtime_type TEXT, "
-                "attendance_date DATE, final_payable_minutes INTEGER)"
+                "attendance_date DATE, final_payable_minutes INTEGER, approved_by_id CHAR(32))"
             ))
             records = {}
             excluded_employee = None
@@ -871,8 +900,9 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
                                    {"id": employee_id.hex, "name": name})
                 connection.execute(text(
                     "INSERT INTO attendance.overtime_applications VALUES "
-                    "(:id, :employee, :number, 'APPROVED', 1, 'REST_DAY_WORK', '2026-10-12', :minutes)"
-                ), {"id": app_id.hex, "employee": employee_id.hex, "number": f"OT-{index:02}", "minutes": 30 - index})
+                    "(:id, :employee, :number, 'APPROVED', 1, 'REST_DAY_WORK', '2026-10-12', :minutes, :approver)"
+                ), {"id": app_id.hex, "employee": employee_id.hex, "number": f"OT-{index:02}", "minutes": 30 - index,
+                    "approver": self.actor_id.hex if index < 27 else None})
                 records[app_id] = (
                     SimpleNamespace(id=app_id, application_no=f"OT-{index:02}", overtime_type="REST_DAY_WORK",
                                     attendance_date=date(2026, 10, 12), final_payable_minutes=30 - index),
@@ -884,9 +914,10 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
 
             uow = FakeUnitOfWork(None)
             uow.session = SimpleNamespace(execute=execute)
+            actor = ApprovalReturnActor(self.actor_id, uuid4(), True)
             async def page(offset, key, direction):
                 return (await list_approved_overtime_for_return(
-                    date(2026, 10, 1), date(2026, 10, 31), offset, key, direction, (self.actor_id, uuid4()), uow,
+                    date(2026, 10, 1), date(2026, 10, 31), offset, key, direction, actor, uow,
                 )).data
             first, second = await page(0, "employee", "asc"), await page(25, "employee", "asc")
             self.assertEqual(first.next_offset, 25)
@@ -897,9 +928,15 @@ class ReturnOvertimeApprovalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([row.payable_minutes for row in paid.items], list(range(1, 26)))
             own_excluded = (await list_approved_overtime_for_return(
                 date(2026, 10, 1), date(2026, 10, 31), 0, "application", "asc",
-                (self.actor_id, excluded_employee), uow,
+                ApprovalReturnActor(self.actor_id, excluded_employee, True), uow,
             )).data
             self.assertNotIn("OT-00", [item.application_no for item in own_excluded.items])
+            actor = ApprovalReturnActor(self.actor_id, uuid4(), False)
+            first, second = await page(0, "application", "asc"), await page(25, "application", "asc")
+            self.assertEqual([item.application_no for item in first.items + second.items],
+                             [f"OT-{index:02}" for index in range(27)])
+            actor = ApprovalReturnActor(uuid4(), uuid4(), False)
+            self.assertEqual((await page(0, "application", "asc")).items, [])
         finally:
             connection.close()
             engine.dispose()

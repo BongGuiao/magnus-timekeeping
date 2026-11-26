@@ -7,6 +7,7 @@ import {
 } from './attendanceDevice'
 import type { ApiErrorEnvelope, ApiSuccessEnvelope } from '../types/auth'
 import type { BreakResult, ClockResult, LastAttendance } from '../types/attendance'
+import type { ApprovalReturnDashboardCode } from '../types/role'
 import type {
   AttendanceLogEntry,
   OvertimeApplicationEntry,
@@ -37,10 +38,11 @@ export interface ApprovedOvertimeReturnPage {
 
 export async function fetchApprovedOvertimeForReturn(
   fromDate: string, toDate: string, offset: number, sortBy: ApprovedOvertimeSortKey, sortDirection: 'asc' | 'desc',
+  dashboardRoleCode: ApprovalReturnDashboardCode = 'HR_ADMIN',
 ): Promise<ApprovedOvertimeReturnPage> {
   try {
-    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedOvertimeReturnPage>>('/attendance/overtime-applications/hr/approved', {
-      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
+    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedOvertimeReturnPage>>('/attendance/overtime-applications/approved-for-return', {
+      params: { dashboard_role_code: dashboardRoleCode, from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
     })
     return response.data.data
   } catch (error) {
@@ -48,10 +50,12 @@ export async function fetchApprovedOvertimeForReturn(
   }
 }
 
-export async function returnOvertimeForApproval(applicationId: string, reason: string): Promise<void> {
+export async function returnOvertimeForApproval(
+  applicationId: string, reason: string, dashboardRoleCode: ApprovalReturnDashboardCode = 'HR_ADMIN',
+): Promise<void> {
   try {
     await apiClient.post(`/attendance/overtime-applications/${encodeURIComponent(applicationId)}/return-for-approval`,
-      { reason }, { params: { dashboard_role_code: 'HR_ADMIN' } })
+      { reason }, { params: { dashboard_role_code: dashboardRoleCode } })
   } catch (error) {
     throw new Error(getAttendanceErrorMessage(error, 'Could not return this overtime application for approval.'))
   }

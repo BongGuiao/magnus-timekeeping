@@ -525,6 +525,7 @@ class LeaveApplicationUseCase:
 
     async def return_approved_to_pending(
         self, application_id: UUID, actor_id: UUID, actor_employee_id: UUID, reason: str,
+        *, original_approver_only: bool = False,
     ) -> LeaveApplicationEntity | None:
         reason = reason.strip()
         if not reason:
@@ -539,7 +540,9 @@ class LeaveApplicationUseCase:
             if application is None or not application.is_active:
                 return None
             if application.employee_id == actor_employee_id:
-                raise ValueError("Another HR administrator must return your own leave application.")
+                raise ValueError("You cannot return your own leave application.")
+            if original_approver_only and application.approved_by_id != actor_id:
+                raise ValueError("You can only return leave applications you personally approved.")
             if application.status != "APPROVED":
                 raise ValueError("Only approved leave applications can be returned for approval.")
             if application.payroll_posted:
@@ -607,6 +610,7 @@ class LeaveApplicationUseCase:
             application.paid_minutes = None
             application.unpaid_minutes = None
             application.approved_at = None
+            application.approved_by_id = None
             application.updated_by = actor_id
             application.updated_at = now
             application.row_version += 1
@@ -877,6 +881,7 @@ class LeaveApplicationUseCase:
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)
             model.status = decision
             model.approved_at = now if decision == "APPROVED" else None
+            model.approved_by_id = actor_id if decision == "APPROVED" else None
             model.updated_by = actor_id
             model.updated_at = now
             model.row_version += 1
@@ -1012,6 +1017,7 @@ class LeaveApplicationUseCase:
                 if actor_id is None:
                     raise ValueError("An actor is required to approve a leave application.")
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)
+                model.approved_by_id = actor_id
             model.row_version += 1
             model.updated_at = datetime.now(timezone.utc)
             await active_uow.session.flush()

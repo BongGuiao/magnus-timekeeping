@@ -11,7 +11,7 @@ from kombu.exceptions import OperationalError
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 
 from app.audit.infrastructure.dependencies import get_audit_es_client
 from app.audit.service import log_entity_action
@@ -20,7 +20,7 @@ from app.attendance.domain.worked_minutes import NONWORKING_DAY_TYPES
 from app.auth.infrastructure.dependencies import (
     require_approval_permission, require_permission,
 )
-from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
+from app.auth.infrastructure.hr_dashboard_access import ApprovalReturnActor, require_approval_return_access
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
@@ -159,10 +159,11 @@ class LeaveReversalRequest(BaseModel):
 
 
 @applications_router.get("/hr/approved", response_model=ResponseEnvelope[ApprovedLeaveReversalPage])
+@applications_router.get("/approved-for-return", response_model=ResponseEnvelope[ApprovedLeaveReversalPage])
 async def list_approved_leave_for_reversal(
     from_date: date, to_date: date,
     offset: int = Query(default=0, ge=0),
-    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
+    actor: ApprovalReturnActor = Depends(require_approval_return_access),
     uow: GenUnitOfWork = Depends(get_unit_of_work),
     sort_by: Literal["application", "employee", "leave", "coverage", "paid_minutes"] = "coverage",
     sort_direction: Literal["asc", "desc"] = "desc",
@@ -190,7 +191,8 @@ async def list_approved_leave_for_reversal(
             .where(
                 LeaveApplicationModel.status == "APPROVED",
                 LeaveApplicationModel.is_active.is_(True),
-                LeaveApplicationModel.employee_id != actor[1],
+                LeaveApplicationModel.employee_id != actor.employee_id,
+                true() if actor.organization_wide else LeaveApplicationModel.approved_by_id == actor.user_id,
                 LeaveApplicationModel.start_at < end, LeaveApplicationModel.end_at > start,
             )
             .order_by(*ordering, LeaveApplicationModel.id)
@@ -213,18 +215,21 @@ async def list_approved_leave_for_reversal(
 @applications_router.post("/{application_id}/return-for-approval", response_model=ResponseEnvelope[LeaveApplicationEntity])
 async def return_approved_leave_for_approval(
     application_id: UUID, payload: LeaveReversalRequest,
-    actor: tuple[UUID, UUID] = Depends(require_hr_dashboard_access),
+    actor: ApprovalReturnActor = Depends(require_approval_return_access),
     use_case: LeaveApplicationUseCase = Depends(get_leave_application_use_case),
     es_client: AsyncElasticsearch | None = Depends(get_audit_es_client),
 ):
     before = _require_record(await use_case.get(application_id), "Leave application not found.")
     try:
-        result = await use_case.return_approved_to_pending(application_id, actor[0], actor[1], payload.reason)
+        result = await use_case.return_approved_to_pending(
+            application_id, actor.user_id, actor.employee_id, payload.reason,
+            original_approver_only=not actor.organization_wide,
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     result = _require_record(result, "Leave application not found.")
     await log_entity_action(
-        es_client, user_id=actor[0], action="RETURN_FOR_APPROVAL", resource="leave_application",
+        es_client, user_id=actor.user_id, action="RETURN_FOR_APPROVAL", resource="leave_application",
         resource_id=application_id, before=before, after=result,
     )
     _queue_leave_dashboard_refresh(result.employee_id)

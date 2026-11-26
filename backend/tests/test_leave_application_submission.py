@@ -202,7 +202,30 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
                 uuid4(), application.id, "REJECTED", uuid4(), date(2026, 10, 12),
             )
         self.assertEqual(result.status, "REJECTED")
+        self.assertIsNone(result.approved_by_id)
         post.assert_not_awaited()
+
+    async def test_approval_records_the_actual_approver(self):
+        actor_id = uuid4()
+        application = SimpleNamespace(
+            id=uuid4(), employee_id=uuid4(), start_at=datetime(2026, 10, 12, 9, tzinfo=timezone.utc),
+            end_at=datetime(2026, 10, 12, 18, tzinfo=timezone.utc), status="PENDING", row_version=1,
+        )
+        session = SimpleNamespace(
+            execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: application))),
+            flush=AsyncMock(), refresh=AsyncMock(),
+        )
+        with patch(
+            "app.filemaintenance.leaves.application.leave_records_use_case._require_leave_open", new=AsyncMock(),
+        ), patch(
+            "app.filemaintenance.leaves.application.leave_records_use_case._post_approved_leave_charge", new=AsyncMock(),
+        ), patch(
+            "app.filemaintenance.leaves.application.leave_records_use_case._to_entity", side_effect=lambda model, _: model,
+        ):
+            result = await LeaveApplicationUseCase(SessionUnitOfWork(session)).decide_pending_for_supervisor(
+                uuid4(), application.id, "APPROVED", actor_id, date(2026, 10, 12),
+            )
+        self.assertEqual(result.approved_by_id, actor_id)
 
     async def test_holiday_review_flags_legacy_applications_but_not_correct_daily_allocations(self):
         holiday = date(2026, 12, 25)
@@ -302,6 +325,7 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(result, application)
         self.assertEqual(application.status, "APPROVED")
+        self.assertIsNotNone(application.approved_by_id)
         self.assertEqual(application.row_version, 3)
         self.assertIsInstance(application._updated_at, datetime)
         session.flush.assert_awaited_once()

@@ -6,6 +6,7 @@ export const dashboardRoles = [
 ] as const
 
 export type DashboardRole = (typeof dashboardRoles)[number]
+export type ApprovalReturnDashboardCode = 'HR_ADMIN' | 'SUPERVISOR'
 
 export function isDashboardRole(value: unknown): value is DashboardRole {
   return typeof value === 'string' && dashboardRoles.some((role) => role === value)

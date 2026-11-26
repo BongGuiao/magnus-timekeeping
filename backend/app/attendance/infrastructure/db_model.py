@@ -276,6 +276,7 @@ class OvertimeApplicationModel(Base):
     requested_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     system_validated_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     supervisor_approved_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approved_by_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     final_payable_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     overtime_type: Mapped[str] = mapped_column(String(30), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)

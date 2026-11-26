@@ -75,7 +75,7 @@ test('requires a reason and returns the selected approved leave', async () => {
   button.props.onClick()
   await settle()
   tree = render()
-  assert.deepEqual(calls, [['leave-1', 'Wrong dates']])
+  assert.deepEqual(calls, [['leave-1', 'Wrong dates', 'HR_ADMIN']])
   assert.match(renderToStaticMarkup(tree), /was returned for approval/)
 })
 
@@ -124,7 +124,7 @@ test('sorting reloads from page one and keeps the selected order across pages', 
   find(tree, (node) => node.type === 'button' && node.props['aria-label']?.startsWith('Sort by Employee')).props.onClick()
   await settle()
   assert.deepEqual(calls.map((args) => args.slice(2)), [
-    [0, 'coverage', 'desc'], [25, 'coverage', 'desc'], [0, 'employee', 'asc'], [25, 'employee', 'asc'], [0, 'employee', 'desc'],
+    [0, 'coverage', 'desc', 'HR_ADMIN'], [25, 'coverage', 'desc', 'HR_ADMIN'], [0, 'employee', 'asc', 'HR_ADMIN'], [25, 'employee', 'asc', 'HR_ADMIN'], [0, 'employee', 'desc', 'HR_ADMIN'],
   ])
 })
 
@@ -141,12 +141,13 @@ test('overtime includes rest-day work, sorts across pages and returns with a rea
     },
     returnOvertimeForApproval: async (...args) => returned.push(args),
   })
-  const view = () => render({ mode: 'overtime' })
+  const view = () => render({ mode: 'overtime', dashboardRoleCode: 'SUPERVISOR' })
   let tree = view()
   find(tree, (node) => node.type === 'form').props.onSubmit({ preventDefault() {} })
   await settle()
   tree = view()
   assert.match(renderToStaticMarkup(tree), /REST DAY WORK/)
+  assert.match(renderToStaticMarkup(tree), /Only applications you personally approved/)
   find(tree, (node) => node.type === 'button' && node.props['aria-label']?.startsWith('Sort by Type')).props.onClick()
   await settle()
   tree = view()
@@ -158,7 +159,7 @@ test('overtime includes rest-day work, sorts across pages and returns with a rea
   find(tree, (node) => node.type === 'textarea').props.onChange({ target: { value: '  Recheck  ' } })
   find(view(), (node) => node.type === 'button' && node.props.children === 'Return for approval').props.onClick()
   await settle()
-  assert.deepEqual(calls.map((args) => args.slice(2)), [[0, 'date', 'desc'], [0, 'type', 'asc'], [25, 'type', 'asc']])
-  assert.deepEqual(returned, [['ot-1', 'Recheck']])
+  assert.deepEqual(calls.map((args) => args.slice(2)), [[0, 'date', 'desc', 'SUPERVISOR'], [0, 'type', 'asc', 'SUPERVISOR'], [25, 'type', 'asc', 'SUPERVISOR']])
+  assert.deepEqual(returned, [['ot-1', 'Recheck', 'SUPERVISOR']])
   assert.match(renderToStaticMarkup(view()), /was returned for approval/)
 })

@@ -12,9 +12,11 @@ from app.filemaintenance.leaves.application import leave_records_use_case as lea
 from app.filemaintenance.leaves.application.leave_duration import LeaveDuration, LeaveDurationDay
 from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
 from app.filemaintenance.leaves.infrastructure.leave_records_router import (
-    list_approved_leave_for_reversal,
+    LeaveReversalRequest, list_approved_leave_for_reversal, return_approved_leave_for_approval,
 )
-from app.auth.infrastructure.hr_dashboard_access import require_hr_dashboard_access
+from app.auth.infrastructure.hr_dashboard_access import (
+    ApprovalReturnActor, require_hr_dashboard_access, require_approval_return_access,
+)
 
 
 class UnitOfWork:
@@ -34,7 +36,7 @@ def fixture():
         id=uuid4(), employee_id=uuid4(), leave_type_id=uuid4(), application_no="LV-1",
         start_at=datetime(2026, 12, 16, 0, tzinfo=tz), end_at=datetime(2026, 12, 16, 5, tzinfo=tz),
         status="APPROVED", is_active=True, payroll_posted=False, paid_minutes=300, unpaid_minutes=0,
-        approved_at=datetime(2026, 11, 20, tzinfo=tz), row_version=1,
+        approved_at=datetime(2026, 11, 20, tzinfo=tz), approved_by_id=uuid4(), row_version=1,
     )
     day = SimpleNamespace(
         leave_date=date(2026, 12, 15), requested_minutes=300,
@@ -72,11 +74,12 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
             ))
             connection.execute(text(
                 "CREATE TABLE leave_mgmt.leave_applications (id CHAR(32), employee_id CHAR(32), leave_type_id CHAR(32),"
-                " application_no TEXT, status TEXT, is_active BOOLEAN, start_at DATETIME, end_at DATETIME, paid_minutes INTEGER)"
+                " application_no TEXT, status TEXT, is_active BOOLEAN, start_at DATETIME, end_at DATETIME, paid_minutes INTEGER, approved_by_id CHAR(32))"
             ))
             leave_type_id = uuid4()
             connection.execute(text("INSERT INTO leave_mgmt.leave_types VALUES (:id, 'Vacation')"), {"id": leave_type_id.hex})
             records = {}
+            approver_id = uuid4()
             for index in range(30):
                 app_id, employee_id = uuid4(), uuid4()
                 name = f"Employee {29 - index:02}"
@@ -86,9 +89,10 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
                 connection.execute(text(
                     "INSERT INTO leave_mgmt.leave_applications VALUES "
                     "(:id, :employee, :leave_type, :number, 'APPROVED', 1,"
-                    " '2026-12-10 09:00:00.000000', '2026-12-10 18:00:00.000000', :paid)"
+                    " '2026-12-10 09:00:00.000000', '2026-12-10 18:00:00.000000', :paid, :approver)"
                 ), {"id": app_id.hex, "employee": employee_id.hex, "leave_type": leave_type_id.hex,
-                    "number": f"LV-{index:02}", "paid": 30 - index})
+                    "number": f"LV-{index:02}", "paid": 30 - index,
+                    "approver": approver_id.hex if index < 27 else None})
                 app = SimpleNamespace(
                     id=app_id, application_no=f"LV-{index:02}", paid_minutes=30 - index,
                     start_at=datetime(2026, 12, 10, 9, tzinfo=ZoneInfo("Asia/Manila")),
@@ -102,7 +106,7 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(all=lambda: [records[app_id] for app_id in ids])
 
             session = SimpleNamespace(execute=execute)
-            actor = (uuid4(), uuid4())
+            actor = ApprovalReturnActor(uuid4(), uuid4(), True)
             async def page(offset, key, direction):
                 return (await list_approved_leave_for_reversal(
                     date(2026, 12, 1), date(2026, 12, 31), offset, actor, UnitOfWork(session), key, direction,
@@ -117,6 +121,12 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(descending.items[0].employee_name, "Employee 29 Test")
             paid = await page(0, "paid_minutes", "asc")
             self.assertEqual([row.paid_minutes for row in paid.items], list(range(1, 26)))
+            actor = ApprovalReturnActor(approver_id, uuid4(), False)
+            first, second = await page(0, "application", "asc"), await page(25, "application", "asc")
+            self.assertEqual([row.application_no for row in first.items + second.items],
+                             [f"LV-{index:02}" for index in range(27)])
+            actor = ApprovalReturnActor(uuid4(), uuid4(), False)
+            self.assertEqual((await page(0, "application", "asc")).items, [])
         finally:
             connection.close()
             engine.dispose()
@@ -137,6 +147,54 @@ class LeaveApprovalReversalTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as error:
                 await require_hr_dashboard_access(mode, claims, auth)
             self.assertEqual(error.exception.status_code, 403)
+
+    async def test_return_scope_uses_live_role_not_client_claims(self):
+        user_id, employee_id = uuid4(), uuid4()
+        claims = {"sub": str(user_id), "email": "approver@example.invalid", "role_codes": ["HR_ADMIN"]}
+        auth = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+            role_codes=["SUPERVISOR"], employee_id=employee_id,
+        )))
+        self.assertEqual(await require_approval_return_access("SUPERVISOR", claims, auth),
+                         ApprovalReturnActor(user_id, employee_id, False))
+        with self.assertRaises(HTTPException):
+            await require_approval_return_access("HR_ADMIN", claims, auth)
+        auth.execute.return_value.role_codes = ["SUPERVISOR", "HR_ADMIN"]
+        self.assertFalse((await require_approval_return_access("SUPERVISOR", claims, auth)).organization_wide)
+        self.assertTrue((await require_approval_return_access("HR_ADMIN", claims, auth)).organization_wide)
+
+    async def test_supervisor_can_only_return_their_own_decision(self):
+        for approved_by in (None, uuid4()):
+            application, _, _, session = fixture()
+            application.approved_by_id = approved_by
+            with self.assertRaisesRegex(ValueError, "personally approved"):
+                await leave.LeaveApplicationUseCase(UnitOfWork(session)).return_approved_to_pending(
+                    application.id, uuid4(), uuid4(), "Correction", original_approver_only=True,
+                )
+            session.add.assert_not_called()
+        application, _, _, session = fixture()
+        actor_id = application.approved_by_id
+        with patch.object(leave, "require_attendance_open", new=AsyncMock()), \
+                patch.object(leave, "assign_org_approval", new=AsyncMock()), \
+                patch.object(leave, "_to_entity", side_effect=lambda model, _: model):
+            await leave.LeaveApplicationUseCase(UnitOfWork(session)).return_approved_to_pending(
+                application.id, actor_id, uuid4(), "Correction", original_approver_only=True,
+            )
+        self.assertEqual(application.status, "PENDING")
+        self.assertIsNone(application.approved_by_id)
+
+    async def test_return_endpoint_passes_server_authorized_scope(self):
+        for organization_wide in (False, True):
+            actor = ApprovalReturnActor(uuid4(), uuid4(), organization_wide)
+            use_case = SimpleNamespace(
+                get=AsyncMock(return_value=SimpleNamespace(id=uuid4())),
+                return_approved_to_pending=AsyncMock(side_effect=ValueError("Blocked")),
+            )
+            with self.assertRaises(HTTPException):
+                await return_approved_leave_for_approval(
+                    uuid4(), LeaveReversalRequest(reason="Correction"), actor, use_case, None,
+                )
+            self.assertEqual(use_case.return_approved_to_pending.await_args.kwargs,
+                             {"original_approver_only": not organization_wide})
 
     async def test_reversal_restores_balance_and_reroutes_with_durable_reason(self):
         application, day, entitlement, session = fixture()

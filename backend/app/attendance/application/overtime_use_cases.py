@@ -1047,6 +1047,7 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             )
 
             application.status = data.decision
+            application.approved_by_id = data.actor_id if data.decision == "APPROVED" else None
             application.supervisor_approved_minutes = approved_minutes
             application.final_payable_minutes = approved_minutes if data.decision == "APPROVED" else 0
             application.updated_by = data.actor_id
@@ -1082,6 +1083,7 @@ class ReturnOvertimeApprovalInput:
     actor_id: UUID
     actor_employee_id: UUID
     reason: str
+    original_approver_only: bool = False
 
 
 class ReturnOvertimeApprovalUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApplicationRecord]):
@@ -1103,6 +1105,8 @@ class ReturnOvertimeApprovalUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApplic
             application, attendance, employee = record.application, record.attendance, record.employee
             if employee.id == data.actor_employee_id:
                 raise PermissionDeniedError("You cannot return your own overtime application.")
+            if data.original_approver_only and application.approved_by_id != data.actor_id:
+                raise PermissionDeniedError("You can only return overtime applications you personally approved.")
             if application.payroll_posted or attendance.is_locked or attendance.record_status != "VALID":
                 raise ConflictError("Posted or locked overtime attendance cannot be returned.")
             cutoff = rules.validate_cutoff(await uow.overtime.get_cutoff_for_employee_on_date(
@@ -1123,6 +1127,7 @@ class ReturnOvertimeApprovalUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApplic
             await uow.overtime.assign_return_approver(data.application_id, employee.id, data.actor_id, self._today())
             await uow.overtime.record_approval_return(application, data.actor_id, reason)
             application.status = "PENDING"
+            application.approved_by_id = None
             application.supervisor_approved_minutes = None
             application.final_payable_minutes = None
             application.updated_by = data.actor_id

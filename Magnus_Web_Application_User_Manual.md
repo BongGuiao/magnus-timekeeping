@@ -136,7 +136,7 @@ Each HR Admin sees one in-app reminder per Philippine calendar day when candidat
 
 ### 2.9 Return an approved leave application
 
-In the HR Admin dashboard review queue, open **Return approved leave for approval**, choose a date range and search. Select the application, enter the reason, then confirm **Return for approval**. An HR Admin cannot return their own leave; another HR Admin must do it.
+In the HR Admin or Supervisor dashboard review queue, open **Return approved leave for approval**, choose a date range and search. Select the application, enter the reason, then confirm **Return for approval**. HR Admin can return any employee's approved leave except their own. A Supervisor can retrieve and return only applications they personally approved, even if the employee is an HR Admin. Current team membership or a saved reviewer assignment alone does not grant return rights. Nobody can return their own application.
 
 Select a column heading to sort the results across all pages. Changing the sort returns the list to its first page.
 
@@ -146,11 +146,15 @@ The action is blocked for payroll-posted leave, closed approval deadlines, final
 
 ### 2.10 Return an approved overtime application
 
-In the HR Admin dashboard review queue, open **Return approved overtime for approval**, choose the work-date range and search. This includes regular overtime, night overtime, night differential and rest-day work. Sort by selecting a column heading; sorting applies across all pages.
+In the HR Admin or Supervisor dashboard review queue, open **Return approved overtime for approval**, choose the work-date range and search. This includes regular overtime, night overtime, night differential and rest-day work. Sort by selecting a column heading; sorting applies across all pages. HR Admin can return any employee's approved application except their own; a Supervisor can retrieve and return only applications they personally approved.
 
-Select an application, enter a reason and confirm **Return for approval**. The application returns to pending and is assigned to the current eligible org-unit approver. Its approved payable minutes are cleared and attendance totals are recalculated without removing other approved overtime types. The return reason, actor and previous approved and payable minutes are recorded. Another HR Admin must return an HR Admin's own application.
+Select an application, enter a reason and confirm **Return for approval**. The application returns to pending and is assigned to the current eligible org-unit approver. Its approved payable minutes are cleared and attendance totals are recalculated without removing other approved overtime types. The return reason, actor and previous approved and payable minutes are recorded. Another HR Admin or the Supervisor who personally approved it must return an HR Admin's own application.
 
 The action is blocked when routing or the employee's payroll cutoff cannot be resolved, another open application conflicts, attendance is locked or invalid, payroll is posted or exported, or the approval deadline or cutoff is closed. Recalculate affected payroll results if they were previously calculated and remain open.
+
+For both modules, approvals made before per-application approver tracking was deployed remain HR Admin-only when the actual approver is unknown. The system does not guess from the last editor or current org chart. After a return and a new approval, only the new actual approver has Supervisor return rights.
+
+Deployment: apply `backend/sql/2026_application_original_approvers.sql` or Alembic revision `c2e4a6b8d0f1` before deploying the updated backend. This adds nullable `approved_by_id` columns and indexes to leave and overtime applications; it does not backfill unverified historical approvers.
 
 ## 3. Approver workflows
 

@@ -1,6 +1,7 @@
 import { AxiosError } from 'axios'
 import { apiClient } from './apiClient'
 import type { ApiErrorEnvelope, ApiSuccessEnvelope } from '../types/auth'
+import type { ApprovalReturnDashboardCode } from '../types/role'
 
 export type LeaveUnitType = 'MINUTES' | 'HOURS' | 'DAYS'
 
@@ -443,10 +444,11 @@ export async function fetchHolidayLeaveReview(fromDate: string, toDate: string, 
 export async function fetchApprovedLeaveForReversal(
   fromDate: string, toDate: string, offset: number,
   sortBy: ApprovedLeaveSortKey, sortDirection: SortDirection,
+  dashboardRoleCode: ApprovalReturnDashboardCode = 'HR_ADMIN',
 ): Promise<ApprovedLeaveReversalPage> {
   try {
-    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedLeaveReversalPage>>('/leave-applications/hr/approved', {
-      params: { dashboard_role_code: 'HR_ADMIN', from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
+    const response = await apiClient.get<ApiSuccessEnvelope<ApprovedLeaveReversalPage>>('/leave-applications/approved-for-return', {
+      params: { dashboard_role_code: dashboardRoleCode, from_date: fromDate, to_date: toDate, offset, sort_by: sortBy, sort_direction: sortDirection },
     })
     return response.data.data
   } catch (error) {
@@ -454,11 +456,13 @@ export async function fetchApprovedLeaveForReversal(
   }
 }
 
-export async function returnLeaveForApproval(applicationId: string, reason: string): Promise<LeaveApplication> {
+export async function returnLeaveForApproval(
+  applicationId: string, reason: string, dashboardRoleCode: ApprovalReturnDashboardCode = 'HR_ADMIN',
+): Promise<LeaveApplication> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<LeaveApplication>>(
       `/leave-applications/${encodeURIComponent(applicationId)}/return-for-approval`,
-      { reason }, { params: { dashboard_role_code: 'HR_ADMIN' } },
+      { reason }, { params: { dashboard_role_code: dashboardRoleCode } },
     )
     return response.data.data
   } catch (error) {

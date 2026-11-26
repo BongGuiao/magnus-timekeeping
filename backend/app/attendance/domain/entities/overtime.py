@@ -106,6 +106,7 @@ class OvertimeApplication:
     payroll_posted: bool = False
     created_by: Optional[UUID] = None
     updated_by: Optional[UUID] = None
+    approved_by_id: Optional[UUID] = None
     row_version: int = 1
     id: Optional[UUID] = None
 
