@@ -126,7 +126,7 @@ Corrections are subject to schedule, attendance and cutoff eligibility. Existing
 
 ### 2.8 HR Admin regularization candidates
 
-In the HR Admin dashboard view, **Regularization candidates** appears only when there are eligible active non-regular assignments. Select **View** to see employees, companies, org units, hire dates, six-month dates and days remaining or overdue. All non-regular employment types are included; the list is for HR review and does not change employment status.
+In the HR Admin dashboard view, **Regularization candidates** appears in the review queue only when there are eligible active non-regular assignments. Select it to see employees, companies, org units, hire dates, six-month dates and days remaining or overdue. All non-regular employment types are included; the list is for HR review and does not change employment status.
 
 An assignment appears starting 15 calendar days before its six-month date and remains until its employment type is changed to `REGULAR` or it is no longer active and current. Use **Refresh** after updating an assignment. The six-month date uses calendar months, with month-end dates adjusted to the last day of the target month.
 
@@ -134,7 +134,7 @@ Each HR Admin sees one in-app reminder per Philippine calendar day when candidat
 
 ### 2.9 Return an approved leave application
 
-In the HR Admin dashboard, open **Return approved leave for approval**, choose a date range and search. Select the application, enter the reason, then confirm **Return for approval**. An HR Admin cannot return their own leave; another HR Admin must do it.
+In the HR Admin dashboard review queue, open **Return approved leave for approval**, choose a date range and search. Select the application, enter the reason, then confirm **Return for approval**. An HR Admin cannot return their own leave; another HR Admin must do it.
 
 The application returns to pending and is assigned to the current eligible org-unit approver. If routing cannot be resolved, the return is blocked until HR corrects the organization setup. The paid leave charge is restored and the reason and reversal are recorded in the leave ledger. A new approval recalculates and charges the eligible paid amount again.
 

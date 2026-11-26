@@ -43,7 +43,7 @@ import SupervisorAttendanceLocationsPanel from '../features/attendance/Superviso
 import OfflineAttendanceReviewPanel from '../features/attendance/OfflineAttendanceReviewPanel'
 import UnresolvedAttendanceApprovals from '../features/attendance/UnresolvedAttendanceApprovals'
 import AttendanceExceptionsPanel from '../features/attendance/AttendanceExceptionsPanel'
-import RegularizationDashboard from '../features/employees/RegularizationDashboard'
+import RegularizationDashboard, { RegularizationNotice, useRegularizationDashboard } from '../features/employees/RegularizationDashboard'
 import LeaveApprovalReversal from '../features/employees/LeaveApprovalReversal'
 import {
   AnnouncementsCard,
@@ -207,6 +207,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const canReadOrgAttendance = hasPermission('attendance.read_org')
   const canResolveAttendanceExceptions = role === 'administrator'
     && roleCode === 'HR_ADMIN' && canReadOrgAttendance
+  const isHrAdminDashboard = role === 'administrator'
+    && roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN')
+  const regularization = useRegularizationDashboard(isHrAdminDashboard)
   const [pendingDevices, setPendingDevices] = useState<DeviceRecord[]>([])
   const [isLoadingDevices, setIsLoadingDevices] = useState(isAdmin)
   const [hasLoadedDevices, setHasLoadedDevices] = useState(false)
@@ -227,6 +230,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [adminPanel, setAdminPanel] = useState<AdminDashboardPanel | null>(null)
   const [isOfflineReviewOpen, setIsOfflineReviewOpen] = useState(false)
   const [isAttendanceExceptionsOpen, setIsAttendanceExceptionsOpen] = useState(false)
+  const [isRegularizationOpen, setIsRegularizationOpen] = useState(false)
+  const [isLeaveReversalOpen, setIsLeaveReversalOpen] = useState(false)
   const [isPunchedEmployeesOpen, setIsPunchedEmployeesOpen] = useState(false)
   const [punchedEmployeesDate, setPunchedEmployeesDate] = useState(() => getManilaDate())
   const [punchedEmployees, setPunchedEmployees] = useState<AdminPunchedEmployee[]>([])
@@ -286,6 +291,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     const updateRole = () => {
       setDashboardRole({ role: getSelectedDashboardRole(), code: getSelectedDashboardRoleCode() })
       setIsAttendanceExceptionsOpen(false)
+      setIsRegularizationOpen(false)
+      setIsLeaveReversalOpen(false)
       setIsPunchedEmployeesOpen(false)
     }
     window.addEventListener('dashboard-role-change', updateRole)
@@ -977,6 +984,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     setAdminPanel(null)
     setIsOfflineReviewOpen(false)
     setIsAttendanceExceptionsOpen(false)
+    setIsRegularizationOpen(false)
+    setIsLeaveReversalOpen(false)
     setIsPunchedEmployeesOpen(false)
     setIsTeamHoursOpen(false)
     setIsTeamLocationsOpen(false)
@@ -1207,6 +1216,21 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     open: isAttendanceExceptionsOpen, controls: 'hr-attendance-exceptions',
     onClick: () => toggleTeamReview(isAttendanceExceptionsOpen, () => setIsAttendanceExceptionsOpen(true)),
   })
+  if (isHrAdminDashboard) {
+    if (regularization.review?.candidates.length || regularization.error || isRegularizationOpen) {
+      adminReviews.push({
+        id: 'regularization', label: 'Regularization candidates',
+        value: regularization.error ? 'Unavailable' : regularization.review?.candidates.length,
+        open: isRegularizationOpen, controls: 'regularization-candidate-list',
+        onClick: () => toggleTeamReview(isRegularizationOpen, () => setIsRegularizationOpen(true)),
+      })
+    }
+    adminReviews.push({
+      id: 'leave-reversal', label: 'Return approved leave for approval',
+      open: isLeaveReversalOpen, controls: 'hr-leave-reversal',
+      onClick: () => toggleTeamReview(isLeaveReversalOpen, () => setIsLeaveReversalOpen(true)),
+    })
+  }
 
   return (
     <div className="min-h-screen bg-slate-100 pb-10">
@@ -1214,17 +1238,17 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
-        {roleCode === 'HR_ADMIN' && getAvailableRoleCodes().includes('HR_ADMIN') && <>
-          <RegularizationDashboard />
-          <LeaveApprovalReversal />
-        </>}
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
         ) : role === 'employee' ? (
           <TeamOverview role="employee" employeeName={employeeName} metrics={employeeMetrics} reviews={employeeActions} />
         ) : (
-          <TeamOverview role="administrator" employeeName={employeeName} metrics={adminMetrics} reviews={adminReviews} />
+          <TeamOverview role="administrator" employeeName={employeeName} metrics={adminMetrics} reviews={adminReviews}
+            reviewNotice={isHrAdminDashboard ? <RegularizationNotice state={regularization} /> : undefined} />
         )}
+
+        {isHrAdminDashboard && isRegularizationOpen && <RegularizationDashboard state={regularization} />}
+        {isHrAdminDashboard && isLeaveReversalOpen && <LeaveApprovalReversal />}
 
         {canResolveAttendanceExceptions && (
           <section

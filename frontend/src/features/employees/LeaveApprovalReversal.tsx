@@ -3,7 +3,6 @@ import { getManilaDate } from '../../lib/employeeRelatedApi'
 import { fetchApprovedLeaveForReversal, returnLeaveForApproval, type ApprovedLeaveReversalPage } from '../../lib/leaveApi'
 
 export default function LeaveApprovalReversal() {
-  const [open, setOpen] = useState(false)
   const [fromDate, setFromDate] = useState(() => `${getManilaDate().slice(0, 7)}-01`)
   const [toDate, setToDate] = useState(getManilaDate)
   const [range, setRange] = useState<{ from: string; to: string } | null>(null)
@@ -60,11 +59,9 @@ export default function LeaveApprovalReversal() {
   }
 
   return (
-    <section className="mt-4 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm" aria-label="Return approved leave">
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="font-bold text-slate-900">
-        Return approved leave for approval <span className="ml-2 text-sm font-medium text-indigo-700">{open ? 'Hide' : 'View'}</span>
-      </button>
-      {open && <div className="mt-3 space-y-3">
+    <section id="hr-leave-reversal" className="mt-4 rounded-xl border border-indigo-200 bg-white p-4 shadow-sm" aria-label="Return approved leave">
+      <h2 className="font-bold text-slate-900">Return approved leave for approval</h2>
+      <div className="mt-3 space-y-3">
         <p className="text-sm text-slate-600">Returning leave restores its paid balance and sends it to the current org-unit approver. Approval deadlines and finalized payroll cutoffs still apply. You cannot return your own leave.</p>
         <form onSubmit={search} className="flex flex-wrap items-end gap-3">
           <label className="text-sm">From <input required type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="ml-1 rounded border p-1" /></label>
@@ -94,7 +91,7 @@ export default function LeaveApprovalReversal() {
             <button type="button" disabled={loading || !reason.trim()} onClick={() => void reverse()} className="rounded bg-rose-700 px-3 py-1 text-sm text-white disabled:opacity-50">Return for approval</button>
           </div>}
         </>}
-      </div>}
+      </div>
     </section>
   )
 }

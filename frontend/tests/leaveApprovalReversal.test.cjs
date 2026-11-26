@@ -54,8 +54,6 @@ test('requires a reason and returns the selected approved leave', async () => {
   const calls = []
   const render = harness(async (...args) => { calls.push(args) })
   let tree = render()
-  find(tree, (node) => node.type === 'button').props.onClick()
-  tree = render()
   find(tree, (node) => node.type === 'form').props.onSubmit({ preventDefault() {} })
   await settle()
   tree = render()
@@ -76,8 +74,6 @@ test('requires a reason and returns the selected approved leave', async () => {
 test('shows a reversal failure without claiming success', async () => {
   const render = harness(async () => { throw new Error('Cutoff is closed') })
   let tree = render()
-  find(tree, (node) => node.type === 'button').props.onClick()
-  tree = render()
   find(tree, (node) => node.type === 'form').props.onSubmit({ preventDefault() {} })
   await settle()
   tree = render()

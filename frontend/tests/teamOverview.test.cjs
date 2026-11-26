@@ -65,6 +65,14 @@ function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = 
     '../lib/employeeRelatedApi': { getManilaDate: () => '2026-11-25' },
     '../lib/leaveApi': { fetchSupervisorPendingLeaves: async () => [], formatLeaveBalance: () => '', ...apiOverrides.leave },
     '../lib/deviceApi': {}, '../lib/dashboardContentApi': {},
+    '../features/employees/RegularizationDashboard': {
+      __esModule: true,
+      default: () => React.createElement('div', { 'data-component': 'RegularizationDashboard' }),
+      RegularizationNotice: () => null,
+      useRegularizationDashboard: () => ({
+        review: { candidates: [{ assignment_id: 'candidate' }] }, error: null,
+      }),
+    },
   }
   const source = readFileSync(join(__dirname, '..', 'src', 'pages', 'Dashboard.tsx'), 'utf8')
   for (const [, path] of source.matchAll(/from '([^']+)'/g)) {
@@ -104,11 +112,27 @@ test('compact overview displays counts and invokes accessible review actions', (
   assert.equal(clicked, true)
 })
 
-test('regularization monitoring is shown only in the HR Admin dashboard view', () => {
-  assert.match(dashboard('administrator', [], true, undefined, {}, 'HR_ADMIN')().html, /data-component="RegularizationDashboard"/)
-  assert.doesNotMatch(dashboard('administrator', [], true, undefined, {}, 'SYSTEM_ADMIN')().html, /data-component="RegularizationDashboard"/)
-  assert.doesNotMatch(dashboard('supervisor', [], false, undefined, {}, 'SUPERVISOR')().html, /data-component="RegularizationDashboard"/)
-  assert.doesNotMatch(dashboard('employee', [], false, undefined, {}, 'EMPLOYEE')().html, /data-component="RegularizationDashboard"/)
+test('HR Admin actions are in the review queue and share its single-panel behavior', () => {
+  const render = dashboard('administrator', [], true, undefined, {}, 'HR_ADMIN')
+  let { overview, html } = render()
+  const regularization = overview.props.reviews.find((item) => item.id === 'regularization')
+  const reversal = overview.props.reviews.find((item) => item.id === 'leave-reversal')
+  assert.ok(regularization)
+  assert.ok(reversal)
+  assert.doesNotMatch(html, /data-component="RegularizationDashboard"/)
+  regularization.onClick()
+  ;({ overview, html } = render())
+  assert.match(html, /data-component="RegularizationDashboard"/)
+  assert.equal(overview.props.reviews.find((item) => item.id === 'regularization').open, true)
+  overview.props.reviews.find((item) => item.id === 'leave-reversal').onClick()
+  ;({ overview, html } = render())
+  assert.doesNotMatch(html, /data-component="RegularizationDashboard"/)
+  assert.match(html, /data-component="LeaveApprovalReversal"/)
+  assert.equal(overview.props.reviews.find((item) => item.id === 'regularization').open, false)
+  for (const [role, code] of [['administrator', 'SYSTEM_ADMIN'], ['supervisor', 'SUPERVISOR'], ['employee', 'EMPLOYEE']]) {
+    const other = dashboard(role, [], role === 'administrator', undefined, {}, code)()
+    assert.equal(other.overview.props.reviews.some((item) => item.id === 'regularization' || item.id === 'leave-reversal'), false)
+  }
 })
 
 const permissions = ['attendance.read_team', 'leave.approve_team', 'overtime.approve_team',

@@ -18,7 +18,7 @@ const candidate = {
   employment_type: 'PROBATIONARY', hire_date: '2026-01-01', six_month_date: '2026-07-01', days_remaining: -1,
 }
 
-function harness(initialReview) {
+function harness(initialReview, enabled = true) {
   const cells = []
   const effects = []
   let hook = 0
@@ -26,6 +26,7 @@ function harness(initialReview) {
   let timer
   let review = initialReview
   let loads = 0
+  let expanded = false
   const dismissed = []
   const hooks = {
     useState(initial) {
@@ -69,10 +70,15 @@ function harness(initialReview) {
   return {
     render() {
       hook = 0
-      const tree = exports.default()
+      const state = exports.useRegularizationDashboard(enabled)
+      const tree = React.createElement(React.Fragment, null,
+        exports.RegularizationNotice({ state }),
+        expanded && exports.default({ state }),
+      )
       while (effects.length) effects.shift()()
       return tree
     },
+    expand() { expanded = true },
     setReview(value) { review = value },
     setToday(value) { today = value },
     tick() { timer() },
@@ -97,11 +103,18 @@ function button(tree, text) {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
+test('does not load regularization data outside the HR Admin dashboard', async () => {
+  const view = harness({ as_of: '2026-07-02', candidates: [candidate], notification_pending: true }, false)
+  view.render()
+  await settle()
+  assert.equal(view.loads(), 0)
+})
+
 test('empty result stays invisible; refresh and day rollover load candidates', async () => {
   const view = harness({ as_of: '2026-07-02', candidates: [], notification_pending: false })
-  assert.equal(view.render(), null)
+  assert.equal(renderToStaticMarkup(view.render()), '')
   await settle()
-  assert.equal(view.render(), null)
+  assert.equal(renderToStaticMarkup(view.render()), '')
   view.tick()
   assert.equal(view.loads(), 1)
   view.setReview({ as_of: '2026-07-03', candidates: [candidate], notification_pending: true })
@@ -118,7 +131,7 @@ test('daily reminder can be dismissed while candidate details remain available',
   await settle()
   let tree = view.render()
   assert.doesNotMatch(renderToStaticMarkup(tree), /Example Employee/)
-  find(tree, (node) => node.type === 'button' && node.props['aria-controls'] === 'regularization-candidate-list').props.onClick()
+  view.expand()
   tree = view.render()
   assert.match(renderToStaticMarkup(tree), /Example Employee/)
   assert.match(renderToStaticMarkup(tree), /1 day overdue/)

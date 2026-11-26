@@ -1,4 +1,5 @@
 import { ArrowUpRight, ChevronDown, ClipboardCheck, Clock3, AlertTriangle, MapPin, Sparkles } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 export interface TeamOverviewItem {
   id: string
@@ -27,6 +28,8 @@ const categoryColors: Record<string, string> = {
   payroll: 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
   updates: 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
   offline: 'border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100',
+  regularization: 'border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100',
+  'leave-reversal': 'border-violet-200 bg-violet-50 text-violet-800 hover:bg-violet-100',
 }
 
 function displayValue(value: TeamOverviewItem['value']) {
@@ -35,11 +38,12 @@ function displayValue(value: TeamOverviewItem['value']) {
   return value
 }
 
-export default function TeamOverview({ role, metrics, reviews, employeeName }: {
+export default function TeamOverview({ role, metrics, reviews, employeeName, reviewNotice }: {
   role: 'supervisor' | 'manager' | 'employee' | 'administrator'
   metrics: TeamOverviewItem[]
   reviews: TeamOverviewItem[]
   employeeName?: string
+  reviewNotice?: ReactNode
 }) {
   const isEmployee = role === 'employee'
   const today = new Intl.DateTimeFormat('en-PH', {
@@ -115,6 +119,7 @@ export default function TeamOverview({ role, metrics, reviews, employeeName }: {
           <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-700">
             <ClipboardCheck size={16} aria-hidden="true" /> {isEmployee ? 'My actions & records' : 'Review queue'}
           </h2>
+          {reviewNotice}
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {reviews.map((item) => (
               <button key={item.id} type="button" aria-expanded={!isEmployee || item.controls ? item.open : undefined} aria-controls={item.controls} onClick={item.onClick}
