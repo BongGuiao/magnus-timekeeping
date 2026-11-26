@@ -100,7 +100,9 @@ The request covers the complete clock-in-to-clock-out interval without break ded
 
    The duration is calculated from approved schedules, excluding rest days and non-working holidays. It uses published company calendars and the assigned work location; missing calendar or location information is treated as an ordinary workday. A missing schedule prevents filing. The period is limited to 93 days and cannot cross entitlement years. A period with no scheduled work cannot be filed.
 
-   For an overnight shift, the shift's work/start date determines its holiday and rest-day status. An unpaid break is deducted only when the entire shift is covered. The calculated duration is checked again on submission and approval; if the schedule or calendar changes, the application may need to be updated or refiled.
+   Enter the full shift's start and end times, including the meal-break period. Leave is limited to 480 minutes (8 hours, or 1 leave day) per scheduled workday: a 9:00 AM to 6:00 PM full-shift request counts as 480 minutes, not 540. Configured unpaid breaks are deducted when the entire shift is covered, then the daily limit is applied. Shorter durations remain based on the covered scheduled work; multiple workdays are calculated separately and added together.
+
+   For an overnight shift, the shift's work/start date determines its daily limit, holiday and rest-day status. The calculated duration is checked again on submission and approval; if a previously filed duration differs from the current calculation, the application may need to be updated or refiled. Existing approved applications and leave charges are not automatically rewritten.
 
 2. Select Save draft. In My Leave Applications, locate the DRAFT and select Submit for approval. Saving the draft alone does not submit it.
 

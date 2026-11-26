@@ -13,6 +13,7 @@ from app.filemaintenance.schedule.infrastructure.db_model import ScheduleSegment
 
 MANILA = ZoneInfo("Asia/Manila")
 MAX_LEAVE_DAYS = 93
+MAX_LEAVE_MINUTES_PER_DAY = 480
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def _covered_minutes(
     minutes = sum(int((end - start).total_seconds() // 60) for start, end in merged)
     if start_at <= shift_start and end_at >= shift_end:
         minutes = max(0, minutes - unpaid_break)
-    return minutes
+    return min(minutes, MAX_LEAVE_MINUTES_PER_DAY)
 
 
 async def calculate_leave_duration(

@@ -107,8 +107,34 @@ class LeaveDurationTests(unittest.IsolatedAsyncioTestCase):
                 session, uuid4(), datetime(2026, 12, 21, 9, tzinfo=TZ),
                 datetime(2026, 12, 21, 18, tzinfo=TZ),
             )
-        self.assertEqual(result.requested_minutes, 540)
+        self.assertEqual(result.requested_minutes, 480)
         holiday.assert_not_awaited()
+
+    async def test_daily_cap_is_applied_before_summing_multiple_workdays(self):
+        first = date(2026, 11, 27)
+        session = SimpleNamespace(
+            scalar=AsyncMock(return_value=uuid4()),
+            scalars=AsyncMock(return_value=SimpleNamespace(all=lambda: [segment("WORK", time(9), time(18))])),
+        )
+
+        async def resolve_schedule(_session, _employee, day):
+            return schedule(day) if day >= first else SimpleNamespace(schedule_context=None)
+
+        with patch.object(leave_duration, "resolve_schedule_day", new=AsyncMock(side_effect=resolve_schedule)), \
+                patch.object(leave_duration, "resolve_attendance_day_type", new=AsyncMock(return_value="REG")):
+            result = await leave_duration.calculate_leave_duration(
+                session, uuid4(), datetime(2026, 11, 27, 9, tzinfo=TZ),
+                datetime(2026, 11, 29, 13, tzinfo=TZ),
+            )
+        self.assertEqual([day.requested_minutes for day in result.days], [480, 480, 240])
+        self.assertEqual(result.requested_minutes, 1200)
+
+    async def test_nine_hour_overnight_shift_is_one_leave_day(self):
+        start = datetime(2026, 11, 27, 22, tzinfo=TZ)
+        end = datetime(2026, 11, 28, 7, tzinfo=TZ)
+        self.assertEqual(leave_duration._covered_minutes(
+            start, end, start.date(), [segment("WORK", time(22), time(7), offset=1)], start, end,
+        ), 480)
 
     async def test_missing_schedule_and_cross_year_are_rejected(self):
         missing = SimpleNamespace(schedule_context=None)
