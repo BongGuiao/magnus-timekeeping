@@ -70,7 +70,7 @@ from app.filemaintenance.payroll_groups.infrastructure.db_model import PayrollGr
 router = APIRouter(prefix="/reports", tags=["Attendance Reports"])
 MANILA = ZoneInfo("Asia/Manila")
 MAX_REPORT_DAYS = 31
-MAX_REPORT_ROWS = 2000
+MAX_REPORT_ROWS = 10000
 
 
 class AttendanceReportOvertime(BaseModel):
