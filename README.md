@@ -154,7 +154,10 @@ manager, and HR administrators with a current company-wide role for the
 employee's company (or a global role) can see an in-app alert. Dismissal is
 per user. Alerts are marked resolved when an underlying absence is corrected,
 voided, or removed. Ambiguous records that still include an absence do not
-silently resolve an alert. The alerts
+silently resolve an alert. On Supervisor, Manager, and HR Admin dashboards,
+the consecutive absence alerts summary opens a review panel below the overview.
+A zero count means there are no visible alerts; it does not indicate whether
+the feature is enabled. The alerts
 are informational, not formal return-to-work notices, and do not send email.
 The mobile app must be rebuilt and distributed to receive this feature.
 

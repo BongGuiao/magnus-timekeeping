@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
-import AbsenceAlerts from '../components/dashboard/AbsenceAlerts'
+import AbsenceAlerts, { useAbsenceAlerts } from '../components/dashboard/AbsenceAlerts'
 import DataTable, { type DataTableColumn } from '../components/common/DataTable'
 import AttendanceCorrectionsPanel from '../components/dashboard/AttendanceCorrectionsPanel'
 import TeamOverview, { type TeamOverviewItem } from '../components/dashboard/TeamOverview'
@@ -213,6 +213,8 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const isSupervisorReturnDashboard = role === 'supervisor'
     && roleCode === 'SUPERVISOR' && getAvailableRoleCodes().includes('SUPERVISOR')
   const regularization = useRegularizationDashboard(isHrAdminDashboard)
+  const absenceAlerts = useAbsenceAlerts()
+  const [isAbsenceAlertsOpen, setIsAbsenceAlertsOpen] = useState(false)
   const [pendingDevices, setPendingDevices] = useState<DeviceRecord[]>([])
   const [isLoadingDevices, setIsLoadingDevices] = useState(isAdmin)
   const [hasLoadedDevices, setHasLoadedDevices] = useState(false)
@@ -300,6 +302,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       setIsLeaveReversalOpen(false)
       setIsOvertimeReversalOpen(false)
       setIsPunchedEmployeesOpen(false)
+      setIsAbsenceAlertsOpen(false)
     }
     window.addEventListener('dashboard-role-change', updateRole)
     return () => window.removeEventListener('dashboard-role-change', updateRole)
@@ -993,6 +996,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   })
 
   function closeTeamReviews() {
+    setIsAbsenceAlertsOpen(false)
     setEmployeePanel(null)
     setAdminPanel(null)
     setIsOfflineReviewOpen(false)
@@ -1045,6 +1049,15 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       onClick: () => toggleTeamReview(isTeamHoursOpen, () => setIsTeamHoursOpen(true)),
     },
   ] : []
+  const absenceAlertMetric: TeamOverviewItem = {
+    id: 'absence-alerts',
+    label: 'Consecutive absence alerts',
+    value: absenceAlerts.loading ? '…' : absenceAlerts.error ? 'Unavailable' : absenceAlerts.alerts.length,
+    open: isAbsenceAlertsOpen,
+    controls: 'absence-alerts-panel',
+    onClick: () => toggleTeamReview(isAbsenceAlertsOpen, () => setIsAbsenceAlertsOpen(true)),
+  }
+  if (isTeamDashboard) teamMetrics.push(absenceAlertMetric)
   const teamReviews: TeamOverviewItem[] = []
   if (isSupervisorReturnDashboard) {
     teamReviews.push({
@@ -1190,6 +1203,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         onClick: () => { if (panel) toggleTeamReview(adminPanel === panel, () => setAdminPanel(panel)) },
       }
     })
+  if (isHrAdminDashboard) adminMetrics.push(absenceAlertMetric)
   const adminReviews: TeamOverviewItem[] = []
   if (canReviewTeamLeave && canReadOrgAttendance) adminReviews.push({
     id: 'leave', label: 'All pending leave',
@@ -1267,11 +1281,10 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
-        {(!isTeamDashboard || teamMetrics.length === 0) && <AbsenceAlerts />}
+        {!isTeamDashboard && !isHrAdminDashboard && <AbsenceAlerts state={absenceAlerts} />}
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
         {isTeamDashboard ? (
-          <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews}
-            extraMetric={teamMetrics.length > 0 ? <AbsenceAlerts compact /> : undefined} />
+          <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
         ) : role === 'employee' ? (
           <TeamOverview role="employee" employeeName={employeeName} metrics={employeeMetrics} reviews={employeeActions} />
         ) : (
@@ -1279,6 +1292,9 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             reviewNotice={isHrAdminDashboard ? <RegularizationNotice state={regularization} /> : undefined} />
         )}
 
+        {(isTeamDashboard || isHrAdminDashboard) && isAbsenceAlertsOpen && (
+          <AbsenceAlerts state={absenceAlerts} onClose={() => setIsAbsenceAlertsOpen(false)} />
+        )}
         {isHrAdminDashboard && isRegularizationOpen && <RegularizationDashboard state={regularization} />}
         {(isHrAdminDashboard || isSupervisorReturnDashboard) && isLeaveReversalOpen &&
           <LeaveApprovalReversal dashboardRoleCode={isHrAdminDashboard ? 'HR_ADMIN' : 'SUPERVISOR'} />}

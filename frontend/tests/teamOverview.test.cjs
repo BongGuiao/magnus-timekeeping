@@ -48,6 +48,11 @@ function dashboard(role, permissions, admin = false, onNavigate, apiOverrides = 
       },
     },
     '../components/dashboard/TeamOverview': { __esModule: true, default: TeamOverview },
+    '../components/dashboard/AbsenceAlerts': {
+      __esModule: true,
+      default: ({ onClose }) => React.createElement('div', { 'data-component': 'AbsenceAlerts', 'data-panel': Boolean(onClose) }),
+      useAbsenceAlerts: () => ({ alerts: [], error: null, dismissing: null, loading: false, refresh() {}, dismiss() {}, ...apiOverrides.alerts }),
+    },
     '../hooks/useLogout': { useLogout: () => ({ logout() {} }) },
     '../data/mockDashboard': { mockDashboardData: {
       workHours: { weeklyTarget: 40 }, attendanceExceptions: { periodLabel: 'This month' },
@@ -196,7 +201,7 @@ for (const role of ['supervisor', 'manager']) {
     assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id),
       [...(role === 'supervisor' ? ['leave-reversal', 'overtime-reversal'] : []),
         'leave', 'invalid', 'overtime', 'ob', 'correction', ...(role === 'supervisor' ? ['locations'] : [])])
-    assert.equal(overview.props.metrics.length, 4)
+    assert.equal(overview.props.metrics.length, 5)
     assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').label, 'Recorded absences')
     assert.ok(!html.includes('Missing clock-in'))
     assert.ok(!html.includes('data-component="HeroBanner"'))
@@ -210,10 +215,52 @@ for (const role of ['supervisor', 'manager']) {
 
 test('permission-limited team dashboard omits ungranted metrics and approval actions', () => {
   const { overview } = dashboard('manager', ['overtime.approve_team'])()
-  assert.equal(overview.props.metrics.length, 0)
+  assert.deepEqual(Array.from(overview.props.metrics, (item) => item.id), ['absence-alerts'])
   assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id), ['overtime'])
   const adminPreview = dashboard('supervisor', permissions, true)().overview
   assert.ok(!adminPreview.props.reviews.some((item) => item.id === 'devices'))
+})
+
+test('absence alerts sit under recorded absences and share dashboard panels for supervisors and HR admins', () => {
+  for (const [role, code, granted] of [
+    ['supervisor', 'SUPERVISOR', permissions],
+    ['administrator', 'HR_ADMIN', [...permissions, 'attendance.read_org']],
+  ]) {
+    const render = dashboard(role, granted, role === 'administrator', undefined, {}, code)
+    let { overview, tree } = render()
+    const ids = Array.from(overview.props.metrics, (item) => item.id)
+    assert.equal(ids.indexOf('absence-alerts'), ids.indexOf('missing-in') + 3)
+    assert.equal(overview.props.metrics.find((item) => item.id === 'absence-alerts').value, 0)
+    overview.props.metrics.find((item) => item.id === 'missing-in').onClick()
+    overview = render().overview
+    assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').open, true)
+    overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    ;({ overview, tree } = render())
+    assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').open, false)
+    assert.equal(overview.props.metrics.find((item) => item.id === 'absence-alerts').open, true)
+    const panel = find(tree, (node) => node.props?.onClose && node.props?.state?.alerts)
+    assert.ok(panel)
+    panel.props.onClose()
+    assert.equal(render().overview.props.metrics.find((item) => item.id === 'absence-alerts').open, false)
+    render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    render().overview.props.metrics.find((item) => item.id === 'missing-in').onClick()
+    assert.equal(render().overview.props.metrics.find((item) => item.id === 'absence-alerts').open, false)
+    render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    assert.equal(render().overview.props.metrics.find((item) => item.id === 'absence-alerts').open, false)
+  }
+  for (const [role, code] of [['employee', 'EMPLOYEE'], ['administrator', 'SYSTEM_ADMIN']]) {
+    const { overview, tree } = dashboard(role, permissions, role === 'administrator', undefined, {}, code)()
+    assert.equal(overview.props.metrics.some((item) => item.id === 'absence-alerts'), false)
+    assert.ok(find(tree, (node) => node.props?.state?.alerts && !node.props?.onClose))
+  }
+})
+
+test('absence alert metric distinguishes loading and unavailable counts', () => {
+  for (const [state, expected] of [[{ loading: true }, '…'], [{ error: 'Request failed' }, 'Unavailable']]) {
+    const { overview } = dashboard('supervisor', permissions, false, undefined, { alerts: state })()
+    assert.equal(overview.props.metrics.find((item) => item.id === 'absence-alerts').value, expected)
+  }
 })
 
 test('switching every review category keeps only the selected review open; clicking again closes it', async () => {

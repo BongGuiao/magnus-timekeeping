@@ -12,6 +12,7 @@ export interface TeamOverviewItem {
 
 const categoryColors: Record<string, string> = {
   'missing-in': 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100',
+  'absence-alerts': 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100',
   'missing-out': 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
   'punched-today': 'border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100',
   hours: 'border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100',
@@ -38,13 +39,12 @@ function displayValue(value: TeamOverviewItem['value']) {
   return value
 }
 
-export default function TeamOverview({ role, metrics, reviews, employeeName, reviewNotice, extraMetric }: {
+export default function TeamOverview({ role, metrics, reviews, employeeName, reviewNotice }: {
   role: 'supervisor' | 'manager' | 'employee' | 'administrator'
   metrics: TeamOverviewItem[]
   reviews: TeamOverviewItem[]
   employeeName?: string
   reviewNotice?: ReactNode
-  extraMetric?: ReactNode
 }) {
   const isEmployee = role === 'employee'
   const today = new Intl.DateTimeFormat('en-PH', {
@@ -113,7 +113,6 @@ export default function TeamOverview({ role, metrics, reviews, employeeName, rev
               </div>
             )
           })}
-          {extraMetric}
         </div>
       )}
       {reviews.length > 0 && (

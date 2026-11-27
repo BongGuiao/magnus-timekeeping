@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle } from 'lucide-react'
 import { apiClient } from '../../lib/apiClient'
 import { getAttendanceErrorMessage } from '../../lib/attendanceApi'
 import type { ApiSuccessEnvelope } from '../../types/auth'
@@ -12,11 +11,11 @@ interface AbsenceAlert {
   resolved_at: string | null
 }
 
-export default function AbsenceAlerts({ compact = false }: { compact?: boolean } = {}) {
+export function useAbsenceAlerts() {
   const [alerts, setAlerts] = useState<AbsenceAlert[]>([])
   const [error, setError] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(true)
   const request = useRef(0)
 
   async function refresh() {
@@ -29,6 +28,8 @@ export default function AbsenceAlerts({ compact = false }: { compact?: boolean }
       }
     } catch (reason) {
       if (id === request.current) setError(getAttendanceErrorMessage(reason, 'Could not load absence alerts.'))
+    } finally {
+      if (id === request.current) setLoading(false)
     }
   }
 
@@ -56,11 +57,52 @@ export default function AbsenceAlerts({ compact = false }: { compact?: boolean }
     }
   }
 
-  if (!alerts.length && !error) return null
-  const details = (
-    <section id={compact ? 'team-absence-alerts' : undefined} aria-label="Absence alerts" className={compact
-      ? 'rounded-xl border border-amber-300 bg-amber-50 p-4'
-      : 'mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4'}>
+  return { alerts, error, dismissing, loading, refresh, dismiss }
+}
+
+type AbsenceAlertState = ReturnType<typeof useAbsenceAlerts>
+
+export default function AbsenceAlerts({ state, onClose }: {
+  state: AbsenceAlertState
+  onClose?: () => void
+}) {
+  const { alerts, error, dismissing, loading, refresh, dismiss } = state
+  if (!onClose && !alerts.length && !error) return null
+  if (onClose) return (
+    <section id="absence-alerts-panel" aria-label="Consecutive absence alerts" className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-extrabold text-slate-900">Consecutive absence alerts</h2>
+          <p className="mt-1 text-sm text-slate-500">Three recorded absent workdays, eight hours after the third scheduled shift starts.</p>
+        </div>
+        <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Close</button>
+      </div>
+      {error && <p role="alert" className="mt-4 text-sm text-red-700">{error} <button type="button" className="underline" onClick={() => void refresh()}>Retry</button></p>}
+      {loading ? <p className="mt-5 text-sm text-slate-500">Loading absence alerts…</p> : alerts.length === 0 && !error ? (
+        <p className="mt-5 rounded-lg bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">No consecutive absence alerts.</p>
+      ) : alerts.length > 0 && (
+        <div className="mt-5 overflow-x-auto">
+          <table className="w-full min-w-[600px] text-left text-sm">
+            <thead className="border-b border-slate-200 text-xs uppercase text-slate-400">
+              <tr><th className="px-3 py-3">Employee</th><th className="px-3 py-3">Absent dates</th><th className="px-3 py-3">Status</th><th className="px-3 py-3 text-right">Action</th></tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {alerts.map((alert) => (
+                <tr key={alert.id}>
+                  <td className="px-3 py-3"><p className="font-semibold text-slate-800">{alert.employee_name}</p><p className="text-xs text-slate-500">{alert.employee_no}</p></td>
+                  <td className="px-3 py-3 text-slate-600">{alert.absence_dates.join(', ')}</td>
+                  <td className="px-3 py-3 text-slate-600">{alert.resolved_at ? 'Resolved after an attendance change' : 'Review recorded absences'}</td>
+                  <td className="px-3 py-3 text-right"><button type="button" disabled={dismissing !== null} onClick={() => void dismiss(alert.id)} className="font-semibold text-amber-800 underline disabled:opacity-50">{dismissing === alert.id ? 'Dismissing…' : 'Dismiss'}</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+  return (
+    <section aria-label="Absence alerts" className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
       <h2 className="font-bold text-amber-950">Consecutive absence alerts</h2>
       {alerts.map((alert) => (
         <div key={alert.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-amber-950">
@@ -75,18 +117,5 @@ export default function AbsenceAlerts({ compact = false }: { compact?: boolean }
       ))}
       {error && <p role="alert" className="mt-2 text-sm text-red-700">{error} <button type="button" className="underline" onClick={() => void refresh()}>Retry</button></p>}
     </section>
-  )
-  if (!compact) return details
-  const expanded = open || error !== null
-  return (
-    <div className="contents">
-      <button type="button" aria-expanded={expanded} aria-controls="team-absence-alerts"
-        onClick={() => setOpen((current) => !current)}
-        className={`flex items-center justify-between gap-3 rounded-lg border border-l-4 border-amber-200 bg-amber-50 px-3 py-2.5 text-left text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${expanded ? 'ring-2 ring-inset ring-current' : ''}`}>
-        <span className="flex items-center gap-2 text-sm font-medium"><AlertTriangle size={16} aria-hidden="true" />Consecutive absence alerts</span>
-        <span className={`shrink-0 font-bold tabular-nums ${error ? 'text-xs' : 'text-lg'}`}>{error ? 'Unavailable' : alerts.length}</span>
-      </button>
-      <div hidden={!expanded} className="sm:col-span-3">{details}</div>
-    </div>
   )
 }
