@@ -189,6 +189,7 @@ def _application_schema(record: OvertimeApplicationRecord) -> OvertimeApplicatio
         final_payable_minutes=application.final_payable_minutes,
         overtime_type=application.overtime_type,
         reason=application.reason,
+        rejection_reason=application.rejection_reason,
         work_accomplished=application.work_accomplished,
         validation_status=application.validation_status,
         status=application.status,
@@ -486,6 +487,7 @@ async def decide_overtime_application(
                 is_admin=is_admin,
                 decision=payload.decision,
                 supervisor_approved_minutes=payload.supervisor_approved_minutes,
+                rejection_reason=payload.rejection_reason,
             )
         )
     return ResponseEnvelope(status="success", data=_application_schema(record))

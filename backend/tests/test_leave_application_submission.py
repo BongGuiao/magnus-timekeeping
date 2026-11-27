@@ -6,10 +6,14 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.filemaintenance.leaves.application.leave_records_use_case import LeaveApplicationUseCase
+from app.filemaintenance.leaves.domain.entities.leave_records import LeaveApplicationEntity
 from app.filemaintenance.leaves.infrastructure.leave_records_router import (
     LeaveApplicationCreateSchema,
+    SupervisorLeaveDecisionSchema,
+    decide_supervisor_pending_leave_application,
     applications_router,
     check_leave_rest_days,
     create_leave_application,
@@ -242,11 +246,51 @@ class LeaveApplicationSubmissionTests(unittest.IsolatedAsyncioTestCase):
             "app.filemaintenance.leaves.application.leave_records_use_case._to_entity", side_effect=lambda model, _: model,
         ):
             result = await LeaveApplicationUseCase(SessionUnitOfWork(session)).decide_pending_for_supervisor(
-                uuid4(), application.id, "REJECTED", uuid4(), date(2026, 10, 12),
+                uuid4(), application.id, "REJECTED", uuid4(), date(2026, 10, 12), "  Missing details  ",
             )
         self.assertEqual(result.status, "REJECTED")
+        self.assertEqual(result.rejection_reason, "Missing details")
         self.assertIsNone(result.approved_by_id)
         post.assert_not_awaited()
+
+    async def test_rejection_requires_a_nonblank_reason_before_updating(self):
+        use_case = LeaveApplicationUseCase(SessionUnitOfWork(None))
+        for reason in (None, "  ", "x" * 2001):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, "rejection reason"):
+                await use_case.decide_pending_for_supervisor(
+                    uuid4(), uuid4(), "REJECTED", uuid4(), date(2026, 10, 12), reason,
+                )
+
+    async def test_rejection_schema_and_dashboard_refresh(self):
+        for reason in (None, "  ", "x" * 2001):
+            with self.subTest(reason=reason), self.assertRaises(ValidationError):
+                SupervisorLeaveDecisionSchema(decision="REJECTED", rejection_reason=reason)
+        payload = SupervisorLeaveDecisionSchema(decision="REJECTED", rejection_reason="  Missing details  ")
+        self.assertEqual(payload.rejection_reason, "Missing details")
+        employee_id, application_id = uuid4(), uuid4()
+        start = datetime(2026, 10, 12, 9, tzinfo=timezone.utc)
+        result = LeaveApplicationEntity(
+            id=application_id, application_no="LEAVE-1", employee_id=employee_id,
+            leave_type_id=uuid4(), start_at=start, end_at=start + timedelta(hours=8),
+            duration_type="FULL_DAY", requested_minutes=480, reason="Leave",
+            status="REJECTED", rejection_reason=payload.rejection_reason,
+        )
+        use_case = SimpleNamespace(decide_pending_for_supervisor=AsyncMock(return_value=result))
+        claims = {"sub": str(uuid4()), "employee_id": str(uuid4()), "email": "test@example.invalid"}
+        with patch("app.filemaintenance.leaves.infrastructure.leave_records_router._queue_leave_dashboard_refresh") as refresh, patch(
+            "app.filemaintenance.leaves.infrastructure.leave_records_router.log_entity_action", new=AsyncMock()
+        ):
+            response = await decide_supervisor_pending_leave_application(application_id, payload, claims, use_case, None)
+        self.assertEqual(response.data.rejection_reason, "Missing details")
+        refresh.assert_called_once_with(employee_id)
+
+    async def test_legacy_update_requires_reason_and_prevents_overwriting_it(self):
+        application = SimpleNamespace(status="PENDING")
+        session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: application)))
+        use_case = LeaveApplicationUseCase(SessionUnitOfWork(session))
+        for values in ({"status": "REJECTED"}, {"rejection_reason": "Unapproved change"}):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                await use_case.update_with_approval_posting(uuid4(), values, uuid4())
 
     async def test_approval_records_the_actual_approver(self):
         actor_id = uuid4()

@@ -487,6 +487,7 @@ def _load_leave_dashboard_snapshots(employee_id: str | None = None) -> dict[str,
                 LeaveApplicationModel.end_at,
                 LeaveApplicationModel.requested_minutes,
                 LeaveApplicationModel.status,
+                LeaveApplicationModel.rejection_reason,
                 LeaveTypeModel.leave_name,
                 LeaveTypeModel.unit_type,
             )
@@ -582,6 +583,7 @@ def _load_leave_dashboard_snapshots(employee_id: str | None = None) -> dict[str,
                         "start_at": _serialize_datetime(row.start_at),
                         "end_at": _serialize_datetime(row.end_at),
                         "status": row.status,
+                        "rejection_reason": row.rejection_reason,
                     }
                 )
     finally:

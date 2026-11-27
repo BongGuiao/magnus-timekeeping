@@ -24,6 +24,7 @@ from app.auth.infrastructure.hr_dashboard_access import ApprovalReturnActor, req
 from app.core.audit_logging import stamp_audit_fields
 from app.core.config import settings
 from app.core.generics.mapper import ResponseEnvelope
+from app.core.rejection_reason import rejection_reason_for_decision
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
 from app.filemaintenance.leaves.application.entitlement_upload_use_case import (
     EntitlementUploadChangedError,
@@ -532,6 +533,7 @@ class LeaveApplicationUpdateSchema(BaseModel):
     paid_minutes: int | None = Field(default=None, ge=0)
     unpaid_minutes: int | None = Field(default=None, ge=0)
     reason: str | None = Field(default=None, min_length=1)
+    rejection_reason: str | None = Field(default=None, max_length=2000)
     contact_information: str | None = None
     reliever_employee_id: UUID | None = None
     is_retroactive: bool | None = None
@@ -558,6 +560,7 @@ class LeaveApplicationUpdateSchema(BaseModel):
                 "submitted_at",
                 "approved_at",
                 "cancelled_at",
+                "rejection_reason",
             },
         )
         for field_name in ("start_at", "end_at", "submitted_at", "approved_at", "cancelled_at"):
@@ -588,6 +591,7 @@ class LeaveDashboardApplicationSchema(BaseModel):
     start_at: datetime
     end_at: datetime
     status: str
+    rejection_reason: str | None = None
 
 
 class LeaveDashboardSnapshotSchema(BaseModel):
@@ -615,6 +619,12 @@ class SupervisorPendingLeaveSchema(BaseModel):
 
 class SupervisorLeaveDecisionSchema(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
+    rejection_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self):
+        self.rejection_reason = rejection_reason_for_decision(self.decision, self.rejection_reason)
+        return self
 
 
 class LeaveApplicationDateCreateSchema(BaseModel):
@@ -1089,6 +1099,7 @@ async def decide_supervisor_pending_leave_application(
             payload.decision,
             actor_id,
             datetime.now(PH_TIMEZONE).date(),
+            payload.rejection_reason,
         )
     except ValueError as error:
         raise HTTPException(
@@ -1100,8 +1111,7 @@ async def decide_supervisor_pending_leave_application(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Pending leave application was not found for your team or has already been reviewed.",
         )
-    if payload.decision == "APPROVED":
-        _queue_leave_dashboard_refresh(result.employee_id)
+    _queue_leave_dashboard_refresh(result.employee_id)
     await log_entity_action(
         es_client,
         user_id=actor_id,

@@ -115,7 +115,7 @@ export default function RestDayApplication({ employeeName, previewOnly = false, 
         <section className="rounded-xl bg-white p-6 shadow-sm">
           <h2 className="font-bold">My rest-day applications</h2>
           {applications.filter((item) => item.overtime_type === 'REST_DAY_WORK').map((item) =>
-            <p key={item.id} className="mt-3 text-sm">{item.attendance_date} · {item.application_no} · {item.status} · Requested {minutesText(item.requested_minutes)}{item.status === 'APPROVED' && ` · Approved ${minutesText(item.final_payable_minutes ?? 0)}`}</p>,
+            <div key={item.id} className="mt-3 text-sm"><p>{item.attendance_date} · {item.application_no} · {item.status} · Requested {minutesText(item.requested_minutes)}{item.status === 'APPROVED' && ` · Approved ${minutesText(item.final_payable_minutes ?? 0)}`}</p>{item.rejection_reason && <p className="mt-1 whitespace-pre-line text-rose-700">Rejection reason: {item.rejection_reason}</p>}</div>,
           )}
         </section>
       </main>

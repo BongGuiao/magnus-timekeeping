@@ -286,6 +286,7 @@ class OvertimeApplicationModel(Base):
     final_payable_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     overtime_type: Mapped[str] = mapped_column(String(30), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     work_accomplished: Mapped[str | None] = mapped_column(Text, nullable=True)
     validation_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     workflow_instance_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
@@ -355,6 +356,7 @@ class OfficialBusinessRequestModel(Base):
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     destination: Mapped[str] = mapped_column(String(300), nullable=False)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     client_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     geofence_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True),

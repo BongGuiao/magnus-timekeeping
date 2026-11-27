@@ -286,7 +286,7 @@ export default function OvertimeApplication({ employeeName, previewOnly = false,
                 <td className="px-3 py-3">{application.requested_minutes} min</td>
                 <td className="px-3 py-3">{application.supervisor_approved_minutes === null ? '--' : `${application.supervisor_approved_minutes} min`}</td>
                 <td className="px-3 py-3">{application.final_payable_minutes === null ? '--' : `${application.final_payable_minutes} min`}</td>
-                <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${application.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : application.status === 'REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>{application.status}</span></td>
+                <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${application.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : application.status === 'REJECTED' ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'}`}>{application.status}</span>{application.rejection_reason && <p className="mt-2 max-w-xs whitespace-pre-line text-rose-700">Rejection reason: {application.rejection_reason}</p>}</td>
                 <td className="px-3 py-3">{['PENDING', 'REJECTED'].includes(application.status) && !application.payroll_posted && entries.some((entry) => entry.attendanceId === application.attendance_record_id) && <button type="button" onClick={() => editApplication(application)} className="rounded-md border border-indigo-200 px-2.5 py-1.5 font-semibold text-indigo-700 hover:bg-indigo-50">Edit</button>}</td>
               </tr>)}</tbody>
             </table>

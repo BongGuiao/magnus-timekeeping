@@ -59,6 +59,7 @@ _ATTENDANCE_OVERTIME_FIELDS = (
 )
 _APPLICATION_DECISION_FIELDS = (
     "status",
+    "rejection_reason",
     "approved_by_id",
     "supervisor_approved_minutes",
     "final_payable_minutes",

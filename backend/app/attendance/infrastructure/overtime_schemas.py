@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from app.attendance.application.recent_attendance_snapshot import RecentAttendanceItem
 from app.attendance.domain.entities.overtime import OvertimeType as OvertimeApplicationType
+from app.core.rejection_reason import rejection_reason_for_decision
 
 
 class OvertimeApplicationInputSchema(BaseModel):
@@ -41,8 +42,14 @@ class OvertimeApplicationInputSchema(BaseModel):
 class OvertimeApplicationDecisionSchema(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
     supervisor_approved_minutes: int = Field(default=0, ge=0)
+    rejection_reason: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self):
+        self.rejection_reason = rejection_reason_for_decision(self.decision, self.rejection_reason)
+        return self
 
 
 class OvertimeApplicationSchema(BaseModel):
@@ -62,6 +69,7 @@ class OvertimeApplicationSchema(BaseModel):
     final_payable_minutes: int | None
     overtime_type: OvertimeApplicationType
     reason: str
+    rejection_reason: str | None = None
     work_accomplished: str | None
     validation_status: str | None
     status: str

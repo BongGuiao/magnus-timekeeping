@@ -67,6 +67,13 @@ NOW = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
 
 
 class SupervisorOvertimeScopeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_decision_payload_requires_and_trims_rejection_reason(self):
+        for reason in (None, " ", "x" * 2001):
+            with self.subTest(reason=reason), self.assertRaises(ValidationError):
+                OvertimeApplicationDecisionSchema(decision="REJECTED", rejection_reason=reason)
+        payload = OvertimeApplicationDecisionSchema(decision="REJECTED", rejection_reason="  Missing details  ")
+        self.assertEqual(payload.rejection_reason, "Missing details")
+
     async def test_admin_with_supervisor_role_lists_only_team_applications(self):
         supervisor_id = uuid4()
         use_case = MagicMock(execute=AsyncMock(return_value=[]))
@@ -543,10 +550,12 @@ class UpdateOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_editing_rejected_application_resubmits_it_as_pending(self):
         self.application.status = "REJECTED"
+        self.application.rejection_reason = "Previous reason"
         self.application.supervisor_approved_minutes = 0
         self.application.final_payable_minutes = 0
         await self.update()
         self.assertEqual(self.application.status, "PENDING")
+        self.assertIsNone(self.application.rejection_reason)
         self.assertIsNone(self.application.supervisor_approved_minutes)
         self.assertIsNone(self.application.final_payable_minutes)
         self.assertEqual(self.repository.assigned_approvals, [
@@ -653,9 +662,13 @@ class DecideOvertimeApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.audit.record.assert_not_awaited()
 
     async def test_rejection_requires_zero_minutes_and_pays_nothing(self):
+        for reason in (None, "   ", "x" * 2001):
+            with self.subTest(reason=reason), self.assertRaisesRegex(RuleViolationError, "rejection reason"):
+                await self.decide("REJECTED", minutes=0, rejection_reason=reason)
         with self.assertRaisesRegex(RuleViolationError, "zero approved minutes"):
-            await self.decide("REJECTED", minutes=10)
-        record = await self.decide("REJECTED", minutes=0)
+            await self.decide("REJECTED", minutes=10, rejection_reason="Reason")
+        record = await self.decide("REJECTED", minutes=0, rejection_reason="  Missing details  ")
+        self.assertEqual(record.application.rejection_reason, "Missing details")
         self.assertEqual(record.application.final_payable_minutes, 0)
         self.assertEqual(self.attendance.approved_regular_overtime_minutes, 0)
 

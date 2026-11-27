@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { apiClient } from '../../lib/apiClient'
 import { getAttendanceErrorMessage } from '../../lib/attendanceApi'
 import type { ApiSuccessEnvelope } from '../../types/auth'
@@ -11,10 +12,11 @@ interface AbsenceAlert {
   resolved_at: string | null
 }
 
-export default function AbsenceAlerts() {
+export default function AbsenceAlerts({ compact = false }: { compact?: boolean } = {}) {
   const [alerts, setAlerts] = useState<AbsenceAlert[]>([])
   const [error, setError] = useState<string | null>(null)
   const [dismissing, setDismissing] = useState<string | null>(null)
+  const [open, setOpen] = useState(false)
   const request = useRef(0)
 
   async function refresh() {
@@ -55,8 +57,10 @@ export default function AbsenceAlerts() {
   }
 
   if (!alerts.length && !error) return null
-  return (
-    <section aria-label="Absence alerts" className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+  const details = (
+    <section id={compact ? 'team-absence-alerts' : undefined} aria-label="Absence alerts" className={compact
+      ? 'rounded-xl border border-amber-300 bg-amber-50 p-4'
+      : 'mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4'}>
       <h2 className="font-bold text-amber-950">Consecutive absence alerts</h2>
       {alerts.map((alert) => (
         <div key={alert.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-amber-950">
@@ -71,5 +75,18 @@ export default function AbsenceAlerts() {
       ))}
       {error && <p role="alert" className="mt-2 text-sm text-red-700">{error} <button type="button" className="underline" onClick={() => void refresh()}>Retry</button></p>}
     </section>
+  )
+  if (!compact) return details
+  const expanded = open || error !== null
+  return (
+    <div className="contents">
+      <button type="button" aria-expanded={expanded} aria-controls="team-absence-alerts"
+        onClick={() => setOpen((current) => !current)}
+        className={`flex items-center justify-between gap-3 rounded-lg border border-l-4 border-amber-200 bg-amber-50 px-3 py-2.5 text-left text-amber-800 transition hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 ${expanded ? 'ring-2 ring-inset ring-current' : ''}`}>
+        <span className="flex items-center gap-2 text-sm font-medium"><AlertTriangle size={16} aria-hidden="true" />Consecutive absence alerts</span>
+        <span className={`shrink-0 font-bold tabular-nums ${error ? 'text-xs' : 'text-lg'}`}>{error ? 'Unavailable' : alerts.length}</span>
+      </button>
+      <div hidden={!expanded} className="sm:col-span-3">{details}</div>
+    </div>
   )
 }

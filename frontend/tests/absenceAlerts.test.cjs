@@ -29,6 +29,7 @@ function createPanel() {
       if (name === 'react/jsx-runtime') return {
         jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }),
       }
+      if (name === 'lucide-react') return { AlertTriangle: 'alert-icon' }
       if (name === '../../lib/apiClient') return { apiClient: {
         async get() { return { data: { data: alerts } } },
         async post(path) { posts.push(path); alerts = [] },
@@ -37,7 +38,7 @@ function createPanel() {
       throw new Error(`Unexpected dependency: ${name}`)
     },
   })
-  const render = () => { stateIndex = 0; refIndex = 0; return exports.default() }
+  const render = (props) => { stateIndex = 0; refIndex = 0; return exports.default(props) }
   const text = (node) => typeof node === 'string' ? node : !node?.props ? '' : [node.props.children].flat(Infinity).map(text).join(' ')
   const button = (node) => {
     if (!node?.props) return undefined
@@ -59,4 +60,43 @@ test('displays and dismisses a recipient-specific absence alert', async () => {
   assert.equal(panel.posts[0], '/attendance/absence-alerts/one/dismiss')
   assert.equal(panel.render(), null)
   cleanup()
+})
+
+test('compact alert opens its details from an aligned summary box', async () => {
+  const panel = createPanel()
+  const cleanup = panel.mount()
+  await new Promise((resolve) => setImmediate(resolve))
+  const box = panel.render({ compact: true })
+  const button = panel.button(box)
+  assert.equal(button.props['aria-expanded'], false)
+  assert.equal(button.props['aria-controls'], 'team-absence-alerts')
+  assert.match(panel.text(button), /Consecutive absence alerts/)
+  button.props.onClick()
+  const expanded = panel.render({ compact: true })
+  assert.equal(panel.button(expanded).props['aria-expanded'], true)
+  assert.match(panel.text(expanded), /Test Employee/)
+  cleanup()
+})
+
+test('team overview places the alert box after the existing summary metrics', () => {
+  const React = require('react')
+  const { renderToStaticMarkup } = require('react-dom/server')
+  const source = readFileSync(join(__dirname, '..', 'src', 'components', 'dashboard', 'TeamOverview.tsx'), 'utf8')
+  const exports = {}
+  runInNewContext(ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText, { exports, require, Intl, Date })
+  const html = renderToStaticMarkup(React.createElement(exports.default, {
+    role: 'supervisor',
+    metrics: [
+      { id: 'punched-today', label: 'Punched', open: false },
+      { id: 'missing-in', label: 'Recorded absences', open: false },
+      { id: 'missing-out', label: 'Missing clock-out', open: false },
+      { id: 'hours', label: 'Hours this week', open: false },
+    ],
+    reviews: [{ id: 'leave', label: 'Leave review', open: false }],
+    extraMetric: React.createElement('span', null, 'Consecutive absence alerts'),
+  }))
+  assert.ok(html.indexOf('Hours this week') < html.indexOf('Consecutive absence alerts'))
+  assert.ok(html.indexOf('Consecutive absence alerts') < html.indexOf('Review queue'))
 })

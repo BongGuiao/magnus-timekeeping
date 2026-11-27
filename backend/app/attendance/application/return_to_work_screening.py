@@ -12,6 +12,9 @@ from app.attendance.infrastructure.attendance_merge_queries import not_merged_so
 from app.attendance.infrastructure.db_model import AttendanceModel
 
 
+ABSENCE_ALERT_DELAY = timedelta(hours=8)
+
+
 async def review_day_status(
     session: AsyncSession,
     employee_id: UUID,
@@ -19,7 +22,7 @@ async def review_day_status(
     records: list[AttendanceModel],
     now: datetime,
 ) -> ReviewDayStatus | None:
-    """Classify a day; None means its scheduled shift is not yet complete."""
+    """Classify a day; None means its absence has not reached the alert threshold."""
     schedule = await resolve_schedule_day(session, employee_id, work_date)
     if not schedule.schedule_context:
         return ReviewDayStatus.UNKNOWN
@@ -28,13 +31,17 @@ async def review_day_status(
         return ReviewDayStatus.REST_DAY
     if day_type.upper() in NONWORKING_DAY_TYPES:
         return ReviewDayStatus.HOLIDAY
-    if schedule.schedule_template_id is None or schedule.expected_clock_out_at is None:
+    if (
+        schedule.schedule_template_id is None
+        or schedule.expected_clock_in_at is None
+        or schedule.expected_clock_out_at is None
+    ):
         return ReviewDayStatus.UNKNOWN
     if any(record.clock_in_at or record.corrected_clock_in_at for record in records):
         return ReviewDayStatus.PRESENT
     if await _has_approved_exception(session, employee_id, work_date, schedule.expected_clock_out_at):
         return ReviewDayStatus.APPROVED_LEAVE
-    if now < schedule.expected_clock_out_at:
+    if now < schedule.expected_clock_in_at + ABSENCE_ALERT_DELAY:
         return None
     if len(records) != 1:
         return ReviewDayStatus.UNKNOWN

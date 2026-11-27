@@ -142,8 +142,9 @@ Alembic; do not blindly stamp it.
 ### Consecutive absence alerts
 
 When enabled, a Celery task checks for current streaks every five minutes,
-including streaks already present at deployment. It alerts after the third
-recorded absent workday's scheduled shift ends. Rest days and nonworking
+including streaks already present at deployment. It alerts eight elapsed hours
+after the third recorded absent workday's scheduled shift starts, regardless of
+the scheduled shift end. Rest days and nonworking
 holidays are skipped; approved leave, approved official business, attendance,
 and unknown evidence interrupt screening. Missing schedules, duplicate
 conflicting records, and missing attendance are not treated as absences.

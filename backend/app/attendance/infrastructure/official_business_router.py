@@ -23,6 +23,7 @@ from app.auth.infrastructure.db_model import UserModel
 from app.auth.infrastructure.dependencies import require_approval_permission, require_permission
 from app.core.generics.mapper import ResponseEnvelope
 from app.core.generics.uow import GenUnitOfWork, get_unit_of_work
+from app.core.rejection_reason import rejection_reason_for_decision
 from app.filemaintenance.employees.infrastructure.db_model import (
     EmployeeModel,
     EmploymentAssignmentModel,
@@ -104,11 +105,13 @@ class OfficialBusinessDecisionSchema(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
     approved_minutes: int | None = Field(default=None, gt=0)
     row_version: int = Field(ge=1)
+    rejection_reason: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
     def validate_minutes(self) -> "OfficialBusinessDecisionSchema":
+        self.rejection_reason = rejection_reason_for_decision(self.decision, self.rejection_reason)
         if self.decision == "APPROVED" and self.approved_minutes is None:
             raise ValueError("approved_minutes is required when approving.")
         if self.decision == "REJECTED" and self.approved_minutes is not None:
@@ -126,6 +129,7 @@ class OfficialBusinessSchema(BaseModel):
     end_at: datetime
     destination: str
     purpose: str
+    rejection_reason: str | None = None
     client_name: str | None
     geofence_id: UUID | None
     geofence_name: str | None
@@ -445,6 +449,7 @@ async def _outputs(
             vehicle_id=request.vehicle_id,
             vehicle_label=vehicle_labels.get(request.vehicle_id) if request.vehicle_id else None,
             requested_minutes=request.requested_minutes,
+            rejection_reason=request.rejection_reason,
             approved_minutes=request.approved_minutes,
             status=request.status,
             payroll_posted=request.payroll_posted,
@@ -867,6 +872,7 @@ async def decide_official_business_request(
                 detail="Approved minutes cannot exceed the requested minutes.",
             )
         request.status = payload.decision
+        request.rejection_reason = payload.rejection_reason
         request.approved_minutes = payload.approved_minutes
         request.updated_by = actor_id
         request.row_version += 1
@@ -878,6 +884,6 @@ async def decide_official_business_request(
         action=payload.decision,
         resource="official_business_request",
         resource_id=str(request_id),
-        after={"status": result.status, "approved_minutes": result.approved_minutes},
+        after={"status": result.status, "approved_minutes": result.approved_minutes, "rejection_reason": result.rejection_reason},
     )
     return ResponseEnvelope(status="success", data=result)

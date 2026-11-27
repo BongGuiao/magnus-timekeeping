@@ -32,6 +32,7 @@ class LeaveApplicationEntity:
     duration_type: str
     requested_minutes: int
     reason: str
+    rejection_reason: str | None = None
     paid_minutes: int | None = None
     unpaid_minutes: int | None = None
     contact_information: str | None = None

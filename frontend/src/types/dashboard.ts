@@ -76,6 +76,7 @@ export interface OvertimeApplicationEntry {
 
 export interface LeaveRequest {
   id: string
+  rejectionReason?: string | null
   type: string
   startDate: string
   endDate: string

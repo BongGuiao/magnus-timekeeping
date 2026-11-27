@@ -38,12 +38,13 @@ function displayValue(value: TeamOverviewItem['value']) {
   return value
 }
 
-export default function TeamOverview({ role, metrics, reviews, employeeName, reviewNotice }: {
+export default function TeamOverview({ role, metrics, reviews, employeeName, reviewNotice, extraMetric }: {
   role: 'supervisor' | 'manager' | 'employee' | 'administrator'
   metrics: TeamOverviewItem[]
   reviews: TeamOverviewItem[]
   employeeName?: string
   reviewNotice?: ReactNode
+  extraMetric?: ReactNode
 }) {
   const isEmployee = role === 'employee'
   const today = new Intl.DateTimeFormat('en-PH', {
@@ -112,6 +113,7 @@ export default function TeamOverview({ role, metrics, reviews, employeeName, rev
               </div>
             )
           })}
+          {extraMetric}
         </div>
       )}
       {reviews.length > 0 && (

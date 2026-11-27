@@ -75,6 +75,7 @@ class LeaveApplicationModel(Base):
     paid_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unpaid_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     contact_information: Mapped[str | None] = mapped_column(Text, nullable=True)
     reliever_employee_id: Mapped[UUID | None] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("hr.employees.id"), nullable=True

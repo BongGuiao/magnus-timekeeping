@@ -43,6 +43,7 @@ from app.filemaintenance.org_unit.application.use_case import (
 from app.filemaintenance.companies.infrastructure.db_model import CompanyModel
 from app.filemaintenance.employees.infrastructure.db_model import EmployeeModel, EmploymentAssignmentModel
 from app.filemaintenance.leaves.application import leave_records_use_case
+from app.filemaintenance.leaves.application.leave_duration import LeaveDuration, LeaveDurationDay
 from app.filemaintenance.leaves.infrastructure.db_model import LeaveTypeModel
 from app.filemaintenance.leaves.infrastructure.leave_records_db_model import LeaveApplicationModel
 from app.filemaintenance.org_unit.infrastructure.db_model import OrgUnit
@@ -925,20 +926,21 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await leave_use_case.count_pending_for_supervisor(manager_id, TODAY), 0)
         self.assertEqual(await leave_use_case.list_pending_for_supervisor(manager_id, TODAY), [])
         self.assertIsNone(await leave_use_case.decide_pending_for_supervisor(
-            manager_id, leave.id, "REJECTED", manager_user_id, TODAY,
+            manager_id, leave.id, "REJECTED", manager_user_id, TODAY, "Reason",
         ))
         self.assertEqual(await SqlAlchemyAdminDashboardRepository(self.session).list_pending_leaves(
             supervisor_employee_id=manager_id, today=TODAY,
         ), [])
         with self.assertRaisesRegex(ValueError, "own leave application"):
-            await leave_use_case.update_with_approval_posting(leave.id, {"status": "REJECTED"}, manager_user_id)
+            await leave_use_case.update_with_approval_posting(leave.id, {"status": "REJECTED", "rejection_reason": "Reason"}, manager_user_id)
         with patch.object(leave_records_use_case, "_validate_leave_type_company", new=AsyncMock()), patch.object(
             leave_records_use_case, "_require_leave_open", new=AsyncMock()
         ):
             result = await leave_use_case.update_with_approval_posting(
-                leave.id, {"status": "REJECTED"}, self.users["parent"].id,
+                leave.id, {"status": "REJECTED", "rejection_reason": "  Legacy reason  "}, self.users["parent"].id,
             )
         self.assertEqual(result.status, "REJECTED")
+        self.assertEqual(result.rejection_reason, "Legacy reason")
 
         attendance_repository = SqlAlchemyAttendanceReviewRepository(self.session)
         self.assertEqual(await attendance_repository.list_invalid(manager_id, TODAY), [])
@@ -970,9 +972,12 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.session.flush()
         start = datetime(2026, 11, 5, 1, tzinfo=timezone.utc)
         use_case = leave_records_use_case.LeaveApplicationUseCase(SessionUnitOfWork(self.session))
+        duration = LeaveDuration((LeaveDurationDay(date(2026, 11, 5), 480),), (), ())
         with patch.object(leave_records_use_case, "_validate_leave_type_company", new=AsyncMock()), patch.object(
             leave_records_use_case, "_require_leave_open", new=AsyncMock()
-        ):
+        ), patch.object(
+            leave_records_use_case, "calculate_leave_duration", new=AsyncMock(return_value=duration)
+        ), patch.object(leave_records_use_case, "_require_duration_open", new=AsyncMock()):
             draft = await use_case.create({
                 "application_no": f"IT-{uuid4().hex}", "employee_id": self.employees["worker"].id,
                 "leave_type_id": leave_type.id, "start_at": start, "end_at": start + timedelta(hours=8),
@@ -992,15 +997,16 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                              [pending.id])
             self.assertEqual(await use_case.list_pending_for_supervisor(legacy_id, TODAY), [])
             self.assertIsNone(await use_case.decide_pending_for_supervisor(
-                other_id, pending.id, "REJECTED", self.users["other"].id, TODAY,
+                other_id, pending.id, "REJECTED", self.users["other"].id, TODAY, "Reason",
             ))
             self.assertIsNone(await use_case.decide_pending_for_supervisor(
-                legacy_id, pending.id, "REJECTED", self.users["legacy"].id, TODAY,
+                legacy_id, pending.id, "REJECTED", self.users["legacy"].id, TODAY, "Reason",
             ))
             decided = await use_case.decide_pending_for_supervisor(
-                manager_id, pending.id, "REJECTED", self.users["manager"].id, TODAY,
+                manager_id, pending.id, "REJECTED", self.users["manager"].id, TODAY, "  Missing details  ",
             )
             self.assertEqual(decided.status, "REJECTED")
+            self.assertEqual((await use_case.get(pending.id)).rejection_reason, "Missing details")
 
     async def test_correction_submission_inbox_and_decision_use_saved_manager(self):
         start = datetime(2026, 11, 4, 1, tzinfo=timezone.utc)
@@ -1087,7 +1093,7 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(created.id, {item.id for item in other_items})
             self.assertNotIn(created.id, {item.id for item in legacy_items})
             decision = official_business_router.OfficialBusinessDecisionSchema(
-                decision="REJECTED", row_version=created.row_version,
+                decision="REJECTED", row_version=created.row_version, rejection_reason="  Missing details  ",
             )
             with self.assertRaises(HTTPException) as denied:
                 await official_business_router.decide_official_business_request(
@@ -1103,6 +1109,7 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 created.id, decision, claims=claims("manager"), uow=uow, es_client=None,
             )
             self.assertEqual(result.data.status, "REJECTED")
+            self.assertEqual(result.data.rejection_reason, "Missing details")
 
     async def test_overtime_inbox_and_decision_lookup_use_saved_manager(self):
         start = datetime(2026, 11, 4, 1, tzinfo=timezone.utc)
@@ -1140,7 +1147,13 @@ class OrgUnitApprovalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertIsNone(await repository.lock_pending_application(application.id, other_id))
         self.assertIsNone(await repository.lock_pending_application(application.id, legacy_id))
-        self.assertIsNotNone(await repository.lock_pending_application(application.id, manager_id))
+        locked = await repository.lock_pending_application(application.id, manager_id)
+        self.assertIsNotNone(locked)
+        locked.application.status = "REJECTED"
+        locked.application.rejection_reason = "Missing details"
+        await repository.save_application(locked.application)
+        history = await repository.list_applications_for_user(self.users["worker"].id)
+        self.assertEqual(next(item for item in history if item.application.id == application.id).application.rejection_reason, "Missing details")
 
     async def test_emergency_submission_inbox_and_decision_use_saved_manager(self):
         template = ScheduleTemplateModel(

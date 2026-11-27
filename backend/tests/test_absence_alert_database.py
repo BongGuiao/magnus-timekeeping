@@ -180,6 +180,27 @@ class AbsenceAlertDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(actual, tuple(dates))
 
+    async def test_alert_is_created_at_eight_hours_after_third_shift_start(self):
+        await self.add_schedule()
+        dates = [self.today - timedelta(days=offset) for offset in (2, 1, 0)]
+        self.session.add_all([
+            AttendanceModel(user_id=self.users["employee"].id, work_date=work_date, is_absent=True, record_status="VALID")
+            for work_date in dates
+        ])
+        await self.session.flush()
+        threshold = datetime.combine(self.today, time(9), tzinfo=ZoneInfo("Asia/Manila")) + timedelta(hours=8)
+        fake_engine = SimpleNamespace(dispose=AsyncMock())
+        fake_factory = lambda: AsyncSession(bind=self.connection, expire_on_commit=False)
+        with (
+            patch.object(absence_alert_tasks, "create_async_engine", return_value=fake_engine),
+            patch.object(absence_alert_tasks, "async_sessionmaker", return_value=fake_factory),
+            patch.object(absence_alert_tasks.settings, "ABSENCE_STREAK_PUSH_ENABLED", False),
+        ):
+            before = await absence_alert_tasks.refresh_absence_alerts_at(threshold - timedelta(microseconds=1))
+            at_threshold = await absence_alert_tasks.refresh_absence_alerts_at(threshold)
+            after = await absence_alert_tasks.refresh_absence_alerts_at(threshold + timedelta(minutes=5))
+        self.assertEqual((before["created"], at_threshold["created"], after["created"]), (0, 1, 0))
+
     async def register_device(self, name):
         token = f"ExponentPushToken[test_{name}]"
         claims = {

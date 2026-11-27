@@ -21,6 +21,7 @@ from app.filemaintenance.payroll_cutoffs.application.deadline_policy import (
 
 from app.core.generics.mapper import GenericMapper
 from app.core.generics.uow import GenUnitOfWork
+from app.core.rejection_reason import rejection_reason_for_decision
 from app.filemaintenance.leaves.domain.entities.leave_records import (
     EmployeeEntitlementEntity,
     LeaveApplicationDateEntity,
@@ -850,7 +851,9 @@ class LeaveApplicationUseCase:
         decision: str,
         actor_id: UUID,
         as_of: date,
+        rejection_reason: str | None = None,
     ) -> LeaveApplicationEntity | None:
+        rejection_reason = rejection_reason_for_decision(decision, rejection_reason)
         statement = (
             select(LeaveApplicationModel)
             .where(
@@ -880,6 +883,7 @@ class LeaveApplicationUseCase:
             if decision == "APPROVED":
                 await _post_approved_leave_charge(active_uow.session, model, actor_id)
             model.status = decision
+            model.rejection_reason = rejection_reason
             model.approved_at = now if decision == "APPROVED" else None
             model.approved_by_id = actor_id if decision == "APPROVED" else None
             model.updated_by = actor_id
@@ -912,6 +916,12 @@ class LeaveApplicationUseCase:
                 raise ValueError("Only your own draft leave application can be changed.")
 
             next_status = values.get("status", model.status)
+            if "rejection_reason" in values and not (next_status == "REJECTED" and model.status == "PENDING"):
+                raise ValueError("A rejection reason can only be set when rejecting a pending application.")
+            if next_status == "REJECTED" and model.status != "REJECTED":
+                values["rejection_reason"] = rejection_reason_for_decision(next_status, values.get("rejection_reason"))
+            elif next_status == "PENDING" and model.status == "REJECTED":
+                values["rejection_reason"] = None
             next_employee_id = values.get("employee_id", model.employee_id)
             next_leave_type_id = values.get("leave_type_id", model.leave_type_id)
             next_start_at = values.get("start_at", model.start_at)

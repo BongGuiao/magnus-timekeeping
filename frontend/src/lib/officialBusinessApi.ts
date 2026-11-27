@@ -16,6 +16,7 @@ export interface OfficialBusinessRequest {
   end_at: string
   destination: string
   purpose: string
+  rejection_reason?: string | null
   client_name: string | null
   geofence_id: string | null
   geofence_name: string | null
@@ -131,12 +132,14 @@ export function decideOfficialBusinessRequest(
   decision: 'APPROVED' | 'REJECTED',
   approvedMinutes: number | null,
   rowVersion: number,
+  rejectionReason?: string,
 ): Promise<OfficialBusinessRequest> {
   return request(
     () => apiClient.post<ApiSuccessEnvelope<OfficialBusinessRequest>>(`${BASE_PATH}/${requestId}/decision`, {
       decision,
       approved_minutes: decision === 'APPROVED' ? approvedMinutes : null,
       row_version: rowVersion,
+      rejection_reason: rejectionReason,
     }),
     'Could not save the official business decision.',
   )

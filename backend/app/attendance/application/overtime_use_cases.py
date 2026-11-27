@@ -31,6 +31,7 @@ from app.attendance.domain.entities.overtime import (
 )
 from app.attendance.domain.exceptions import ConflictError, PermissionDeniedError, RecordNotFoundError, RuleViolationError
 from app.core.generics.uc_base import BaseUseCase
+from app.core.rejection_reason import rejection_reason_for_decision
 
 
 def _minutes_to_hours(minutes: int) -> Decimal:
@@ -919,6 +920,7 @@ class UpdateOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             application.work_accomplished = data.work_accomplished
             application.validation_status = "VALID"
             application.status = "PENDING"
+            application.rejection_reason = None
             application.updated_by = data.user_id
             application.row_version += 1
             if was_rejected:
@@ -993,6 +995,7 @@ class DecideOvertimeApplicationInput:
     is_admin: bool
     decision: str
     supervisor_approved_minutes: int
+    rejection_reason: str | None = None
 
 
 class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApplicationRecord]):
@@ -1008,6 +1011,10 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
         self._audit = audit
 
     async def _execute(self, data: DecideOvertimeApplicationInput) -> OvertimeApplicationRecord:
+        try:
+            rejection_reason = rejection_reason_for_decision(data.decision, data.rejection_reason)
+        except ValueError as error:
+            raise RuleViolationError(str(error)) from error
         supervisor_scope = None if data.is_admin else data.actor_employee_id
         async with self._uow as uow:
             record = await uow.overtime.lock_pending_application(
@@ -1047,6 +1054,7 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             )
 
             application.status = data.decision
+            application.rejection_reason = rejection_reason
             application.approved_by_id = data.actor_id if data.decision == "APPROVED" else None
             application.supervisor_approved_minutes = approved_minutes
             application.final_payable_minutes = approved_minutes if data.decision == "APPROVED" else 0
@@ -1072,6 +1080,7 @@ class DecideOvertimeApplicationUseCase(_OvertimeUseCase, BaseUseCase[OvertimeApp
             after={
                 "supervisor_approved_minutes": approved_minutes,
                 "final_payable_minutes": application.final_payable_minutes,
+                "rejection_reason": application.rejection_reason,
             },
         )
         return record

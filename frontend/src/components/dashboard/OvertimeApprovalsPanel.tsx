@@ -11,6 +11,7 @@ interface Props {
     applicationId: string,
     decision: 'APPROVED' | 'REJECTED',
     approvedMinutes: number,
+    rejectionReason?: string,
   ) => Promise<void>
 }
 
@@ -39,6 +40,7 @@ export default function OvertimeApprovalsPanel({
   onDecision,
 }: Props) {
   const [drafts, setDrafts] = useState<Record<string, number>>({})
+  const [reasons, setReasons] = useState<Record<string, string>>({})
 
   function getDraft(request: OvertimeApplication): number {
     return drafts[request.id] ?? request.requested_minutes
@@ -124,6 +126,11 @@ export default function OvertimeApprovalsPanel({
                       </label>
                     </td>
                     <td className="px-3 py-4 text-right">
+                      <label className="mb-2 block text-left text-xs text-slate-700">Rejection reason (required to reject)
+                        <textarea maxLength={2000} value={reasons[request.id] ?? ''} disabled={isSaving}
+                          onChange={(event) => setReasons((current) => ({ ...current, [request.id]: event.target.value }))}
+                          className="mt-1 block w-full rounded border border-slate-300 px-2 py-1.5" />
+                      </label>
                       <div className="flex justify-end gap-2">
                         <button
                           type="button"
@@ -135,8 +142,8 @@ export default function OvertimeApprovalsPanel({
                         </button>
                         <button
                           type="button"
-                          disabled={isSaving}
-                          onClick={() => void onDecision(request.id, 'REJECTED', 0)}
+                          disabled={isSaving || !(reasons[request.id] ?? '').trim()}
+                          onClick={() => void onDecision(request.id, 'REJECTED', 0, reasons[request.id].trim())}
                           className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 shadow-sm transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Reject

@@ -267,6 +267,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   const [supervisorLeavesError, setSupervisorLeavesError] = useState<string | null>(null)
   const [isSupervisorLeavePanelOpen, setIsSupervisorLeavePanelOpen] = useState(false)
   const [supervisorLeaveDecisions, setSupervisorLeaveDecisions] = useState<Record<string, 'APPROVED' | 'REJECTED' | ''>>({})
+  const [supervisorLeaveReasons, setSupervisorLeaveReasons] = useState<Record<string, string>>({})
   const [savingSupervisorLeaveId, setSavingSupervisorLeaveId] = useState<string | null>(null)
   const [supervisorInvalidAttendance, setSupervisorInvalidAttendance] = useState<SupervisorInvalidAttendance[]>([])
   const [isLoadingInvalidAttendance, setIsLoadingInvalidAttendance] = useState(false)
@@ -363,6 +364,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
           startDate: new Date(application.start_at).toLocaleDateString(),
           endDate: new Date(application.end_at).toLocaleDateString(),
           status: application.status,
+          rejectionReason: application.rejection_reason,
         })))
         setLeaveDashboardRefreshedAt(snapshot.refreshed_at)
         setLeaveDashboardError(null)
@@ -623,11 +625,12 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     applicationId: string,
     decision: 'APPROVED' | 'REJECTED',
     approvedMinutes: number,
+    rejectionReason?: string,
   ) {
     setSavingOvertimeRequestId(applicationId)
     setOvertimeRequestsError(null)
     try {
-      await decideOvertimeApplication(applicationId, decision, approvedMinutes)
+      await decideOvertimeApplication(applicationId, decision, approvedMinutes, rejectionReason)
       setPendingOvertimeRequests((current) => current.filter((request) => request.id !== applicationId))
     } catch (error) {
       setOvertimeRequestsError(
@@ -641,11 +644,16 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
   async function saveSupervisorLeaveDecision(applicationId: string) {
     const decision = supervisorLeaveDecisions[applicationId]
     if (!decision) return
+    const rejectionReason = supervisorLeaveReasons[applicationId]?.trim()
+    if (decision === 'REJECTED' && !rejectionReason) {
+      setSupervisorLeavesError('Enter a rejection reason before saving.')
+      return
+    }
 
     setSavingSupervisorLeaveId(applicationId)
     setSupervisorLeavesError(null)
     try {
-      await decideSupervisorPendingLeave(applicationId, decision)
+      await decideSupervisorPendingLeave(applicationId, decision, decision === 'REJECTED' ? rejectionReason : undefined)
       setSupervisorPendingLeaves((current) => current.filter((leave) => leave.id !== applicationId))
       setSupervisorPendingLeaveCount((current) => Math.max(0, (current ?? 0) - 1))
       setSupervisorLeaveDecisions((current) => {
@@ -1259,10 +1267,11 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
-        <AbsenceAlerts />
+        {(!isTeamDashboard || teamMetrics.length === 0) && <AbsenceAlerts />}
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
         {isTeamDashboard ? (
-          <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
+          <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews}
+            extraMetric={teamMetrics.length > 0 ? <AbsenceAlerts compact /> : undefined} />
         ) : role === 'employee' ? (
           <TeamOverview role="employee" employeeName={employeeName} metrics={employeeMetrics} reviews={employeeActions} />
         ) : (
@@ -1762,6 +1771,13 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
                               <option value="APPROVED">Approve</option>
                               <option value="REJECTED">Reject</option>
                             </select>
+                            {decision === 'REJECTED' && (
+                              <label className="mt-2 block text-xs text-slate-700">Rejection reason (required)
+                                <textarea maxLength={2000} value={supervisorLeaveReasons[leave.id] ?? ''} disabled={isSaving}
+                                  onChange={(event) => setSupervisorLeaveReasons((current) => ({ ...current, [leave.id]: event.target.value }))}
+                                  className="mt-1 block w-52 rounded border border-slate-300 px-2 py-1.5" />
+                              </label>
+                            )}
                           </td>
                           <td className="px-3 py-4 text-right">
                             <button

@@ -97,6 +97,7 @@ class OvertimeApplication:
     requested_minutes: int
     overtime_type: str
     reason: str
+    rejection_reason: Optional[str] = None
     status: str = "PENDING"
     system_validated_minutes: Optional[int] = None
     supervisor_approved_minutes: Optional[int] = None

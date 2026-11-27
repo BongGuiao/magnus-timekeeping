@@ -18,6 +18,7 @@ class ReturnToWorkScreeningServiceTests(unittest.IsolatedAsyncioTestCase):
         self.schedule = SimpleNamespace(
             work_type="REG", schedule_context={"assignment": "test"},
             schedule_template_id=uuid4(), attendance_mode="PUNCH_REQUIRED",
+            expected_clock_in_at=self.now - timedelta(hours=9),
             expected_clock_out_at=self.now - timedelta(hours=1),
         )
         self.session = SimpleNamespace(scalars=AsyncMock())
@@ -54,13 +55,13 @@ class ReturnToWorkScreeningServiceTests(unittest.IsolatedAsyncioTestCase):
             self.today - timedelta(days=2), self.today - timedelta(days=1), self.today,
         ))
 
-    async def test_incomplete_third_shift_does_not_count(self):
+    async def test_third_absence_does_not_count_before_eight_hours(self):
         self.records = [self.absence(self.today - timedelta(days=n)) for n in range(3)]
 
         async def schedule_for_day(_session, _employee_id, work_date):
             return SimpleNamespace(
-                **{**vars(self.schedule), "expected_clock_out_at": (
-                    self.now + timedelta(hours=1) if work_date == self.today
+                **{**vars(self.schedule), "expected_clock_in_at": (
+                    self.now - timedelta(hours=8) + timedelta(seconds=1) if work_date == self.today
                     else self.now - timedelta(days=1)
                 )},
             )
@@ -69,6 +70,26 @@ class ReturnToWorkScreeningServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.streak(), (
             self.today - timedelta(days=2), self.today - timedelta(days=1),
         ))
+
+    async def test_eight_hour_threshold_is_independent_of_shift_end(self):
+        record = self.absence(self.today)
+        start = self.now - timedelta(hours=8)
+        self.schedule.expected_clock_in_at = start
+        for end in (start + timedelta(hours=6), start + timedelta(hours=10)):
+            self.schedule.expected_clock_out_at = end
+            with self.subTest(end=end):
+                self.assertIsNone(await screening.review_day_status(
+                    self.session, self.employee_id, self.today, [record], self.now - timedelta(microseconds=1),
+                ))
+                self.assertEqual(await screening.review_day_status(
+                    self.session, self.employee_id, self.today, [record], self.now,
+                ), ReviewDayStatus.ABSENT)
+
+    async def test_missing_shift_start_does_not_infer_absence(self):
+        self.schedule.expected_clock_in_at = None
+        self.assertEqual(await screening.review_day_status(
+            self.session, self.employee_id, self.today, [self.absence(self.today)], self.now,
+        ), ReviewDayStatus.UNKNOWN)
 
     async def test_approved_exception_breaks_streak(self):
         self.records = [self.absence(self.today - timedelta(days=n)) for n in range(3)]

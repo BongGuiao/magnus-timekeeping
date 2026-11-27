@@ -82,11 +82,15 @@ class OfficialBusinessSchemaTests(unittest.TestCase):
 
     def test_decision_minutes_rules(self):
         OfficialBusinessDecisionSchema(decision="APPROVED", approved_minutes=60, row_version=1)
-        OfficialBusinessDecisionSchema(decision="REJECTED", row_version=1)
+        rejected = OfficialBusinessDecisionSchema(decision="REJECTED", row_version=1, rejection_reason="  Missing details  ")
+        self.assertEqual(rejected.rejection_reason, "Missing details")
+        for reason in (None, "   ", "x" * 2001):
+            with self.subTest(reason=reason), self.assertRaises(ValidationError):
+                OfficialBusinessDecisionSchema(decision="REJECTED", row_version=1, rejection_reason=reason)
         with self.assertRaises(ValidationError):
             OfficialBusinessDecisionSchema(decision="APPROVED", row_version=1)
         with self.assertRaises(ValidationError):
-            OfficialBusinessDecisionSchema(decision="REJECTED", approved_minutes=5, row_version=1)
+            OfficialBusinessDecisionSchema(decision="REJECTED", approved_minutes=5, row_version=1, rejection_reason="Reason")
 
 
 class _SessionUow:
@@ -269,7 +273,7 @@ class OfficialBusinessDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as unrelated:
             await decide_official_business_request(
                 pending.id,
-                OfficialBusinessDecisionSchema(decision="REJECTED", row_version=pending.row_version),
+                OfficialBusinessDecisionSchema(decision="REJECTED", row_version=pending.row_version, rejection_reason="Reason"),
                 claims=self._claims(uuid4()), uow=self.uow, es_client=None,
             )
         self.assertEqual(unrelated.exception.status_code, 404)
@@ -299,11 +303,14 @@ class OfficialBusinessDatabaseTests(unittest.IsolatedAsyncioTestCase):
         rejected = (
             await decide_official_business_request(
                 rejected_source.id,
-                OfficialBusinessDecisionSchema(decision="REJECTED", row_version=rejected_source.row_version),
+                OfficialBusinessDecisionSchema(decision="REJECTED", row_version=rejected_source.row_version, rejection_reason="  Missing details  "),
                 claims=self._claims(SUPERVISOR_ID), uow=self.uow, es_client=None,
             )
         ).data
         self.assertEqual((rejected.status, rejected.approved_minutes), ("REJECTED", None))
+        self.assertEqual(rejected.rejection_reason, "Missing details")
+        mine = (await get_my_official_business_requests(claims=self._claims(EMPLOYEE_ID), uow=self.uow)).data
+        self.assertEqual(next(item for item in mine if item.id == rejected.id).rejection_reason, "Missing details")
 
 
 if __name__ == "__main__":

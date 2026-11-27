@@ -174,7 +174,9 @@ The selected reviewer is saved at submission. Later org-chart changes do not aut
 
 2. Review the employee, date, request, reason and supporting information. For overtime and rest-day work, open Overtime; the panel identifies Rest-day work and allows an approved amount up to the requested amount or rejection.
 
-3. Select the appropriate approval or rejection action, enter any required notes, and save. For attendance corrections, provide review notes. For emergency schedule requests use Timekeeping > Emergency Schedule Approvals; rejection requires a reason.
+3. Select the appropriate approval or rejection action and save. A rejection reason is required for leave, overtime, rest-day work and official business. Attendance corrections require review notes; emergency schedule and schedule-upload rejections also require remarks. Employees can see the reviewer's reason in their application history on the web and, for their mobile filing workflows, in the mobile app. Existing rejected applications may have no recorded reason.
+
+Deployment for rejection reasons: tracked databases require Alembic revision `f6a8c0e2b4d6`. For an untracked database, back up and review the schema first, then use `backend/sql/manual_application_rejection_reasons.sql` with `psql -v ON_ERROR_STOP=1`; do not stamp or run Alembic against an untracked database without a separately reviewed migration plan. Apply the schema before deploying the backend and worker, then deploy the web and mobile updates.
 
 4. For schedule batches use Timekeeping > Schedule Upload Approvals. Review the batch before deciding. Follow up on unresolved routing or errors with HR.
 

@@ -66,6 +66,7 @@ export interface LeaveApplication {
   paid_minutes: number | null
   unpaid_minutes: number | null
   reason: string
+  rejection_reason?: string | null
   contact_information: string | null
   reliever_employee_id: string | null
   is_retroactive: boolean
@@ -143,6 +144,7 @@ export interface LeaveDashboardSnapshot {
     start_at: string
     end_at: string
     status: string
+    rejection_reason?: string | null
   }>
   refreshed_at: string
 }
@@ -385,11 +387,12 @@ export async function fetchSupervisorPendingLeaveCount(): Promise<number> {
 export async function decideSupervisorPendingLeave(
   applicationId: string,
   decision: 'APPROVED' | 'REJECTED',
+  rejectionReason?: string,
 ): Promise<LeaveApplication> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<LeaveApplication>>(
       `/leave-applications/supervisor/${encodeURIComponent(applicationId)}/decision`,
-      { decision },
+      { decision, rejection_reason: rejectionReason },
     )
     return response.data.data
   } catch (error) {

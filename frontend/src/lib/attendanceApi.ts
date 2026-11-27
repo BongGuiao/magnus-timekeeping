@@ -437,6 +437,7 @@ export interface OvertimeApplication {
   final_payable_minutes: number | null
   overtime_type: OvertimeApplicationType
   reason: string
+  rejection_reason?: string | null
   work_accomplished: string | null
   validation_status: string | null
   status: string
@@ -498,11 +499,12 @@ export async function decideOvertimeApplication(
   applicationId: string,
   decision: 'APPROVED' | 'REJECTED',
   supervisorApprovedMinutes: number,
+  rejectionReason?: string,
 ): Promise<OvertimeApplication> {
   try {
     const response = await apiClient.post<ApiSuccessEnvelope<OvertimeApplication>>(
       `/attendance/overtime-applications/${encodeURIComponent(applicationId)}/decision`,
-      { decision, supervisor_approved_minutes: supervisorApprovedMinutes },
+      { decision, supervisor_approved_minutes: supervisorApprovedMinutes, rejection_reason: rejectionReason },
     )
     return response.data.data
   } catch (err) {

@@ -331,7 +331,7 @@ export default function OfficialBusiness({ employeeName, previewOnly = false, on
                   </td>
                   <td className="px-3 py-3">{formatDuration(record.requested_minutes)}</td>
                   <td className="px-3 py-3">{record.approved_minutes === null ? '--' : formatDuration(record.approved_minutes)}</td>
-                  <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${statusStyles[record.status]}`}>{record.status}</span></td>
+                  <td className="px-3 py-3"><span className={`rounded-full px-2 py-1 font-semibold ${statusStyles[record.status]}`}>{record.status}</span>{record.rejection_reason && <p className="mt-2 max-w-xs whitespace-pre-line text-rose-700">Rejection reason: {record.rejection_reason}</p>}</td>
                   <td className="px-3 py-3">
                     <div className="flex flex-wrap gap-1.5">
                       {editable && <button type="button" disabled={busy || previewOnly} onClick={() => startEdit(record)} className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 font-semibold text-slate-700 disabled:opacity-50"><Pencil className="h-3 w-3" aria-hidden="true" />Edit</button>}

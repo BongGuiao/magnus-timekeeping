@@ -20,6 +20,7 @@ export function LeaveRequestsCard({ requests, onApply, onCorrection, correctionO
               <p className="text-xs text-slate-500">
                 {req.startDate} to {req.endDate}
               </p>
+              {req.rejectionReason && <p className="mt-1 whitespace-pre-line text-xs text-rose-700">Rejection reason: {req.rejectionReason}</p>}
             </div>
             <span className={`rounded-full px-2 py-1 text-[11px] font-medium capitalize ${
               ['APPROVED'].includes(req.status.toUpperCase())
