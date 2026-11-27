@@ -7,6 +7,12 @@ from sqlalchemy.orm import DeclarativeBase
 class Base(DeclarativeBase):
     pass
 def init_db_models():
+    from app.attendance.infrastructure.absence_push_models import (  # noqa: F401
+        MobilePushDeviceModel, AbsencePushDeliveryModel,
+    )
+    from app.attendance.infrastructure.absence_alert_models import (  # noqa: F401
+        AbsenceStreakAlertModel, AbsenceStreakDismissalModel,
+    )
     from app.attendance.infrastructure.notice_models import (  # noqa: F401
         NoticeModel, NoticeTemplateModel, TardinessCaseModel,
     )

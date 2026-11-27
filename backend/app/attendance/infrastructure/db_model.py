@@ -57,7 +57,13 @@ class PunchExceptionModel(Base):
 
 class AttendanceModel(Base):
     __tablename__ = "attendance_records"
-    __table_args__ = {"schema": "attendance"}
+    __table_args__ = (
+        Index(
+            "ix_attendance_valid_absence_user_date", "user_id", "work_date",
+            postgresql_where=text("is_absent AND record_status = 'VALID'"),
+        ),
+        {"schema": "attendance"},
+    )
 
     # --- Core Identifiers ---
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))

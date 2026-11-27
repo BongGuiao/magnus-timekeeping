@@ -5,6 +5,7 @@ from app.attendance.domain.return_to_work_screening import (
     ReviewDay,
     ReviewDayStatus,
     current_absence_evidence,
+    current_absence_streak,
 )
 
 
@@ -55,6 +56,27 @@ class ReturnToWorkScreeningTests(unittest.TestCase):
         self.assertEqual(current_absence_evidence(self.days(
             ReviewDayStatus.ABSENT, ReviewDayStatus.REST_DAY, ReviewDayStatus.ABSENT,
         )), ())
+
+    def test_streak_keeps_its_first_absence_as_more_days_are_added(self):
+        result = current_absence_streak(self.days(
+            ReviewDayStatus.ABSENT,
+            ReviewDayStatus.ABSENT,
+            ReviewDayStatus.REST_DAY,
+            ReviewDayStatus.ABSENT,
+            ReviewDayStatus.ABSENT,
+            ReviewDayStatus.PRESENT,
+            ReviewDayStatus.ABSENT,
+        ))
+        self.assertEqual(result, (
+            date(2026, 11, 16), date(2026, 11, 17),
+            date(2026, 11, 19), date(2026, 11, 20),
+        ))
+
+    def test_streak_does_not_cross_unknown_days(self):
+        result = current_absence_streak(self.days(
+            ReviewDayStatus.ABSENT, ReviewDayStatus.UNKNOWN, ReviewDayStatus.ABSENT,
+        ))
+        self.assertEqual(result, (date(2026, 11, 20),))
 
 
 if __name__ == "__main__":

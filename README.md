@@ -126,9 +126,9 @@ unsupported HTML. Review the sanitized preview before activation; uploaded
 formatting may differ from the original. The backend image must be rebuilt to
 install the sanitizer listed in `requirements.txt`.
 
-Notice issuance, scheduled screening, return-to-work absence detection, and the
-mobile inbox are not yet implemented. Have HR or legal review return-to-work
-wording before use. The notice workflow migrations remain unfinished and should
+Formal notice issuance, tardiness screening, and the formal mobile notice inbox
+are not yet implemented. Have HR or legal review return-to-work wording before
+use. The notice workflow migrations remain unfinished and should
 not yet be applied as a deployment. For an existing untracked database, if
 `attendance.notice_templates` is missing, the reviewable
 [manual notice-template setup SQL](backend/sql/manual_create_notice_templates.sql)
@@ -138,6 +138,62 @@ original TARDINESS-only constraint, the
 widens that constraint. Both refuse tracked or unexpected schemas. Back up first
 and reconcile manually created notice tables with the migrations before using
 Alembic; do not blindly stamp it.
+
+### Consecutive absence alerts
+
+When enabled, a Celery task checks for current streaks every five minutes,
+including streaks already present at deployment. It alerts after the third
+recorded absent workday's scheduled shift ends. Rest days and nonworking
+holidays are skipped; approved leave, approved official business, attendance,
+and unknown evidence interrupt screening. Missing schedules, duplicate
+conflicting records, and missing attendance are not treated as absences.
+
+The employee, their currently assigned supervisor and organizational-unit
+manager, and HR administrators with a current company-wide role for the
+employee's company (or a global role) can see an in-app alert. Dismissal is
+per user. Alerts are marked resolved when an underlying absence is corrected,
+voided, or removed. Ambiguous records that still include an absence do not
+silently resolve an alert. The alerts
+are informational, not formal return-to-work notices, and do not send email.
+The mobile app must be rebuilt and distributed to receive this feature.
+
+Optional mobile push alerts use the Expo Push Service, Apple Push Notification
+service and Firebase Cloud Messaging. Their lock-screen text is generic; open
+the app to see details. A device must have granted notification permission and
+have an unexpired signed-in session. Existing unresolved alerts are queued when
+an eligible device registers; dismissals and current permissions are checked
+again before sending. Signing out unregisters the device when online. If it
+cannot reach the server, generic notifications may continue until the session
+expires; messages are kept by providers for at most one hour. Push delivery is
+not guaranteed. Expo receipt errors and retries appear in the worker logs.
+
+The feature is off by default. Before enabling it, back up and review the
+database, deploy the matching backend, worker, web frontend and mobile builds,
+and apply the schema in a maintenance window. For Alembic-tracked databases,
+review the migration chain through `e4f6a8b0c2d4`, including the unfinished
+notice workflow migrations above, and reconcile any manually created tables
+before upgrading. For an untracked database, the reviewable
+[manual absence-alert SQL](backend/sql/manual_absence_streak_alerts.sql), followed
+by [manual push SQL](backend/sql/manual_absence_push_notifications.sql), creates
+the alert and push tables and indexes. Each refuses tracked or unexpected
+schemas. If the alert script was already applied, review the existing schema
+and apply only the push script. Do not apply both migration paths. Creating the attendance index can lock writes
+while it is built.
+
+Set `ABSENCE_STREAK_ALERTS_ENABLED=true` in the backend environment and
+recreate `web`, `celery_worker`, and `celery_beat` so they load it. Keep the
+flag disabled until the schema and all matching backend services are deployed.
+Check the worker logs for screening failures and verify alerts on test accounts
+before relying on them.
+
+For push, also configure the Expo project with valid APNs credentials for iOS
+and FCM v1 credentials for Android, build and distribute the new mobile app,
+then set `ABSENCE_STREAK_PUSH_ENABLED=true` and recreate `web`, `celery_worker`
+and `celery_beat`. Both feature flags default to false. If Expo enhanced push
+security is enabled, supply `EXPO_PUSH_ACCESS_TOKEN` through the server's secure
+environment; never commit it. Verify delivery on a physical iOS and Android
+device, including sign-out and revoked permissions. A successful Expo ticket
+means only that Expo accepted the message, not that the phone displayed it.
 
 For a new database, apply the migrations before starting the application as
 described in [Database migrations](#database-migrations). Do not apply the

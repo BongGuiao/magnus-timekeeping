@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     DASHBOARD_CACHE_REDIS_URL: str | None = None
     DASHBOARD_CACHE_TTL: int = 900
     CELERY_BEAT_CRON_MINUTE: str = "*/5"
+    ABSENCE_STREAK_ALERTS_ENABLED: bool = False
+    ABSENCE_STREAK_PUSH_ENABLED: bool = False
+    EXPO_PUSH_ACCESS_TOKEN: str | None = None
 
     # SMTP Settings
     SMTP_HOST: str = "smtp.gmail.com"

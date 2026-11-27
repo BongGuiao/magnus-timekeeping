@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import AttendanceDeadlines from '../components/common/AttendanceDeadlines'
+import AbsenceAlerts from '../components/dashboard/AbsenceAlerts'
 import DataTable, { type DataTableColumn } from '../components/common/DataTable'
 import AttendanceCorrectionsPanel from '../components/dashboard/AttendanceCorrectionsPanel'
 import TeamOverview, { type TeamOverviewItem } from '../components/dashboard/TeamOverview'
@@ -1258,6 +1259,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
+        <AbsenceAlerts />
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />

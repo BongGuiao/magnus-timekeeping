@@ -3,7 +3,7 @@ import os
 from celery import Celery
 from celery.schedules import crontab
 
-app = Celery("magnus-timekeeping", include=["app.tasks.dashboard_tasks", "app.tasks.automatic_absence_tasks"])
+app = Celery("magnus-timekeeping", include=["app.tasks.dashboard_tasks", "app.tasks.automatic_absence_tasks", "app.tasks.absence_alert_tasks", "app.tasks.absence_push_tasks"])
 app.conf.update(
     broker_url=os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0"),
     result_backend=os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/0"),
@@ -14,6 +14,14 @@ app.conf.update(
     enable_utc=True,
     broker_connection_retry_on_startup=True,
     beat_schedule={
+        "process-absence-push": {
+            "task": "app.tasks.absence_push_tasks.process_absence_push",
+            "schedule": crontab(minute="*"),
+        },
+        "refresh-absence-streak-alerts": {
+            "task": "app.tasks.absence_alert_tasks.refresh_absence_alerts",
+            "schedule": crontab(minute="*/5"),
+        },
         "refresh-automatic-absences": {
             "task": "app.tasks.automatic_absence_tasks.refresh_automatic_absences",
             "schedule": crontab(minute="*/5"),
