@@ -64,11 +64,10 @@ type AbsenceAlertState = ReturnType<typeof useAbsenceAlerts>
 
 export default function AbsenceAlerts({ state, onClose }: {
   state: AbsenceAlertState
-  onClose?: () => void
+  onClose: () => void
 }) {
   const { alerts, error, dismissing, loading, refresh, dismiss } = state
-  if (!onClose && !alerts.length && !error) return null
-  if (onClose) return (
+  return (
     <section id="absence-alerts-panel" aria-label="Consecutive absence alerts" className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -99,23 +98,6 @@ export default function AbsenceAlerts({ state, onClose }: {
           </table>
         </div>
       )}
-    </section>
-  )
-  return (
-    <section aria-label="Absence alerts" className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
-      <h2 className="font-bold text-amber-950">Consecutive absence alerts</h2>
-      {alerts.map((alert) => (
-        <div key={alert.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-amber-950">
-          <p>
-            <strong>{alert.employee_name} ({alert.employee_no})</strong>: {alert.absence_dates.join(', ')}
-            {alert.resolved_at ? ' — resolved after an attendance change' : ' — review these recorded absences'}
-          </p>
-          <button type="button" disabled={dismissing !== null} onClick={() => void dismiss(alert.id)} className="font-semibold underline disabled:opacity-50">
-            {dismissing === alert.id ? 'Dismissing…' : 'Dismiss'}
-          </button>
-        </div>
-      ))}
-      {error && <p role="alert" className="mt-2 text-sm text-red-700">{error} <button type="button" className="underline" onClick={() => void refresh()}>Retry</button></p>}
     </section>
   )
 }

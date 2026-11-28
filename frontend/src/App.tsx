@@ -45,6 +45,7 @@ import { OffCyclePayrollUseCases } from './features/payroll/application/offCycle
 import { HttpOffCyclePayrollRepository } from './features/payroll/infrastructure/HttpOffCyclePayrollRepository'
 import ScheduleTemplates from './pages/ScheduleTemplates'
 import RestDayPatterns from './pages/RestDayPatterns'
+import LeaveComputationMatrix from './pages/LeaveComputationMatrix'
 import ChangePassword from './pages/ChangePassword'
 import ResetPassword from './pages/ResetPassword'
 import DatabaseBackup from './pages/DatabaseBackup'
@@ -72,7 +73,7 @@ const navViews: NavView[] = [
   'tardiness-review', 'notice-templates',
   'operational-groups', 'geofences', 'employees', 'leave-management', 'calendar', 'announcements', 'employee-entitlements',
   'leave-application', 'payroll-groups', 'payroll-cutoffs', 'payroll-compensation', 'payroll-earning-rules',
-  'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns',
+  'payroll-management', 'payroll-gross', 'payroll-benefits', 'payroll-deductions', 'payroll-loans', 'payroll-compensation', 'payroll-earning-rules', 'company-benefit-types', 'company-deduction-types', 'payroll-statutory', 'payroll-thirteenth-month', 'payroll-off-cycle', 'payroll-system-parameters', 'payroll-review', 'schedule-templates', 'rest-day-patterns', 'leave-computation-matrix',
   'overtime-application', 'rest-day-application', 'official-business', 'change-password', 'reset-password', 'database-backup', 'my-schedule', 'schedule-uploads',
   'schedule-upload-approvals',
   'emergency-schedule-approvals',
@@ -289,6 +290,7 @@ function App() {
       'payroll-system-parameters': 'payroll.company_parameters.manage',
       'schedule-templates': 'schedule.manage',
       'rest-day-patterns': 'schedule.manage',
+      'leave-computation-matrix': 'leave.manage',
       'my-schedule': 'schedule.read_own',
       'schedule-uploads': 'schedule.upload_team',
       'schedule-upload-approvals': 'schedule.approve',
@@ -564,6 +566,10 @@ function App() {
 
     if (view === 'rest-day-patterns') {
       return <RestDayPatterns employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
+    }
+
+    if (view === 'leave-computation-matrix') {
+      return <LeaveComputationMatrix employeeName={employeeName} onNavigate={navigateTo} onLoggedOut={logout} />
     }
 
     if (view === 'leave-application') {

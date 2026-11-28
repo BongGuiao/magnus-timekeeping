@@ -139,6 +139,21 @@ widens that constraint. Both refuse tracked or unexpected schemas. Back up first
 and reconcile manually created notice tables with the migrations before using
 Alembic; do not blindly stamp it.
 
+### Leave computation matrix
+
+Under Work Rules, **Leave Computation Matrix** stores company-specific ranges
+of decimal worked hours and fixed leave hours. Both endpoints are inclusive
+and ranges must not overlap. The matrix is configuration only: it is not used
+by leave previews, approvals, balances, attendance, or payroll. Company-wide
+`leave.manage` access is required. Changes do not affect historical leave.
+The page automatically uses the logged-in employee's latest active company
+assignment (latest effective date, then creation time). If there is no active
+assignment or permission for that company, it displays an error.
+Tracked databases require the migration through `a2c4e6f8b0d1`; for untracked
+databases, review and run
+[the manual matrix SQL](backend/sql/manual_leave_computation_matrices.sql)
+after taking a backup. Do not blindly stamp an untracked database.
+
 ### Consecutive absence alerts
 
 When enabled, a Celery task checks for current streaks every five minutes,
@@ -154,8 +169,8 @@ manager, and HR administrators with a current company-wide role for the
 employee's company (or a global role) can see an in-app alert. Dismissal is
 per user. Alerts are marked resolved when an underlying absence is corrected,
 voided, or removed. Ambiguous records that still include an absence do not
-silently resolve an alert. On Supervisor, Manager, and HR Admin dashboards,
-the consecutive absence alerts summary opens a review panel below the overview.
+silently resolve an alert. Dashboard roles show a consecutive absence alerts
+summary that opens a review panel below the overview.
 A zero count means there are no visible alerts; it does not indicate whether
 the feature is enabled. The alerts
 are informational, not formal return-to-work notices, and do not send email.

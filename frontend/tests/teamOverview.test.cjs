@@ -249,10 +249,35 @@ test('absence alerts sit under recorded absences and share dashboard panels for 
     render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
     assert.equal(render().overview.props.metrics.find((item) => item.id === 'absence-alerts').open, false)
   }
-  for (const [role, code] of [['employee', 'EMPLOYEE'], ['administrator', 'SYSTEM_ADMIN']]) {
-    const { overview, tree } = dashboard(role, permissions, role === 'administrator', undefined, {}, code)()
-    assert.equal(overview.props.metrics.some((item) => item.id === 'absence-alerts'), false)
-    assert.ok(find(tree, (node) => node.props?.state?.alerts && !node.props?.onClose))
+})
+
+test('employee, supervisor and system admin use a collapsed alert panel like HR admin', () => {
+  for (const [role, code, granted] of [
+    ['employee', 'EMPLOYEE', ['attendance.read_own', 'leave.read_own']],
+    ['supervisor', 'SUPERVISOR', permissions],
+    ['administrator', 'SYSTEM_ADMIN', [...permissions, 'attendance.read_org']],
+  ]) {
+    const render = dashboard(role, granted, role === 'administrator', undefined, {
+      alerts: { alerts: [{ id: 'one' }, { id: 'two' }] },
+    }, code)
+    let { overview, tree } = render()
+    const metric = overview.props.metrics.find((item) => item.id === 'absence-alerts')
+    assert.equal(metric.value, 2)
+    assert.equal(metric.open, false)
+    assert.equal(metric.controls, 'absence-alerts-panel')
+    assert.equal(find(tree, (node) => node.props?.state?.alerts), null)
+    overview.props.metrics.find((item) => item.id === 'missing-in').onClick()
+    render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    ;({ overview, tree } = render())
+    assert.equal(overview.props.metrics.find((item) => item.id === 'missing-in').open, false)
+    assert.equal(overview.props.metrics.find((item) => item.id === 'absence-alerts').open, true)
+    const panel = find(tree, (node) => node.props?.onClose && node.props?.state?.alerts)
+    assert.ok(panel)
+    panel.props.onClose()
+    assert.equal(find(render().tree, (node) => node.props?.state?.alerts), null)
+    render().overview.props.metrics.find((item) => item.id === 'absence-alerts').onClick()
+    render().overview.props.metrics.find((item) => item.id === 'missing-in').onClick()
+    assert.equal(render().overview.props.metrics.find((item) => item.id === 'absence-alerts').open, false)
   }
 })
 
@@ -347,7 +372,7 @@ test('all roles share the compact welcome header without duplicate overview titl
 
 test('Administrator metrics and review categories are permission-filtered and mutually exclusive', () => {
   const render = dashboard('administrator', [...permissions, 'attendance.read_org'], true)
-  assert.deepEqual(Array.from(render().overview.props.metrics, (item) => item.id), ['missing-in', 'missing-out', 'hours'])
+  assert.deepEqual(Array.from(render().overview.props.metrics, (item) => item.id), ['missing-in', 'missing-out', 'hours', 'absence-alerts'])
   assert.deepEqual(Array.from(render().overview.props.reviews, (item) => item.id),
     ['leave', 'invalid', 'assigned-leave', 'overtime', 'ob', 'correction', 'devices', 'offline'])
   for (const id of ['leave', 'invalid', 'assigned-leave', 'overtime', 'ob', 'correction', 'devices', 'offline', 'missing-in', 'missing-out', 'hours']) {
@@ -359,7 +384,7 @@ test('Administrator metrics and review categories are permission-filtered and mu
     assert.equal(find(render().tree, (node) => node.props?.id === 'offline-attendance-review').props.hidden, id !== 'offline')
   }
   const limited = dashboard('administrator', [], true)().overview
-  assert.equal(limited.props.metrics.length, 0)
+  assert.deepEqual(Array.from(limited.props.metrics, (item) => item.id), ['absence-alerts'])
   assert.deepEqual(Array.from(limited.props.reviews, (item) => item.id), ['devices', 'offline'])
   const approvalOnly = dashboard('administrator', ['leave.approve_team'], true)().overview
   assert.ok(approvalOnly.props.reviews.some((item) => item.id === 'assigned-leave'))
@@ -408,7 +433,7 @@ test('Employee uses the compact colored overview with permission-gated filing an
   assert.equal(overview.props.employeeName, 'Test employee')
   assert.ok(html.includes('My actions &amp; records'))
   assert.ok(!html.includes('data-component="HeroBanner"'))
-  assert.equal(overview.props.metrics.length, 4)
+  assert.equal(overview.props.metrics.length, 5)
   assert.deepEqual(Array.from(overview.props.reviews.slice(0, 2), (item) => item.id), ['apply-leave', 'correction'])
   assert.equal(new Set(overview.props.reviews.map((item) => item.id)).size, overview.props.reviews.length)
   for (const id of ['apply-leave', 'overtime', 'ob', 'payroll']) {
@@ -441,7 +466,7 @@ test('Employee panels replace each other, hide on repeat selection, and expand a
 
 test('Employee without module rights sees no restricted actions, metrics, or panels', () => {
   const { overview, html } = dashboard('employee', [])()
-  assert.equal(overview.props.metrics.length, 0)
+  assert.deepEqual(Array.from(overview.props.metrics, (item) => item.id), ['absence-alerts'])
   assert.deepEqual(Array.from(overview.props.reviews, (item) => item.id), ['updates'])
   for (const name of ['LeaveBalanceGrid', 'WorkHoursCard', 'RecentAttendanceTable', 'AttendanceCorrectionsPanel']) {
     assert.ok(!html.includes(`data-component="${name}"`))

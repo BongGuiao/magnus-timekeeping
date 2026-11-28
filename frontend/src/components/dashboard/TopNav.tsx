@@ -85,6 +85,7 @@ export type NavView =
   | 'payroll-review'
   | 'schedule-templates'
   | 'rest-day-patterns'
+  | 'leave-computation-matrix'
   | 'leave-management'
   | 'calendar'
   | 'announcements'
@@ -105,6 +106,7 @@ const companySetupTabViews: NavView[] = [
   'geofences',
   'schedule-templates',
   'rest-day-patterns',
+  'leave-computation-matrix',
   'leave-management',
   'calendar',
   'announcements',
@@ -198,6 +200,7 @@ const viewIcons: Partial<Record<NavView, LucideIcon>> = {
   'payroll-review': FileClock,
   'schedule-templates': CalendarDays,
   'rest-day-patterns': CalendarRange,
+  'leave-computation-matrix': Calculator,
   'leave-management': BriefcaseBusiness,
   calendar: CalendarDays,
   announcements: Megaphone,
@@ -320,6 +323,7 @@ const navLinks: NavLink[] = [
             children: [
               { label: 'Schedule Templates', view: 'schedule-templates', permission: 'schedule.manage' },
               { label: 'Rest Day Patterns', view: 'rest-day-patterns', permission: 'schedule.manage' },
+              { label: 'Leave Computation Matrix', view: 'leave-computation-matrix', permission: 'leave.manage' },
               { label: 'Leave Management', view: 'leave-management', permission: 'leave.manage' },
             ],
           },
@@ -519,7 +523,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut, employeeCsvA
     && roleCode === 'HR_ADMIN'
     && roleCodes.includes('HR_ADMIN')
     && hasPermission(SETTINGS_CSV_PERMISSIONS[activeView])
-  const isCompanyContextView = companyContextViews.includes(activeView)
+  const isCompanyContextView = companyContextViews.includes(activeView) && activeView !== 'leave-computation-matrix'
   const filterByPermission = (link: NavLink): NavLink | null => {
     if (link.adminOnly && !isAdmin) return null
     if (
@@ -544,7 +548,8 @@ export default function TopNav({ activeView, onNavigate, onSignOut, employeeCsvA
             ? child.children
             : child.children?.map((section) => ({
               ...section,
-              children: section.children?.filter((setupChild) => setupChild.view === 'companies'),
+              children: section.children?.filter((setupChild) =>
+                setupChild.view === 'companies' || setupChild.view === 'leave-computation-matrix'),
             })).filter((section) => (section.children?.length ?? 0) > 0),
         }
       })
@@ -1095,7 +1100,7 @@ export default function TopNav({ activeView, onNavigate, onSignOut, employeeCsvA
         </nav>
       )}
 
-      {companyContextViews.includes(activeView) && (
+      {isCompanyContextView && (
         <div className="mx-auto w-[95%] border-b border-indigo-200 pt-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">

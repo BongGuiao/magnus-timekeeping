@@ -13,10 +13,19 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+
+class LeaveMatrixModel(Base):
+    __tablename__ = "leave_computation_matrices"
+    __table_args__ = {"schema": "leave_mgmt"}
+
+    company_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("core.companies.id"), primary_key=True)
+    ranges: Mapped[list[dict[str, str]]] = mapped_column(JSONB, nullable=False)
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
 
 
 class LeaveTypeModel(Base):

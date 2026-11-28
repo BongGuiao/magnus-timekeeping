@@ -44,30 +44,11 @@ function createPanel({ failFirst = false } = {}) {
     stateIndex = 0
     refIndex = 0
     const state = exports.useAbsenceAlerts()
-    return exports.default({ state, ...props })
+    return exports.default({ state, onClose() {}, ...props })
   }
   const text = (node) => typeof node === 'string' ? node : !node?.props ? '' : [node.props.children].flat(Infinity).map(text).join(' ')
-  const button = (node) => {
-    if (!node?.props) return undefined
-    if (node.type === 'button') return node
-    return [node.props.children].flat(Infinity).map(button).find(Boolean)
-  }
-  return { render, text, button, posts, mount() { render(); return effect() } }
+  return { render, text, posts, mount() { render(); return effect() } }
 }
-
-test('displays and dismisses a recipient-specific absence alert', async () => {
-  const panel = createPanel()
-  const cleanup = panel.mount()
-  await new Promise((resolve) => setImmediate(resolve))
-  const view = panel.render()
-  assert.match(panel.text(view), /Test Employee/)
-  assert.match(panel.text(view), /2026-11-27/)
-  panel.button(view).props.onClick()
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(panel.posts[0], '/attendance/absence-alerts/one/dismiss')
-  assert.equal(panel.render(), null)
-  cleanup()
-})
 
 test('review panel displays alerts and remains visible when all are dismissed', async () => {
   const panel = createPanel()
@@ -76,12 +57,14 @@ test('review panel displays alerts and remains visible when all are dismissed', 
   const view = panel.render({ onClose() {} })
   assert.equal(view.props.id, 'absence-alerts-panel')
   assert.match(panel.text(view), /Test Employee/)
+  assert.match(panel.text(view), /2026-11-27/)
   const buttons = (node) => !node?.props ? [] : [
     ...(node.type === 'button' ? [node] : []),
     ...[node.props.children].flat(Infinity).flatMap(buttons),
   ]
   buttons(view).find((button) => panel.text(button) === 'Dismiss').props.onClick()
   await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(panel.posts[0], '/attendance/absence-alerts/one/dismiss')
   assert.match(panel.text(panel.render({ onClose() {} })), /No consecutive absence alerts/)
   cleanup()
 })

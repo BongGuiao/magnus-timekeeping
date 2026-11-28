@@ -153,6 +153,7 @@ test('settings menu is present in both menus only for assigned, selected HR Admi
       },
       './WorkspaceTabsContext': { useWorkspaceTabs: () => null },
       '../../lib/companyApi': {},
+      '../../lib/leaveMatrixApi': {},
       '../../lib/settingsCsv': csv,
       '../../hooks/useCompanySetupSelection': { useCompanySetupSelection: () => ({ companyId: 'company', selectCompany() {} }) },
       '../../types/role': {
@@ -201,6 +202,7 @@ test('menu action passes the current payroll group and reports download errors',
       },
       './WorkspaceTabsContext': { useWorkspaceTabs: () => null },
       '../../lib/companyApi': {},
+      '../../lib/leaveMatrixApi': {},
       '../../lib/settingsCsv': {
         ...csv,
         downloadSettingsCsv: async (...args) => { request = args; throw new Error('Download denied') },
@@ -216,6 +218,7 @@ test('menu action passes the current payroll group and reports download errors',
       employeeName: 'HR', activeView: 'company-benefit-types',
       settingsPayrollContext: { companyId: contextCompany, payrollGroupId: 'group', loadBenefitTypes() {} },
     })
+
     let menu
     function collect(node) {
       if (Array.isArray(node)) return node.forEach(collect)
@@ -232,4 +235,31 @@ test('menu action passes the current payroll group and reports download errors',
     assert.equal(messages.at(-1).text, 'Download denied')
     assert.equal(messages.at(-1).error, true)
   }
+})
+
+test('leave matrix menu is accessible without a selected company and follows rest day patterns', () => {
+  function render(companyId, allowed) {
+    const TopNav = load(join('components', 'dashboard', 'TopNav.tsx'), {
+      react: {
+        useEffect() {}, useLayoutEffect() {}, useRef: () => ({ current: null }),
+        useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}] },
+      },
+      './WorkspaceTabsContext': { useWorkspaceTabs: () => null },
+      '../../lib/companyApi': {},
+      '../../lib/leaveMatrixApi': {},
+      '../../lib/settingsCsv': { isSettingsCsvView: () => false, SETTINGS_CSV_PERMISSIONS: {} },
+      '../../hooks/useCompanySetupSelection': { useCompanySetupSelection: () => ({ companyId, selectCompany() {} }) },
+      '../../types/role': {
+        getAvailableRoleCodes: () => ['HR_ADMIN'], getSelectedDashboardRoleCode: () => 'HR_ADMIN',
+        canPreviewDashboardRoles: () => false, hasPermission: (name) => allowed.includes(name),
+        hasAnyPermission: (names) => names.some((name) => allowed.includes(name)),
+        isSystemAdmin: () => false, normalizeDashboardRole: () => 'administrator',
+      },
+    }, { localStorage: { getItem: () => 'admin' } }).default
+    return require('react-dom/server').renderToStaticMarkup(TopNav({ employeeName: 'HR', activeView: 'dashboard' }))
+  }
+  assert.match(render('', ['leave.manage']), /Leave Computation Matrix/)
+  assert.doesNotMatch(render('', []), /Leave Computation Matrix/)
+  const html = render('company', ['schedule.manage', 'leave.manage'])
+  assert.ok(html.indexOf('Rest Day Patterns') < html.indexOf('Leave Computation Matrix'))
 })

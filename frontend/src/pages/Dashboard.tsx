@@ -1141,6 +1141,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
     open: employeePanel === 'leave', controls: 'employee-leave',
     onClick: () => toggleEmployeePanel('leave'),
   })
+  employeeMetrics.push(absenceAlertMetric)
 
   const employeeActions: TeamOverviewItem[] = []
   if (hasPermission('leave.submit')) employeeActions.push({
@@ -1203,7 +1204,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
         onClick: () => { if (panel) toggleTeamReview(adminPanel === panel, () => setAdminPanel(panel)) },
       }
     })
-  if (isHrAdminDashboard) adminMetrics.push(absenceAlertMetric)
+  adminMetrics.push(absenceAlertMetric)
   const adminReviews: TeamOverviewItem[] = []
   if (canReviewTeamLeave && canReadOrgAttendance) adminReviews.push({
     id: 'leave', label: 'All pending leave',
@@ -1281,7 +1282,6 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
       <TopNav employeeName={employeeName} activeView="dashboard" onNavigate={onNavigate} onSignOut={logout} />
 
       <main className="w-full px-4 pt-4 sm:px-6 lg:px-8">
-        {!isTeamDashboard && !isHrAdminDashboard && <AbsenceAlerts state={absenceAlerts} />}
         <UnresolvedAttendanceApprovals onNavigate={onNavigate} />
         {isTeamDashboard ? (
           <TeamOverview role={role} employeeName={employeeName} metrics={teamMetrics} reviews={teamReviews} />
@@ -1292,7 +1292,7 @@ export default function Dashboard({ employeeName, onNavigate, onLoggedOut }: Pro
             reviewNotice={isHrAdminDashboard ? <RegularizationNotice state={regularization} /> : undefined} />
         )}
 
-        {(isTeamDashboard || isHrAdminDashboard) && isAbsenceAlertsOpen && (
+        {isAbsenceAlertsOpen && (
           <AbsenceAlerts state={absenceAlerts} onClose={() => setIsAbsenceAlertsOpen(false)} />
         )}
         {isHrAdminDashboard && isRegularizationOpen && <RegularizationDashboard state={regularization} />}

@@ -82,6 +82,7 @@ test('employee CSV actions appear and invoke callbacks in both account menus', (
     },
     './WorkspaceTabsContext': { useWorkspaceTabs: () => null },
     '../../lib/companyApi': {},
+    '../../lib/leaveMatrixApi': {},
     '../../lib/settingsCsv': { isSettingsCsvView: () => false, SETTINGS_CSV_PERMISSIONS: {} },
     '../../hooks/useCompanySetupSelection': { useCompanySetupSelection: () => ({ companyId: '', selectCompany() {} }) },
     '../../types/role': {
